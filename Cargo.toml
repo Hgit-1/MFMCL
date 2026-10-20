@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/mc-metadata",
+  "crates/download-engine",
+  "crates/launcher-core",
+  "src-tauri",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+chrono = { version = "0.4", features = ["serde", "clock"] }
+futures-util = "0.3"
+hex = "0.4"
+md5 = { package = "md-5", version = "0.10" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+shlex = "1"
+thiserror = "2"
+regex = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "fs", "net", "io-util"] }
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }

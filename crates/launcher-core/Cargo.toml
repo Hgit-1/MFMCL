@@ -1,0 +1,21 @@
+[package]
+name = "launcher-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono.workspace = true
+download-engine = { path = "../download-engine" }
+futures-util.workspace = true
+mc-metadata = { path = "../mc-metadata" }
+md5.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shlex.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+zip.workspace = true

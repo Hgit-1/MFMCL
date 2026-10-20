@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MFMCL",
+  "version": "0.1.0",
+  "identifier": "dev.mfmcl.launcher",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../ui run dev -- --host 127.0.0.1 --port 1420",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm --prefix ../ui run build",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "MFMCL",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 860,
+        "minHeight": 620
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ipc: http://ipc.localhost https://piston-meta.mojang.com https://bmclapi2.bangbang93.com;"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "shortDescription": "Minecraft Java Edition launcher",
+    "category": "Game",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "targets": ["msi", "nsis", "dmg", "app", "deb", "appimage"]
+  }
+}

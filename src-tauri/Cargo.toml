@@ -1,0 +1,33 @@
+[package]
+name = "mfmcl-desktop"
+version.workspace = true
+edition.workspace = true
+
+[package.metadata.tauri-winres]
+ProductName = "MFMCL"
+FileDescription = "Minecraft Java Edition launcher"
+OriginalFilename = "mfmcl-desktop.exe"
+
+[lib]
+name = "mfmcl_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "mfmcl-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono.workspace = true
+download-engine = { path = "../crates/download-engine" }
+launcher-core = { path = "../crates/launcher-core" }
+mc-metadata = { path = "../crates/mc-metadata" }
+reqwest.workspace = true
+tauri = { version = "2", features = [] }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tauri-plugin-dialog = "2"
