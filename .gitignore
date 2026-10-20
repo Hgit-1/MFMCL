@@ -1,0 +1,30 @@
+# Nested reference repository; keep it outside this project's history.
+/PCL/
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+
+# Rust
+/target/
+**/target/
+
+# Tauri build artifacts
+src-tauri/gen/
+src-tauri/target/
+
+# Local app data and credentials
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
