@@ -8,7 +8,9 @@ MFMCL is an original Minecraft Java Edition launcher project for Windows, macOS,
 - Vanilla instance installation and Java runtime detection, launch-argument expansion, memory configuration, live process/log events, diagnostic summaries, and local export.
 - Offline profiles, Microsoft public-client browser login with PKCE and Java entitlement validation, and HTTPS Yggdrasil skin-server login with explicit trust confirmation and role selection. Online credentials are stored through the operating system credential provider; no launcher client secret or borrowed Microsoft client ID is included.
 - Fabric and Quilt installation, mod enable/disable, and bounded Modrinth pack preview/import/export for supported Vanilla/Fabric/Quilt combinations.
-- Four theme presets, custom accent/background settings, and settings validation.
+- Four theme presets, custom accent/background settings, settings validation, and saved-account management (list, preselect, silent refresh at launch, per-account removal that also deletes the keyring entry).
+- Launcher self-update checks in the PCL2 spirit: a quiet startup check with reminders, a manual check with changelog, and a SHA-256-verified installer download into a user-chosen folder. Self-replacement of the running binary stays disabled until update signing exists; builds without a configured `MFMCL_UPDATE_MANIFEST` report that honestly.
+- Hash-checked local game-data backups with preview and restore into a fresh instance.
 
 ## Deliberate release gates and limits
 

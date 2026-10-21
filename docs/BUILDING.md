@@ -47,6 +47,24 @@ The Tauri command changes to the repository root while the frontend hooks execut
 
 Microsoft login requires an application public client ID registered and authorized for the relevant Xbox/Minecraft services. Supply it through the login dialog or set `MFMCL_MICROSOFT_CLIENT_ID` when building. Configure an appropriate desktop/loopback redirect URI in that registration. MFMCL contains no client secret and must not borrow another launcher's application ID. A denied/unavailable OS credential provider is reported as a login error; no plaintext fallback is used.
 
+## Launcher updates (optional)
+
+Set `MFMCL_UPDATE_MANIFEST` at build time to an HTTPS JSON manifest:
+
+```json
+{
+  "version": "0.2.0",
+  "notes": "…",
+  "platforms": {
+    "linux-x86_64": { "url": "https://…/MFMCL-0.2.0.AppImage", "sha256": "…" },
+    "windows-x86_64": { "url": "https://…/MFMCL-0.2.0.exe", "sha256": "…" },
+    "macos-aarch64": { "url": "https://…/MFMCL-0.2.0.dmg", "sha256": "…" }
+  }
+}
+```
+
+Version comparison is `major.minor.patch` with optional `-pre.N` suffixes (a same-core pre-release never updates another pre-release). The check enforces HTTPS, bounded manifest size, per-release SHA-256, and a bounded installer download size. Downloads are verified before publication into a user-chosen directory; the launcher does not replace its own running process. See `docs/REFERENCE_NOTES.md` for the PCL2 interaction review behind this design.
+
 ## Optional aria2 sidecar
 
 The runtime expects a platform binary at:

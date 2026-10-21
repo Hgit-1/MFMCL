@@ -1,7 +1,9 @@
 mod authentication;
+mod backup_management;
 mod downloads;
 mod management;
 mod sidecar;
+mod updates;
 
 use chrono::Utc;
 use download_engine::{
@@ -43,6 +45,7 @@ struct SystemInfo {
     operating_system: String,
     architecture: String,
     app_data_dir: String,
+    app_version: String,
 }
 #[derive(Default)]
 struct ProcessRegistry(Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>);
@@ -131,6 +134,7 @@ fn get_system_info(app: tauri::AppHandle) -> Result<SystemInfo, String> {
         operating_system: std::env::consts::OS.into(),
         architecture: std::env::consts::ARCH.into(),
         app_data_dir: root.to_string_lossy().into_owned(),
+        app_version: env!("CARGO_PKG_VERSION").into(),
     })
 }
 #[tauri::command]
@@ -286,6 +290,23 @@ fn list_accounts(store: State<'_, LauncherStore>) -> Result<Vec<AccountProfile>,
 #[tauri::command]
 fn select_account(account_id: String, store: State<'_, LauncherStore>) -> Result<(), String> {
     store.select_account(&account_id).map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn remove_account(account_id: String, store: State<'_, LauncherStore>) -> Result<(), String> {
+    let account = store
+        .list_accounts()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|account| account.id == account_id)
+        .ok_or("找不到所选账户。")?;
+    // Remove the credential-store entry first; a dangling DB row is preferable to a
+    // remaining credential whose profile reference was deleted.
+    if let Some(key) = account.credential_ref.clone() {
+        let _ =
+            tauri::async_runtime::spawn_blocking(move || authentication::delete_credential(&key))
+                .await;
+    }
+    store.remove_account(&account_id).map_err(|e| e.to_string())
 }
 #[tauri::command]
 fn summarize_diagnostics(
@@ -558,8 +579,13 @@ pub fn run() {
             authentication::skin_login,
             authentication::skin_select_profile,
             authentication::microsoft_login,
+            updates::check_launcher_update,
+            updates::download_launcher_update,
             downloads::control_download,
             downloads::list_download_tasks,
+            backup_management::create_backup,
+            backup_management::preview_backup,
+            backup_management::restore_backup,
             management::loader_versions,
             management::install_loader,
             management::list_mods,
@@ -578,6 +604,7 @@ pub fn run() {
             add_offline_account,
             list_accounts,
             select_account,
+            remove_account,
             summarize_diagnostics,
             export_diagnostics,
             launch_instance,

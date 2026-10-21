@@ -394,3 +394,12 @@
 .task-progress-track { height: 4px; overflow: hidden; margin-top: 11px; border-radius: 99px; background: var(--surface-3); }.task-progress-track i { height: 100%; display: block; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }.task-progress-track i.indeterminate { width: 38%; background: linear-gradient(90deg, transparent, var(--accent), transparent); animation: progress-sweep 1.4s ease-in-out infinite; }
 @keyframes progress-sweep { from { transform: translateX(-100%); } to { transform: translateX(270%); } }
 .task-card-bottom { margin-top: 7px; display: flex; justify-content: space-between; gap: 10px; color: var(--quiet); font-size: 7px; font-variant-numeric: tabular-nums; }
+
+/* Account picker rows: selectable identity + per-account removal (PCL2-style cached-account management). */
+.account-picker-item { min-height: 54px; padding: 4px 4px 4px 0; display: flex; align-items: center; gap: 6px; cursor: default; }
+.account-picker-select { flex: 1; min-width: 0; min-height: 44px; padding: 6px 8px; display: flex; align-items: center; gap: 9px; text-align: left; color: var(--text); background: transparent; border: 0; cursor: pointer; }
+.account-picker-select > span:not(.account-picker-avatar) { min-width: 0; display: grid; gap: 3px; }
+.account-picker-select strong { overflow-wrap: anywhere; }
+.account-picker-select small { color: var(--quiet); overflow-wrap: anywhere; }
+.account-picker-remove { flex: 0 0 auto; width: 34px; height: 34px; color: var(--quiet); }
+.account-picker-remove:hover { color: #e5484d; background: var(--surface-3); }

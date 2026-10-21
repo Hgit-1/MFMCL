@@ -42,6 +42,14 @@ impl Default for DownloadSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdatePolicy {
+    #[default]
+    Notify,
+    Off,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LauncherSettings {
@@ -56,6 +64,9 @@ pub struct LauncherSettings {
     pub java_path: Option<PathBuf>,
     #[serde(default = "default_memory")]
     pub memory_mb: u32,
+    /// Launcher self-update policy; auto-replacement stays disabled without signed installers.
+    #[serde(default)]
+    pub update_policy: UpdatePolicy,
     pub download: DownloadSettings,
 }
 
@@ -75,6 +86,7 @@ impl Default for LauncherSettings {
             show_game_log: true,
             java_path: None,
             memory_mb: default_memory(),
+            update_policy: UpdatePolicy::Notify,
             download: DownloadSettings::default(),
         }
     }

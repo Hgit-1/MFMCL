@@ -77,6 +77,12 @@ async fn put_credentials(id: String, stored: StoredCredential) -> Result<(), Str
     .await
     .map_err(auth_error)?
 }
+/// Best-effort keyring removal when the user deletes an account.
+/// A missing entry is success; a failing store surfaces as an error string.
+pub fn delete_credential(id: &str) -> Result<(), String> {
+    vault()?.delete(id).map_err(auth_error)
+}
+
 async fn get_credentials(id: String) -> Result<StoredCredential, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let secret = vault()?

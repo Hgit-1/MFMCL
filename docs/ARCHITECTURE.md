@@ -5,8 +5,8 @@
 - `crates/mc-metadata`: official Minecraft version manifest, version profile, library, launch argument, and asset-index models. The official version manifest is the trust root; mirror-sourced version profiles are accepted only after matching the official SHA-1 entry.
 - `crates/download-engine`: explicit official/BMCLAPI source adapters, verified fallback candidates, bounded concurrency, retries, safe Range resume, pause/cancel checkpoints, temporary-file writes, SHA-1/SHA-256/size validation, atomic publication, and optional aria2 RPC integration.
 - `crates/launcher-auth`: Microsoft public-client PKCE authorization and Xbox/XSTS/Java entitlement checks; HTTPS Yggdrasil authentication; backend-only credential/session types and OS credential-store adapter.
-- `crates/launcher-core`: SQLite settings, account references, isolated instances and download history; vanilla install; supported Fabric/Quilt profile merge; mod enable/disable and Modrinth pack import/export; Java launch preparation and local crash diagnostics.
-- `src-tauri`: desktop commands, OS app-data paths, keyring and system-browser adapters, loopback Microsoft callback server, Java child-process/log events, task controls, and native file/directory dialogs.
+- `crates/launcher-core`: SQLite settings, account references (including per-account removal semantics), isolated instances and download history; vanilla install; supported Fabric/Quilt profile merge; mod enable/disable, inspection and Modrinth pack import/export; hash-checked backups; Java launch preparation; update-manifest parsing/version ordering; and local crash diagnostics.
+- `src-tauri`: desktop commands, OS app-data paths, keyring and system-browser adapters, loopback Microsoft callback server, launcher self-update check/download, Java child-process/log events, task controls, and native file/directory dialogs.
 - `ui`: Chinese-first React/TypeScript interface, login consent/profile dialogs, beginner-oriented setup, theme controls, tasks, loader/mod manager, and diagnostics.
 
 ## Trust and file flow
@@ -27,7 +27,7 @@ The official index is never mirror-selected. Each metadata/artifact download kee
 ## Storage and secret boundaries
 
 - SQLite stores settings, public account profile metadata, opaque system-keyring references, instances, and bounded installation-task history. Passwords and bearer/refresh tokens do not enter SQLite or frontend IPC.
-- Online account credentials are stored using the operating system credential provider. An unavailable or locked provider causes login to fail rather than falling back to plaintext storage.
+- Online account credentials are stored using the operating system credential provider. An unavailable or locked provider causes login to fail rather than falling back to plaintext storage. Deleting a saved account removes its keyring entry alongside the profile record.
 - Microsoft login uses a user-provided or build-configured public client ID, the system browser, a loopback callback, state validation, and PKCE. The launcher has no Microsoft client secret and does not borrow another application's client ID.
 - Skin-server login is HTTPS-only. The user must confirm trust for the shown server root. Passwords are used only for the authentication request; the keyring receives the returned Yggdrasil tokens.
 - Instance and game directories hold version files and user data. Each new instance uses a unique instance root and its own game directory.

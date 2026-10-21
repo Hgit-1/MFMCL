@@ -351,6 +351,19 @@ impl LauncherStore {
             .map_err(StoreError::Database)
     }
 
+    /// Delete a saved account. Its keyring entry must be removed separately by the host.
+    /// A deleted selected account leaves no account selected.
+    pub fn remove_account(&self, account_id: &str) -> Result<(), StoreError> {
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let changed = connection.execute("DELETE FROM accounts WHERE id = ?1", [account_id])?;
+        if changed == 0 {
+            return Err(StoreError::Invalid(format!(
+                "account {account_id} does not exist"
+            )));
+        }
+        Ok(())
+    }
+
     pub fn select_account(&self, account_id: &str) -> Result<(), StoreError> {
         let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         let tx = connection.unchecked_transaction()?;
@@ -421,6 +434,24 @@ mod tests {
         let value = serde_json::to_value(account).unwrap();
         assert!(value.get("credentialRef").is_none());
         assert!(!value.to_string().contains("opaque-keyring-entry"));
+    }
+
+    #[test]
+    fn removing_an_account_deletes_it_and_clears_selection() {
+        let store = LauncherStore::open(":memory:").unwrap();
+        let account = AccountProfile {
+            id: "ms-1".to_owned(),
+            display_name: "Player".to_owned(),
+            kind: AccountKind::Microsoft,
+            auth_server: None,
+            credential_ref: Some("ms-1".to_owned()),
+            selected: true,
+            created_at: "2026-10-21T00:00:00Z".to_owned(),
+        };
+        store.add_account(&account).unwrap();
+        assert!(store.remove_account("ms-1").is_ok());
+        assert!(store.list_accounts().unwrap().is_empty());
+        assert!(store.remove_account("ms-1").is_err());
     }
 
     #[test]

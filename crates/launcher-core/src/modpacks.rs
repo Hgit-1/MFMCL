@@ -145,7 +145,7 @@ pub fn preview_pack(path: &Path) -> Result<PackPreview, String> {
 }
 
 /// Count central-directory records before zip parses them, since the zip crate stores names in a map.
-fn zip_entry_count(file: &mut File) -> Result<u64, String> {
+pub(crate) fn zip_entry_count(file: &mut File) -> Result<u64, String> {
     let length = file.metadata().map_err(|e| e.to_string())?.len();
     if length < 22 {
         return Err("ZIP 文件过短或缺少结束目录。".into());

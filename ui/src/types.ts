@@ -19,6 +19,7 @@ export interface LauncherSettings {
   showGameLog: boolean
   javaPath: string
   memoryMb: number
+  updatePolicy: 'notify' | 'off'
 }
 
 export interface InstanceRecord {

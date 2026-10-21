@@ -1,0 +1,14 @@
+.update-card .setting-field { margin-bottom: 14px; }
+.update-available { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 13px; margin: 12px 0; border: 1px solid var(--accent-border); border-radius: 10px; background: var(--accent-soft); }
+.update-available-copy { display: flex; gap: 9px; align-items: flex-start; flex: 1; min-width: 220px; color: var(--accent-text, var(--accent)); }
+.update-available-copy strong { color: var(--text); font-size: 13px; }
+.update-available-copy p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.update-available small { flex-basis: 100%; color: var(--quiet); font-size: 11px; }
+.update-available .button-primary { min-height: 44px; }
+.update-status-line { display: flex; align-items: center; gap: 7px; margin: 10px 0 2px; color: var(--muted); font-size: 12px; }
+.update-error { margin: 10px 0 0; font-size: 12px; }
+.update-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.update-actions button { min-height: 44px; }
+.update-preview-note { display: inline-flex; align-items: center; gap: 5px; color: var(--quiet); font-size: 11px; }
+.update-spinning { animation: update-rotate 0.9s linear infinite; }
+@keyframes update-rotate { to { transform: rotate(360deg); } }

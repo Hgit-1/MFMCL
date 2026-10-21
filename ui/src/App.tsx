@@ -35,11 +35,14 @@ import {
   Sparkles,
   Sun,
   Terminal,
+  Trash2,
   X,
 } from 'lucide-react'
-import { beginLaunch, createInstance, createOfflineAccount, installInstance, inspectJava, isDesktopShell, listAccounts, listInstances, listVersions, loadSettings, readSettings, saveSettings, selectAccount } from './api'
+import { beginLaunch, checkLauncherUpdate, createInstance, createOfflineAccount, installInstance, inspectJava, isDesktopShell, listAccounts, listInstances, listVersions, loadSettings, readSettings, removeAccount, saveSettings, selectAccount } from './api'
 import type { AccountRecord, DownloadEvent, DownloadSource, InstanceRecord, LauncherSettings, PageId, ThemeId, VersionItem } from './types'
 import { accessibleAccent } from './theme'
+import { BackupManager } from './components/BackupManager'
+import { UpdateCard } from './components/UpdateCard'
 import { InstanceManager } from './components/InstanceManager'
 import { InstallationTasks } from './components/InstallationTasks'
 import { MicrosoftLoginDialog, SkinLoginDialog } from './components/AccountLoginDialogs'
@@ -58,6 +61,7 @@ const initialSettings: LauncherSettings = {
   showGameLog: true,
   javaPath: '',
   memoryMb: 2048,
+  updatePolicy: 'notify',
 }
 
 const themeChoices: { id: ThemeId; label: string; color: string; note: string }[] = [
@@ -214,6 +218,16 @@ function App() {
     const timer = window.setTimeout(() => setToast(''), 3600)
     return () => window.clearTimeout(timer)
   }, [toast])
+
+  // PCL2-style quiet startup update check; failures stay silent until a manual check.
+  useEffect(() => {
+    if (!isDesktopShell() || !settingsLoaded || settings.updatePolicy !== 'notify') return
+    let cancelled = false
+    void checkLauncherUpdate().then((status) => {
+      if (!cancelled && status.available && status.latest) setToast(`发现新版本 ${status.latest}；可在“设置 → 启动器更新”中查看并下载。`)
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [settingsLoaded, settings.updatePolicy])
 
   const filteredVersions = useMemo(
     () => versions.filter((version) => version.id.toLowerCase().includes(search.toLowerCase())),
@@ -399,6 +413,7 @@ function App() {
           {page === 'home' && <HomePage instances={instances} javaInfo={javaInfo} gameLogs={gameLogs} gameStatus={gameStatus} showGameLog={settings.showGameLog} onCreate={() => setDialog('instance')} onBrowse={() => setPage('library')} onSettings={() => setPage('settings')} onLaunch={handleLaunch} onStop={handleStop} onInstall={handleInstall} onDiagnostics={(id) => void handleDiagnostics(id)} onAccount={() => setDialog('offline-account')} accountName={accounts.find((item) => item.id === selectedAccount)?.displayName} />}
           {page === 'library' && <LibraryPage instances={instances} search={search} setSearch={setSearch} onCreate={() => setDialog('instance')} versionSource={versionSource} onInstall={handleInstall} onLaunch={handleLaunch} filteredVersions={filteredVersions} versionLoading={versionLoading} onToast={setToast} />}
           {page === 'library' && <InstanceManager instances={instances} onChanged={async () => setInstances(await listInstances())} onNotice={setToast} />}
+          {page === 'library' && <BackupManager instances={instances} onChanged={async () => setInstances(await listInstances())} onNotice={setToast} />}
           {page === 'downloads' && <><DownloadsPage source={settings.downloadSource} progress={downloadEvents} onCreate={() => setDialog('instance')} onToast={setToast} /><InstallationTasks onNotice={setToast} retryableInstances={instances.filter((item) => item.state !== 'ready').map((item) => item.id)} onRetry={(id) => { const target = instances.find((item) => item.id === id); if (target) void handleInstall(target) }} /></>}
           {page === 'settings' && <SettingsPage settings={settings} updateSettings={updateSettings} showAdvanced={showAdvanced} setShowAdvanced={setShowAdvanced} customAccent={customAccent} setCustomAccent={setCustomAccent} onMicrosoftAccount={() => setDialog('microsoft-account')} onSkinAccount={() => setDialog('skin-account')} onOfflineAccount={() => setDialog('offline-account')} onDiagnostics={() => void handleDiagnostics()} onToast={setToast} />}
         </div>
@@ -408,7 +423,7 @@ function App() {
 
       {dialog === 'instance' && <InstanceDialog versions={versions} loading={versionLoading} versionSource={versionSource} name={instanceName} setName={setInstanceName} selectedVersion={selectedVersion} setSelectedVersion={setSelectedVersion} onClose={() => setDialog(null)} onSubmit={handleCreateInstance} />}
       {dialog === 'offline-account' && <OfflineAccountDialog onClose={() => setDialog(null)} onSubmit={addOfflineAccount} onSkin={() => setDialog('skin-account')} onMicrosoft={() => setDialog('microsoft-account')} />}
-      {dialog === 'account-picker' && <AccountPickerDialog accounts={accounts} selectedAccount={selectedAccount} onClose={() => setDialog(null)} onAdd={() => setDialog('offline-account')} onSelect={async (accountId) => { try { await selectAccount(accountId); setSelectedAccount(accountId); setAccounts((current) => current.map((account) => ({ ...account, selected: account.id === accountId }))); setDialog(null) } catch (error) { setToast(error instanceof Error ? error.message : '无法切换账户。') } }} />}
+      {dialog === 'account-picker' && <AccountPickerDialog accounts={accounts} selectedAccount={selectedAccount} onClose={() => setDialog(null)} onAdd={() => setDialog('offline-account')} onSelect={async (accountId) => { try { await selectAccount(accountId); setSelectedAccount(accountId); setAccounts((current) => current.map((account) => ({ ...account, selected: account.id === accountId }))); setDialog(null) } catch (error) { setToast(error instanceof Error ? error.message : '无法切换账户。') } }} onRemove={async (accountId) => { const target = accounts.find((account) => account.id === accountId); if (!window.confirm(`移除账户“${target?.displayName ?? accountId}”？${target?.kind === 'offline' ? '' : '系统凭据库中的登录凭据也会一并删除。'}`)) return; try { await removeAccount(accountId); const remaining = await listAccounts(); setAccounts(remaining); if (selectedAccount === accountId) setSelectedAccount(remaining.find((account) => account.selected)?.id ?? ''); setToast('账户已移除。') } catch (error) { setToast(error instanceof Error ? error.message : '无法移除账户。') } }} />}
       {dialog === 'skin-account' && <SkinLoginDialog onClose={() => setDialog(null)} onAuthenticated={handleAuthenticated} />}
       {dialog === 'microsoft-account' && <MicrosoftLoginDialog onClose={() => setDialog(null)} onAuthenticated={handleAuthenticated} />}
       {toast && <div className="toast-message" role="status"><CircleCheck size={17} /><span>{toast}</span><button aria-label="关闭通知" onClick={() => setToast('')}><X size={15} /></button></div>}
@@ -521,6 +536,8 @@ function SettingsPage({ settings, updateSettings, showAdvanced, setShowAdvanced,
 
       <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-account"><ShieldCheck size={17} /></div><div><h2>账户与安全</h2><p>账户令牌会保存在系统凭据库中。</p></div></div><div className="account-setting-row"><div className="account-type-icon microsoft-icon">M</div><div className="field-copy"><strong>Microsoft 账户</strong><span>正版账户登录 · 浏览器授权流程</span></div><button className="button-secondary small" onClick={onMicrosoftAccount}>连接账户<ArrowRight size={13} /></button></div><div className="setting-divider" /><div className="account-setting-row"><div className="account-type-icon offline-icon"><Gamepad2 size={15} /></div><div className="field-copy"><strong>离线档案</strong><span>每次启动前都会再次确认。</span></div><button className="button-secondary small" onClick={onOfflineAccount}>添加档案<Plus size={13} /></button></div><div className="setting-divider" /><div className="account-setting-row"><div className="account-type-icon skin-icon"><Sparkles size={15} /></div><div className="field-copy"><strong>皮肤站账户</strong><span>支持可配置的 Yggdrasil 认证服务。</span></div><button className="button-secondary small" onClick={onSkinAccount}>配置服务<ArrowRight size={13} /></button></div></section>
 
+      <UpdateCard policy={settings.updatePolicy} onPolicyChange={(updatePolicy) => updateSettings({ updatePolicy })} onNotice={onToast} />
+
       {showAdvanced && <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-system"><Cpu size={17} /></div><div><h2>启动与诊断</h2><p>为需要手动调整的用户提供更多控制。</p></div></div><div className="setting-field"><label className="form-label">Java 可执行文件（留空则自动检测）<input value={settings.javaPath} placeholder="/path/to/java 或 C:\\Java\\bin\\java.exe" onChange={e => updateSettings({ javaPath: e.target.value })} /></label><label className="form-label">最大游戏内存（MB）<input type="number" min={512} max={32768} step={256} value={settings.memoryMb} onChange={e => updateSettings({ memoryMb: Number(e.target.value) })} /></label></div><div className="setting-field"><div className="field-copy"><strong>单行游戏日志</strong><span>在启动状态区域显示最近一条 MC 日志。</span></div><button className={`switch ${settings.showGameLog ? 'checked' : ''}`} role="switch" aria-checked={settings.showGameLog} onClick={() => updateSettings({ showGameLog: !settings.showGameLog })}><i /></button></div><div className="setting-divider" /><div className="setting-field"><div className="field-copy"><strong>崩溃诊断</strong><span>摘要、查看原始日志或导出到指定文件夹。</span></div><button className="button-secondary small" onClick={onDiagnostics}><FileText size={13} />打开诊断</button></div></section>}
     </div>
     <aside className="settings-aside"><div className="settings-preview-card"><div className="preview-top"><span className="preview-eyebrow">界面预览</span><span className="preview-dots"><i /><i /><i /></span></div><div className="preview-scene"><div className="preview-sun" /><div className="preview-mountain mountain-one" /><div className="preview-mountain mountain-two" /><div className="preview-pixel-tree"><i /><i /><b /></div></div><div className="preview-actions"><span className="preview-action-icon"><Play size={12} fill="currentColor" /></span><span><strong>开始游戏</strong><small>你的下一个世界</small></span><ArrowRight size={14} /></div><div className="preview-theme-line"><span style={{ background: settings.customAccent }} /><span /><span />{currentTheme.label}</div></div><div className="settings-tip"><div className="tip-icon"><Sparkles size={15} /></div><div><strong>新手也能轻松上手</strong><p>推荐值会自动选择。开启高级设置后，才会显示下载连接数和游戏日志开关。</p></div></div><div className="privacy-card"><LockKeyhole size={15} /><div><strong>默认本地优先</strong><span>账户凭据与游戏存档不会自动上传。</span></div></div></aside></div>
@@ -540,8 +557,8 @@ function accountKindLabel(account?: AccountRecord): string {
   return account.kind === 'offline' ? '离线档案' : account.kind === 'microsoft' ? 'Microsoft 账户' : '皮肤站账户'
 }
 
-function AccountPickerDialog({ accounts, selectedAccount, onClose, onAdd, onSelect }: { accounts: AccountRecord[]; selectedAccount: string; onClose: () => void; onAdd: () => void; onSelect: (id: string) => void }) {
-  return <Modal title="选择账户" eyebrow="游戏身份" onClose={onClose}><div className="account-picker-list">{accounts.length ? accounts.map((account) => <button key={account.id} className={`account-picker-item ${account.id === selectedAccount ? 'selected' : ''}`} onClick={() => onSelect(account.id)}><span className="account-picker-avatar">{account.kind === 'offline' ? <Gamepad2 size={15} /> : <ShieldCheck size={15} />}</span><span><strong>{account.displayName}</strong><small>{account.kind === 'offline' ? '离线档案 · 启动时会提示' : account.kind === 'microsoft' ? 'Microsoft 账户' : `皮肤站账户${account.authServer ? ` · ${account.authServer}` : ''}`}</small></span>{account.id === selectedAccount && <Check size={15} />}</button>) : <div className="account-picker-empty">尚未添加账户。离线档案会在每次启动时要求确认。</div>}<button className="account-picker-add" onClick={onAdd}><Plus size={15} />添加其他账户</button></div></Modal>
+function AccountPickerDialog({ accounts, selectedAccount, onClose, onAdd, onSelect, onRemove }: { accounts: AccountRecord[]; selectedAccount: string; onClose: () => void; onAdd: () => void; onSelect: (id: string) => void; onRemove: (id: string) => void }) {
+  return <Modal title="选择账户" eyebrow="游戏身份" onClose={onClose}><div className="account-picker-list">{accounts.length ? accounts.map((account) => <div key={account.id} className={`account-picker-item ${account.id === selectedAccount ? 'selected' : ''}`}><button className="account-picker-select" onClick={() => onSelect(account.id)}><span className="account-picker-avatar">{account.kind === 'offline' ? <Gamepad2 size={15} /> : <ShieldCheck size={15} />}</span><span><strong>{account.displayName}</strong><small>{account.kind === 'offline' ? '离线档案 · 启动时会提示' : account.kind === 'microsoft' ? 'Microsoft 账户' : `皮肤站账户${account.authServer ? ` · ${account.authServer}` : ''}`}</small></span>{account.id === selectedAccount && <Check size={15} />}</button><button className="icon-button account-picker-remove" aria-label={`移除账户 ${account.displayName}`} onClick={() => onRemove(account.id)}><Trash2 size={15} /></button></div>) : <div className="account-picker-empty">尚未添加账户。离线档案会在每次启动时要求确认。</div>}<button className="account-picker-add" onClick={onAdd}><Plus size={15} />添加其他账户</button></div></Modal>
 }
 
 function OfflineAccountDialog({ onClose, onSubmit, onSkin, onMicrosoft }: { onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onSkin: () => void; onMicrosoft: () => void }) {

@@ -26,7 +26,10 @@
   },
   "bundle": {
     "active": true,
-    "resources": ["resources/aria2-manifest.json"],
+    "resources": {
+      "resources/aria2-manifest.json": "resources/aria2-manifest.json",
+      "resources/aria2/": "aria2/"
+    },
     "shortDescription": "Minecraft Java Edition launcher",
     "category": "Game",
     "icon": [

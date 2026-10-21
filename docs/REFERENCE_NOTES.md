@@ -25,6 +25,25 @@ These notes capture product and configuration patterns to investigate, not code 
 - MobileGlues documents its OpenGL ES requirements and publishes a device/mod compatibility matrix; use that pattern for transparent support reporting.
 - A limited read-only review of the local `PCL/` reference focused on settings separation, download fallback, progress, and diagnostics. Several implementations are legacy-specific; no source is imported or ported.
 
+## PCL2 login and update interaction review (read-only, 2026-10-21)
+
+A second limited read-only pass over the local `PCL/` checkout examined only the public login pages and the settings/about pages. The open-source build ships its self-update implementation as stubs (`ModSecret.vb` shows `UpdateCheckByButton` returning "该版本中不包含更新功能……"), so nothing update-related could be taken even as reference; only the visible interaction wording and settings layout were noted. No code, assets, strings, or branding are reused; the principles below are re-implemented from scratch against our own architecture.
+
+Login principles abstracted from PCL2's public pages:
+
+- The Microsoft login page is account-centric, not flow-centric: a dropdown lists every cached account with per-account delete buttons plus a fixed "添加新账号" entry, and the previously used account is preselected.
+- Silent re-login is the default: stored refresh tokens are exchanged without a browser; the system browser is only for adding a new account. The login button itself doubles as the progress indicator (percentage text) instead of a separate progress bar.
+- Errors are classified into actionable Chinese hints (network vs SSL vs user-cancel vs unknown) instead of showing raw provider errors.
+- All account kinds (offline/Microsoft/skin server) are reachable from one launch screen with the current kind always visible, so switching identity never hides what type is active.
+
+Update principles abstracted from PCL2's settings/about wording (implementation absent from the public build):
+
+- The user picks an update policy in settings (never check / notify only / auto-download), separate per channel (stable vs snapshot).
+- Checks run in the background at startup; the about page also offers a manual "check update" button.
+- When an update has been downloaded, it is applied on next restart rather than replacing a running binary.
+
+For MFMCL these translate to: manage saved accounts (list, preselect, delete, silent refresh — refresh already happens at launch), and an update-check framework with an explicit user-chosen policy, manual check entry, changelog display, and hash-verified download to a user-chosen folder. Without code signing and update-signing keys, in-place self-replacement must stay disabled; downloads are verified against a pinned SHA-256 in our own manifest and the user runs the installer explicitly.
+
 ## Sources
 
 - HMCL: https://github.com/HMCL-dev/HMCL

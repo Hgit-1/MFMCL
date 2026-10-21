@@ -1,0 +1,13 @@
+{
+  "version": "1.37.0",
+  "filename": "aria2-1.37.0.tar.xz",
+  "url": "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.xz",
+  "api_url": "https://api.github.com/repos/aria2/aria2/releases/assets/135654451",
+  "sha256": "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b",
+  "source_date_epoch": 1700041692,
+  "provenance": {
+    "release": "https://github.com/aria2/aria2/releases/tag/release-1.37.0",
+    "independent_checksum_reference": "https://raw.githubusercontent.com/Homebrew/homebrew-core/master/Formula/a/aria2.rb",
+    "verification": "SHA-256 of official release archive, independently compared with Homebrew formula. Upstream release API has no digest or detached signature for this asset; no signature verification is claimed."
+  }
+}
