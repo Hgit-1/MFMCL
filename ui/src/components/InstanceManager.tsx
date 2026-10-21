@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Download, Layers3, PackageOpen, RefreshCw, Upload, AlertTriangle } from 'lucide-react'
+import { Download, Layers3, PackageOpen, RefreshCw, Search, Trash2, Upload, AlertTriangle } from 'lucide-react'
 import { Dialog } from './Dialog'
 import type { InstanceRecord } from '../types'
 import { isDesktopShell } from '../api'
@@ -24,6 +24,8 @@ function normalizeReport(report: ModUpdateReport): { fileName: string } & ({ kin
   return { fileName: report.fileName, kind: 'up_to_date' }
 }
 type ClientUpdate = { upToDate: boolean; changedFiles: number }
+type CatalogMod = { projectId: string; title: string; description: string; author: string; downloads: number; follows: number; iconUrl: string | null }
+type CatalogVersion = { versionId: string; versionNumber: string; dateCreated: string; fileName: string; url: string; sha1: string; size: number }
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
 
 export function InstanceManager({ instances, onChanged, onNotice }: { instances: InstanceRecord[]; onChanged: () => Promise<void>; onNotice: (text: string) => void }) {
@@ -39,18 +41,21 @@ export function InstanceManager({ instances, onChanged, onNotice }: { instances:
   const [pack, setPack] = useState<{ path: string; preview: Preview } | null>(null)
   const [updateReports, setUpdateReports] = useState<ReturnType<typeof normalizeReport>[] | null>(null)
   const [clientUpdate, setClientUpdate] = useState<ClientUpdate | null>(null)
+  const [searchResults, setSearchResults] = useState<CatalogMod[] | null>(null)
+  const [versionTarget, setVersionTarget] = useState<CatalogMod | null>(null)
+  const [versions, setVersions] = useState<CatalogVersion[] | null>(null)
   const target = instances.find(i => i.id === targetId) ?? instances[0]
 
   useEffect(() => {
     if (!expanded || !target || !isDesktopShell()) return
     let ignore = false
     void invoke<Loader[]>('loader_versions', { kind, gameVersion: target.gameVersion })
-      .then(versions => { if (!ignore) { setLoaders(versions); setLoaderVersion(versions[0]?.version ?? ''); setError('') } })
+      .then(versions => { if (!ignore) { setLoaders(Array.isArray(versions) ? versions : []); setLoaderVersion(Array.isArray(versions) ? (versions[0]?.version ?? '') : ''); setError(Array.isArray(versions) ? '' : '加载器版本列表无效。') } })
       .catch(e => { if (!ignore) { setLoaders([]); setLoaderVersion(''); setError(message(e)) } })
       .finally(() => { if (!ignore) setLoading(false) })
     // Local mod management remains available even when the loader metadata service is offline.
     void invoke<Mod[]>('list_mods', { instanceId: target.id })
-      .then(files => { if (!ignore) setMods(files) })
+      .then(files => { if (!ignore) setMods(Array.isArray(files) ? files : []) })
       .catch(e => { if (!ignore) { setMods([]); setError(message(e)) } })
     return () => { ignore = true }
   }, [kind, target, expanded])
@@ -61,7 +66,7 @@ export function InstanceManager({ instances, onChanged, onNotice }: { instances:
   const checkUpdates = () => run(async () => {
     setUpdateReports(null)
     const reports = await invoke<ModUpdateReport[]>('check_mod_updates', { instanceId: target.id })
-    setUpdateReports(reports.map(normalizeReport))
+    setUpdateReports((Array.isArray(reports) ? reports : []).map(normalizeReport))
     const count = reports.filter(r => typeof r.status !== 'string' && r.status && 'update_available' in r.status).length
     onNotice(count ? `发现 ${count} 个可更新的模组。` : '模组均已是最新版本。')
   })
@@ -77,6 +82,39 @@ export function InstanceManager({ instances, onChanged, onNotice }: { instances:
     setClientUpdate(null)
     const status = await invoke<ClientUpdate>('check_client_update', { instanceId: target.id })
     setClientUpdate(status)
+  })
+  const doSearch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const query = String(form.get('modSearch') ?? '').trim()
+    if (!query) { onNotice('请输入要搜索的模组名称。'); return }
+    void run(async () => {
+      setSearchResults(null)
+      setSearchResults(await (async () => { const results = await invoke<CatalogMod[]>('search_mods', { instanceId: target.id, query }); return Array.isArray(results) ? results : [] })())
+    })
+  }
+  const openVersions = (mod: CatalogMod) => run(async () => {
+    setVersionTarget(mod)
+    setVersions(null)
+    const list = await invoke<CatalogVersion[]>('list_mod_versions', { instanceId: target.id, projectId: mod.projectId })
+    setVersions(Array.isArray(list) ? list : [])
+  })
+  const installVersion = (version: CatalogVersion) => run(async () => {
+    if (!window.confirm(`安装 ${version.fileName}（${version.versionNumber}）到 mods 目录？\n\n模组会以你的用户权限在游戏中运行，请仅安装来自可信作者、适合此游戏版本与加载器的模组。`)) return
+    await invoke<string>('install_mod_version', { instanceId: target.id, version })
+    setMods(await invoke<Mod[]>('list_mods', { instanceId: target.id }))
+    setVersionTarget(null)
+    onNotice(`已安装并校验 ${version.fileName}。`)
+  })
+  const removeInstance = () => run(async () => {
+    const hasFiles = target.state === 'ready' || target.state === 'failed'
+    const deleteFiles = hasFiles && window.confirm(`删除实例“${target.name}”？\n\n实例目录：${target.instanceDir}\n选择“确定”将同时删除该目录（含存档、模组与配置，无法恢复）；选择“取消”中止。`)
+    if (hasFiles && !deleteFiles) return
+    if (!hasFiles && !window.confirm(`删除未安装的实例“${target.name}”？`)) return
+    await invoke('delete_instance', { instanceId: target.id, deleteFiles: !!deleteFiles })
+    setTargetId('')
+    await onChanged()
+    onNotice(deleteFiles ? '实例与本地文件已删除。' : '实例记录已删除；未安装文件未触及。')
   })
   const choosePack = async () => {
     if (!isDesktopShell()) { onNotice('整合包导入需要桌面应用。'); return }
@@ -119,9 +157,38 @@ export function InstanceManager({ instances, onChanged, onNotice }: { instances:
           {clientUpdate && (clientUpdate.upToDate ? <p className="empty-management" role="status">客户端文件与官方清单一致。</p> : <p className="management-error" role="status"><AlertTriangle size={15} />官方文件清单有变化（例如 Mojang 重新发布了该版本）。请使用实例上的“安装/修复”完成更新。</p>)}
         </div>
       </section>
+      <section className="catalog-section"><h3>在线模组（Modrinth）</h3><p>按本实例的游戏版本与加载器搜索 Modrinth 并安装校验过的模组文件。搜索词与版本条件会发送给 Modrinth。</p>
+        <form className="catalog-search" onSubmit={doSearch}>
+          <input name="modSearch" placeholder="搜索模组名称…" maxLength={128} disabled={busy} aria-label="搜索 Modrinth 模组" />
+          <button type="submit" className="button-secondary" disabled={busy}><Search size={15} />{busy ? '搜索中…' : '搜索'}</button>
+        </form>
+        {searchResults && (searchResults.length ? <ul className="catalog-list">
+          {searchResults.map(mod => <li key={mod.projectId}>
+            <span className="catalog-copy" title={mod.description}>
+              <strong>{mod.title}</strong>
+              <small>{mod.author} · {mod.downloads.toLocaleString('zh-Hans-CN')} 次下载</small>
+            </span>
+            <button className="button-secondary" disabled={busy} onClick={() => void openVersions(mod)}>查看版本</button>
+          </li>)}
+        </ul> : <p className="empty-management">没有找到匹配的模组。</p>)}
+      </section>
       {error && <p className="management-error" role="alert"><AlertTriangle size={16} />{error}</p>}
-      <button className="text-link" disabled={busy} onClick={() => void run(async () => { setMods(await invoke<Mod[]>('list_mods', { instanceId: target.id })); await onChanged() })}><RefreshCw size={14} />刷新实例状态</button>
+      <div className="management-buttons instance-footer-actions">
+        <button className="text-link" disabled={busy} onClick={() => void run(async () => { setMods(await invoke<Mod[]>('list_mods', { instanceId: target.id })); await onChanged() })}><RefreshCw size={14} />刷新实例状态</button>
+        <button className="button-secondary instance-delete" disabled={busy} onClick={() => void removeInstance()}><Trash2 size={15} />删除实例…</button>
+      </div>
     </div> : <p className="empty-management">创建或导入实例后，可在这里管理加载器和模组。</p>)}
+    {versionTarget && <Dialog title={`选择版本 · ${versionTarget.title}`} onClose={() => { if (!busy) { setVersionTarget(null); setVersions(null) } }}><div className="pack-preview catalog-version-list">
+      <p>仅显示与本实例游戏版本和加载器匹配的版本。安装前会校验 Modrinth 提供的 SHA-1，且不会覆盖已有文件。</p>
+      {versions === null ? <p role="status">正在读取版本列表…</p> : versions.length ? versions.map(version => <div key={version.versionId} className="mod-update-row is-available">
+        <span className="mod-update-copy">
+          <strong>{version.versionNumber}</strong>
+          <small>{version.fileName} · {(version.size / 1024 / 1024).toFixed(2)} MB · {version.dateCreated.slice(0, 10)}</small>
+        </span>
+        <button className="button-secondary" disabled={busy} onClick={() => void installVersion(version)}><Download size={14} />安装</button>
+      </div>) : <p className="empty-management">此模组没有匹配当前游戏版本与加载器的版本。</p>}
+      <div className="dialog-actions"><button className="button-secondary" disabled={busy} onClick={() => { setVersionTarget(null); setVersions(null) }}>关闭</button></div>
+    </div></Dialog>}
     {pack && <Dialog title="导入整合包预览" onClose={() => { if (!busy) setPack(null) }}><div className="pack-preview"><h3>{pack.preview.name}</h3><p>版本 {pack.preview.version} · Minecraft {pack.preview.minecraft}</p><p>加载器：{pack.preview.loader}</p><p>必需下载 {pack.preview.requiredFiles} 个 · 可选 {pack.preview.optionalFiles} 个（默认不安装）</p><p>覆盖文件 {pack.preview.overrideFiles} 个 · 上限估算 {(pack.preview.totalBytes / 1024 / 1024).toFixed(1)} MB</p><div className="warning-box"><AlertTriangle size={16} /><span>整合包可能包含可执行模组，仅导入你信任的来源。导入到全新独立目录；完成后仍需安装游戏文件。</span></div><div className="dialog-actions"><button className="button-secondary" disabled={busy} onClick={() => setPack(null)}>取消</button><button className="button-primary" disabled={busy} onClick={() => void run(async () => { await invoke('import_modpack', { path: pack.path }); setPack(null); await onChanged(); onNotice('整合包内容已导入。请点击实例的“安装”以补齐游戏和加载器。') })}>{busy ? '导入并验证文件…' : '信任并导入'}</button></div>{error && <p role="alert">{error}</p>}</div></Dialog>}
   </section>
 }

@@ -1,4 +1,5 @@
 pub mod backups;
+pub mod catalog;
 mod diagnostics;
 mod installer;
 mod launch;
@@ -11,6 +12,7 @@ pub mod mods;
 mod store;
 pub mod updates;
 
+pub use catalog::{CatalogMod, CatalogVersion};
 pub use diagnostics::{
     DiagnosticError, DiagnosticSummary, export_instance_diagnostics, summarize_instance,
 };

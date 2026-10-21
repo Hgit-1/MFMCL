@@ -16,6 +16,12 @@ test-results/
 src-tauri/gen/
 src-tauri/target/
 
+# Locally staged aria2 binaries and provenance: produced by scripts/aria2/
+# after a reviewed build, pinned locally via distribute.py stage. Not
+# distributed from this repository until the license review completes.
+src-tauri/resources/aria2/*
+!src-tauri/resources/aria2/.gitkeep
+
 # Local app data and credentials
 .env
 .env.*

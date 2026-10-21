@@ -287,6 +287,38 @@ impl LauncherStore {
         Ok(())
     }
 
+    /// Delete an instance record. The directory removal is the host's decision:
+    /// the store never deletes files, it only drops the row (any state but
+    /// `installing`, which may be mid-write in another process).
+    pub fn delete_instance(&self, id: &str) -> Result<InstanceRecord, StoreError> {
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let removed = connection.query_row(
+            "DELETE FROM instances WHERE id = ?1 AND state != 'installing' RETURNING id, name, game_version, loader, instance_dir, game_dir, isolated, state, created_at",
+            [id],
+            |row| {
+                let state: String = row.get(7)?;
+                Ok(InstanceRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    game_version: row.get(2)?,
+                    loader: row.get(3)?,
+                    instance_dir: PathBuf::from(row.get::<_, String>(4)?),
+                    game_dir: PathBuf::from(row.get::<_, String>(5)?),
+                    isolated: row.get::<_, i64>(6)? != 0,
+                    state: match state.as_str() {
+                        "ready" => InstanceState::Ready,
+                        "failed" => InstanceState::Failed,
+                        "not_installed" => InstanceState::NotInstalled,
+                        _ => InstanceState::Installing,
+                    },
+                    created_at: row.get(8)?,
+                })
+            },
+        )
+        .optional()?;
+        removed.ok_or_else(|| StoreError::Invalid(format!("instance {id} cannot be deleted")))
+    }
+
     pub fn set_instance_loader(&self, id: &str, loader: &str) -> Result<(), StoreError> {
         let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         if connection.execute(
@@ -452,6 +484,43 @@ mod tests {
         assert!(store.remove_account("ms-1").is_ok());
         assert!(store.list_accounts().unwrap().is_empty());
         assert!(store.remove_account("ms-1").is_err());
+    }
+
+    #[test]
+    fn deleting_an_instance_returns_its_record_and_blocks_installing_rows() {
+        let root = std::env::temp_dir().join(format!("mfmcl-del-{}", Uuid::new_v4()));
+        let store = LauncherStore::open(":memory:").unwrap();
+        let created = store
+            .create_instance(
+                &CreateInstanceInput {
+                    name: "Doomed".into(),
+                    game_version: "1.21.4".into(),
+                },
+                &root,
+            )
+            .unwrap();
+        store
+            .set_instance_state(&created.id, InstanceState::Ready)
+            .unwrap();
+        let removed = store.delete_instance(&created.id).unwrap();
+        assert_eq!(removed.id, created.id);
+        assert!(store.list_instances().unwrap().is_empty());
+        assert!(store.delete_instance(&created.id).is_err());
+
+        let installing = store
+            .create_instance(
+                &CreateInstanceInput {
+                    name: "Busy".into(),
+                    game_version: "1.21.4".into(),
+                },
+                &root,
+            )
+            .unwrap();
+        store
+            .set_instance_state(&installing.id, InstanceState::Installing)
+            .unwrap();
+        assert!(store.delete_instance(&installing.id).is_err());
+        assert_eq!(store.list_instances().unwrap().len(), 1);
     }
 
     #[test]

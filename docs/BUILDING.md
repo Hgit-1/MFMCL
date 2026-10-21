@@ -43,6 +43,57 @@ npm run tauri --prefix ui -- build
 
 The Tauri command changes to the repository root while the frontend hooks execute in `ui`. The development server binds to `127.0.0.1:1420`; port collisions fail instead of selecting an unexpected port. Build each native installer on its target operating system. The current project has not completed signed release packaging or a clean install/upgrade/uninstall run on all three systems.
 
+## Native Linux build without root
+
+On a locked-down Linux host (no sudo), GTK/WebKitGTK development files can be provided through a local sysroot instead of system installation:
+
+```sh
+# 1. Resolve the dependency closure and download the missing debs (no root needed).
+mkdir -p /tmp/mfmcl-sysroot/debs && cd /tmp/mfmcl-sysroot
+apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts \
+  --no-breaks --no-replaces --no-enhances --no-pre-depends \
+  libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+  libdbus-1-dev libssl-dev libxdo-dev pkg-config \
+  | LC_ALL=C grep "^\w" | LC_ALL=C sort -u > pkgs.txt
+dpkg-query -W -f='${Package}\n' | LC_ALL=C sort -u > installed.txt
+LC_ALL=C comm -23 pkgs.txt installed.txt \
+  | grep -vE ":i386$|aspell|hunspell|myspell|-doc$|-l10n$|locale" > final.list
+(cd debs && while read -r p; do [ -n "$p" ] && apt-get download "$p" || true; done < ../final.list)
+
+# 2. Extract and close dangling dev symlinks against the system's runtime libs.
+mkdir -p root && for f in debs/*.deb; do dpkg-deb -x "$f" root/; done
+cd root/usr/lib/x86_64-linux-gnu
+for link in *.so; do [ -L "$link" ] || continue; t=$(readlink "$link")
+  [ -e "$t" ] || cp "/usr/lib/x86_64-linux-gnu/$t" "$t" 2>/dev/null || true; done
+
+# 3. Bridge Debian's multiarch OpenSSL headers for -dev builds.
+ln -sf ../x86_64-linux-gnu/openssl/opensslconf.h root/usr/include/openssl/ 2>/dev/null || true
+
+# 4. Compile (check links nothing; for `cargo build` also set LIBRARY_PATH
+#    because rust-lld places RUSTFLAGS -L entries after -l arguments).
+export SYS=/tmp/mfmcl-sysroot/root
+export PKG_CONFIG_PATH="$SYS/usr/lib/x86_64-linux-gnu/pkgconfig:$SYS/usr/share/pkgconfig"
+export PKG_CONFIG_SYSROOT_DIR="$SYS"
+cargo check -p mfmcl-desktop --tests
+LIBRARY_PATH="$SYS/usr/lib/x86_64-linux-gnu:$SYS/usr/lib:/usr/lib/x86_64-linux-gnu" \
+  cargo build -p mfmcl-desktop
+```
+
+This produces a linked `target/debug/mfmcl-desktop` whose dynamic dependencies all resolve. Running the windowed app still needs a display/session; headless containers only support compile and unit verification. The same sysroot supplies OpenSSL development files for `scripts/aria2/build.sh` (pass the same `PKG_CONFIG_PATH`/`PKG_CONFIG_SYSROOT_DIR`, plus `-I` bridging for Debian's multiarch OpenSSL headers as shown in step 3).
+
+## Building and staging aria2 locally
+
+`scripts/aria2/build.sh WORKDIR` downloads the SHA-256-locked official 1.37.0 source, builds a stripped-feature static binary, verifies its version, and packages a provenance archive. `scripts/aria2/smoke.py BINARY` then exercises real loopback JSON-RPC behaviour (secret auth, checksum verification, cancellation, TLS rejection). Finally:
+
+```sh
+sha256sum WORKDIR/aria2-1.37.0-<os>-<arch>.tar.gz
+python3 scripts/aria2/distribute.py stage \
+  --archive WORKDIR/aria2-1.37.0-<os>-<arch>.tar.gz \
+  --archive-sha256 <archive sha256> --tauri-dir src-tauri
+```
+
+stages the binary under `src-tauri/resources/aria2/<os>/<arch>/` and pins it in `aria2-manifest.json`. Staged binaries and pins are local build outputs (`.gitignore`d): committing or redistributing them awaits the GPL corresponding-source and license review in `docs/THIRD_PARTY.md`.
+
 ## Microsoft account configuration
 
 Microsoft login requires an application public client ID registered and authorized for the relevant Xbox/Minecraft services. Supply it through the login dialog or set `MFMCL_MICROSOFT_CLIENT_ID` when building. Configure an appropriate desktop/loopback redirect URI in that registration. MFMCL contains no client secret and must not borrow another launcher's application ID. A denied/unavailable OS credential provider is reported as a login error; no plaintext fallback is used.

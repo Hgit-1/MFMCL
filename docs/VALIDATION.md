@@ -4,7 +4,7 @@ This record distinguishes implemented code, automated checks, and unverified rel
 
 ## Automated checks performed
 
-- Core Rust suites: `mc-metadata`, `download-engine`, `launcher-core` (including backups, mod JAR inspection, update-manifest parsing/version ordering, and account-removal store tests), and `launcher-auth`. Coverage includes source trust, bounded retry and cancellation, validated Range resume, corrupt hash rejection, authentication state/PKCE, Microsoft entitlement checks, Yggdrasil profile selection, launch placeholder expansion, secret redaction, interrupted task recovery, mod toggles, ZIP stream limits and import rollback.
+- Core Rust suites: `mc-metadata`, `download-engine`, `launcher-core` (including backups, mod JAR inspection, Modrinth catalogue parsing/install-refusal, update-manifest parsing/version ordering, account-removal and instance-deletion store tests), and `launcher-auth`. Coverage includes source trust, bounded retry and cancellation, validated Range resume, corrupt hash rejection, authentication state/PKCE, Microsoft entitlement checks, Yggdrasil profile selection, launch placeholder expansion, secret redaction, interrupted task recovery, mod toggles, ZIP stream limits and import rollback.
 - Frontend: TypeScript/Vite production build, Oxlint, and Playwright browser tests for HTTPS skin-server consent/role selection, Microsoft command wiring and error display, repeated offline confirmation, installation pause/resume/cancel/retry, backup flows, saved-account removal with credential warnings, launcher update check/download/policy, Modrinth mod-update disclosure/warning/verified replacement, client update checks, invalid settings, theme contrast, and narrow-screen navigation. Native APIs in these tests are mocked; no live Modrinth/Mojang request is made.
 - Native Windows backend: `cargo check --target x86_64-pc-windows-gnu -p mfmcl-desktop --tests`, using real MinGW tools. This type-checks desktop commands/tests and the Windows credential adapter; it does not link or execute a Windows installer.
 - Linux credential adapter: `cargo check -p launcher-auth --features native-credentials`. The OS credential service itself has not been exercised with a real account.
@@ -18,7 +18,11 @@ The PCL2-inspired update feature is implemented as check/prompt/verified-downloa
 
 ## Mod and client update status
 
-Mod update checks use Modrinth's documented hash-lookup and project-version endpoints against locally mocked responses only; no live Modrinth query or real mod replacement has been executed in this environment. Client update checks compare a fingerprint of artifact-bearing metadata (client JAR, asset index, libraries, logging) against the locally stored official profile; both fingerprints and republish detection are unit-tested, but no live Mojang republish scenario has been verified.
+Mod update checks use Modrinth's documented hash-lookup and project-version endpoints against locally mocked responses only; no live Modrinth query or real mod replacement has been executed in this environment. Client update checks compare a fingerprint of artifact-bearing metadata (client JAR, asset index, libraries, logging) against the locally stored official profile; both fingerprints and republish detection are unit-tested, but no live Mojang republish scenario has been verified. The Modrinth catalogue (search, version listing, verified install) is likewise covered only by mocked browser tests.
+
+## Native Linux build status (2026-10-21)
+
+Using the documented no-root sysroot (`docs/BUILDING.md`), the desktop backend now compiles and links natively on this Linux host for the first time: `cargo check -p mfmcl-desktop --tests` and `cargo build -p mfmcl-desktop` both succeed, and `ldd target/debug/mfmcl-desktop` reports no missing libraries. This verifies real GTK3/WebKitGTK header and link compatibility beyond CI's compile matrix. Launching the windowed app remains impossible here (no display/session); it is not evidence of a working runtime.
 
 ## CI configured, not locally proven
 
@@ -26,7 +30,7 @@ Mod update checks use Modrinth's documented hash-lookup and project-version endp
 
 ## Outstanding plan requirements
 
-- aria2: `scripts/aria2/` now contains a hash-locked source acquisition/reproducible-build/packaging toolchain for the pinned 1.37.0 release. Actually building per-platform binaries, verifying them against `aria2-manifest.json`, and completing GPL source/notice/distribution review remain outstanding; the manifest still pins nothing and the native downloader remains the fallback.
+- aria2: `scripts/aria2/` provides hash-locked source acquisition, reproducible packaging, loopback RPC smoke testing, and Tauri staging. On 2026-10-21 the full Linux pipeline was executed for the first time in this environment: the pinned 1.37.0 official source built against the sysroot OpenSSL, the real binary passed all seven loopback smoke checks (version/HTTPS feature, unauthorized-RPC rejection, SHA-256-verified download, wrong-checksum rejection, pause/unpause/forceRemove, untrusted-TLS rejection, graceful shutdown), and `distribute.py stage` pinned `linux-x86_64` with binary SHA-256 `33cc023e37daf0a7eeb13027ad3b206323e5301ba7c92955d20dc6a4b125386e` locally. The binary and its manifest pin are deliberately not committed (`.gitignore`); redistributing GPL binaries still requires the license/corresponding-source review. Windows and macOS builds remain unexecuted.
 - Forge/NeoForge installer adapters, explicit mod conflict guidance, and an online content catalogue. Current modded support is Fabric/Quilt, supported Modrinth pack import/export, and local hash-checked backup/restore into fresh instances.
 - Real Microsoft login with the project's registered/approved public application ID, system credential persistence/refresh on each OS, trusted live skin-server login and Authlib-Injector launch.
 - Real vanilla/modded game launches with recorded Java/game/loader combinations, plus runtime process-stop and crash-summary verification.

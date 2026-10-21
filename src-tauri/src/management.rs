@@ -1,4 +1,5 @@
 use download_engine::{DownloadEngine, DownloadProgress, DownloadSettings};
+use launcher_core::check_client_update as client_update_status_for;
 use launcher_core::{
     ClientUpdateStatus, CreateInstanceInput, InstanceRecord, InstanceState, LauncherStore,
     loaders::{self, LoaderKind, LoaderVersion},
@@ -6,7 +7,6 @@ use launcher_core::{
     modpacks::{self, PackPreview},
     mods::{self, ModFile},
 };
-use launcher_core::check_client_update as client_update_status_for;
 use std::{
     collections::HashSet,
     path::PathBuf,
@@ -199,6 +199,110 @@ pub async fn check_client_update(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Delete an instance. File removal happens only for a directory inside the
+/// launcher's own instances root, and only after the row is gone.
+#[tauri::command]
+pub async fn delete_instance(
+    instance_id: String,
+    delete_files: bool,
+    app: AppHandle,
+    store: State<'_, LauncherStore>,
+    operations: State<'_, Operations>,
+) -> Result<(), String> {
+    let _guard = operations.acquire(&instance_id)?;
+    let removed = store
+        .delete_instance(&instance_id)
+        .map_err(|e| e.to_string())?;
+    if !delete_files {
+        return Ok(());
+    }
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let instances_root = root.join("instances");
+    // Canonicalize both paths; refuse anything that escapes the instances root.
+    let instances_real = tokio::fs::canonicalize(&instances_root)
+        .await
+        .map_err(|e| format!("实例目录不可用：{e}"))?;
+    let target_real = tokio::fs::canonicalize(&removed.instance_dir)
+        .await
+        .map_err(|e| format!("实例目录不可用：{e}"))?;
+    if !target_real.starts_with(&instances_real) || target_real == instances_real {
+        // The database row is already removed; files stay untouched.
+        return Err("已删除实例记录；目录不在启动器管理范围内，未删除任何文件。".into());
+    }
+    if let Some(game_real) = tokio::fs::canonicalize(&removed.game_dir)
+        .await
+        .ok()
+        .filter(|game| game.starts_with(&instances_real))
+    {
+        if !game_real.starts_with(&target_real) {
+            // Isolated instances keep their game dir inside the instance dir; if
+            // anything points outside, leave the parent removal to the user.
+            return Err("已删除实例记录；游戏目录在实例目录之外，请手动确认后删除。".into());
+        }
+    }
+    tokio::fs::remove_dir_all(&removed.instance_dir)
+        .await
+        .map_err(|e| format!("已删除实例记录，但移除目录失败：{e}"))
+}
+
+#[tauri::command]
+pub async fn search_mods(
+    instance_id: String,
+    query: String,
+    store: State<'_, LauncherStore>,
+    operations: State<'_, Operations>,
+) -> Result<Vec<launcher_core::CatalogMod>, String> {
+    let _guard = operations.acquire(&instance_id)?;
+    let target = instance(&store, &instance_id)?;
+    let client = launcher_core::catalog::catalog_client()?;
+    launcher_core::catalog::search_mods(&client, &target, &query).await
+}
+
+#[tauri::command]
+pub async fn list_mod_versions(
+    instance_id: String,
+    project_id: String,
+    store: State<'_, LauncherStore>,
+    operations: State<'_, Operations>,
+) -> Result<Vec<launcher_core::CatalogVersion>, String> {
+    let _guard = operations.acquire(&instance_id)?;
+    let target = instance(&store, &instance_id)?;
+    let client = launcher_core::catalog::catalog_client()?;
+    launcher_core::catalog::mod_versions(&client, &target, &project_id).await
+}
+
+#[tauri::command]
+pub async fn install_mod_version(
+    instance_id: String,
+    version: launcher_core::CatalogVersion,
+    app: AppHandle,
+    store: State<'_, LauncherStore>,
+    operations: State<'_, Operations>,
+    downloads: State<'_, Arc<crate::downloads::Downloads>>,
+) -> Result<String, String> {
+    let _guard = operations.acquire(&instance_id)?;
+    let target = instance(&store, &instance_id)?;
+    let control = downloads.start(
+        &instance_id,
+        &format!("安装模组 {}", version.file_name),
+        &store,
+        &app,
+    )?;
+    let engine = engine(&store)?.with_control(control);
+    let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
+    let result = launcher_core::catalog::install_mod_version(
+        &version,
+        &target.game_dir.join("mods"),
+        &engine,
+    )
+    .await;
+    drop(tx);
+    let _ = progress_task.await;
+    downloads.finish(&instance_id, result.is_ok(), &store, &app)?;
+    result
+}
+
 #[tauri::command]
 pub fn preview_modpack(path: String) -> Result<PackPreview, String> {
     modpacks::preview_pack(&PathBuf::from(path))

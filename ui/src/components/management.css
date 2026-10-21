@@ -25,6 +25,18 @@
 .mod-update-list .button-primary { justify-self: start; }
 .client-update-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
 .client-update-section p { margin: 0 0 12px; }
+.catalog-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.catalog-section > p { margin: 0 0 12px; }
+.catalog-search { display: flex; gap: 8px; margin-bottom: 12px; }
+.catalog-search input { flex: 1; min-width: 0; min-height: 44px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--text); background: var(--surface-2); font-size: 14px; }
+.catalog-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.catalog-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.catalog-copy { flex: 1; min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.catalog-copy small { color: var(--quiet); }
+.catalog-version-list .mod-update-row { border-color: var(--line); background: var(--surface-2); }
+.instance-footer-actions { margin-top: 18px; justify-content: space-between; }
+.instance-delete { color: #e5484d; }
+.instance-delete:hover { border-color: #e5484d; }
 .mod-file-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .mod-file-list li > span { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
 .mod-file-list small { display: block; color: var(--quiet); margin-top: 4px; }
