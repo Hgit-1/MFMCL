@@ -10,7 +10,8 @@ This record distinguishes implemented code, automated checks, and unverified rel
 - Linux credential adapter: `cargo check -p launcher-auth --features native-credentials`. The OS credential service itself has not been exercised with a real account.
 - Development entry point: the documented Tauri npm command now finds the project and starts Vite on `127.0.0.1:1420`. Native Linux compilation remains blocked by missing GTK/WebKit development packages in this container.
 - Browser visual inspection: the current dark overview page was inspected in a Chromium viewport. This is not a complete accessibility or all-platform visual audit.
-- Opt-in JVM smoke test: `crates/launcher-core/tests/jvm_smoke.rs` launches a real JVM against an original fixture (not Minecraft) when a JDK is present. It is not run in CI.
+- Opt-in JVM smoke test: `crates/launcher-core/tests/jvm_smoke.rs` launches a real JVM against an original fixture (not Minecraft) when a JDK is present. On 2026-10-21 it ran with the host's Java 21 and passed both cases (argument preparation/log draining and process kill); it is not run in CI.
+- Opt-in real-sidecar engine test: `download-engine`'s `real_aria2_sidecar_downloads_and_verifies_through_the_engine` (enabled via `MFMCL_ARIA2_BINARY`) exercised the locally built aria2 through the production path on 2026-10-21: loopback RPC session, checksum-verified download, tampered-hash rejection before publication, and graceful shutdown all passed.
 
 ## Launcher self-update status
 

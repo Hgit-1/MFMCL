@@ -30,6 +30,16 @@ npx --prefix ui playwright install chromium
 npm run test --prefix ui
 ```
 
+Opt-in tests that need a real environment (skipped by default):
+
+```sh
+# Real JVM: compiles and runs an original tiny fixture; validates log draining and kill.
+cargo test -p launcher-core --test jvm_smoke -- --ignored
+# Real aria2 sidecar: full engine path with a locally built 1.37.0 binary.
+MFMCL_ARIA2_BINARY=src-tauri/resources/aria2/linux/x86_64/aria2c \
+  cargo test -p download-engine real_aria2 -- --ignored
+```
+
 The authentication tests use local mock services, and browser tests use mocked native IPC; neither proves a real account/game launch. Continuous integration runs these checks plus desktop-backend compile jobs for Linux, macOS, and Windows. The manual `desktop-artifacts.yml` workflow can also build unsigned short-retention artifacts on target runners; those files are test outputs, not supported or signed releases.
 
 ## Desktop app

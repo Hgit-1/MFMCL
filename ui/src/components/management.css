@@ -25,6 +25,11 @@
 .mod-update-list .button-primary { justify-self: start; }
 .client-update-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
 .client-update-section p { margin: 0 0 12px; }
+.mod-issue-list { margin-top: 12px; display: grid; gap: 8px; }
+.mod-issue-row { padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.mod-issue-row.is-error { border-color: #e5484d; }
+.mod-issue-copy { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.mod-issue-copy small { color: var(--quiet); }
 .catalog-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
 .catalog-section > p { margin: 0 0 12px; }
 .catalog-search { display: flex; gap: 8px; margin-bottom: 12px; }

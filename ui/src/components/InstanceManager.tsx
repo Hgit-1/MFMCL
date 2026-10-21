@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Download, Layers3, PackageOpen, RefreshCw, Search, Trash2, Upload, AlertTriangle } from 'lucide-react'
+import { Download, Layers3, PackageOpen, RefreshCw, Search, ShieldCheck, Trash2, Upload, AlertTriangle } from 'lucide-react'
 import { Dialog } from './Dialog'
 import type { InstanceRecord } from '../types'
 import { isDesktopShell } from '../api'
@@ -26,6 +26,7 @@ function normalizeReport(report: ModUpdateReport): { fileName: string } & ({ kin
 type ClientUpdate = { upToDate: boolean; changedFiles: number }
 type CatalogMod = { projectId: string; title: string; description: string; author: string; downloads: number; follows: number; iconUrl: string | null }
 type CatalogVersion = { versionId: string; versionNumber: string; dateCreated: string; fileName: string; url: string; sha1: string; size: number }
+type ModIssue = { severity: 'warning' | 'error'; code: string; message: string; files: string[] }
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
 
 export function InstanceManager({ instances, onChanged, onNotice }: { instances: InstanceRecord[]; onChanged: () => Promise<void>; onNotice: (text: string) => void }) {
@@ -44,6 +45,7 @@ export function InstanceManager({ instances, onChanged, onNotice }: { instances:
   const [searchResults, setSearchResults] = useState<CatalogMod[] | null>(null)
   const [versionTarget, setVersionTarget] = useState<CatalogMod | null>(null)
   const [versions, setVersions] = useState<CatalogVersion[] | null>(null)
+  const [issues, setIssues] = useState<ModIssue[] | null>(null)
   const target = instances.find(i => i.id === targetId) ?? instances[0]
 
   useEffect(() => {
@@ -77,6 +79,13 @@ export function InstanceManager({ instances, onChanged, onNotice }: { instances:
     setMods(await invoke<Mod[]>('list_mods', { instanceId: target.id }))
     setUpdateReports(current => current?.filter(report => report.fileName !== update.fileName) ?? null)
     onNotice(`已更新 ${update.newFileName}；旧文件保留为 ${update.fileName}.old。`)
+  })
+  const checkCompatibility = () => run(async () => {
+    setIssues(null)
+    const findings = await invoke<ModIssue[]>('inspect_mods', { instanceId: target.id })
+    setIssues(Array.isArray(findings) ? findings : [])
+    const errors = (findings as ModIssue[]).filter(issue => issue.severity === 'error').length
+    onNotice(errors ? `发现 ${errors} 个错误级别的兼容性问题。` : '静态检查未发现问题；这不代表一定兼容。')
   })
   const checkClient = () => run(async () => {
     setClientUpdate(null)
@@ -135,9 +144,15 @@ export function InstanceManager({ instances, onChanged, onNotice }: { instances:
         {loading ? <p role="status">正在读取模组…</p> : mods.length ? <ul className="mod-file-list">{mods.map(mod => <li key={mod.fileName}><span title={mod.fileName}>{mod.fileName}<small>{Math.ceil(mod.size / 1024)} KB</small></span><button className="button-secondary" disabled={busy} onClick={() => void run(async () => { await invoke('set_mod_enabled', { instanceId: target.id, fileName: mod.fileName, enabled: !mod.enabled }); setMods(await invoke<Mod[]>('list_mods', { instanceId: target.id })) })}>{mod.enabled ? '禁用' : '启用'}</button></li>)}</ul> : <p className="empty-management">mods 目录中还没有模组。</p>}
         <div className="management-buttons">
           <button className="button-secondary" disabled={busy || !mods.length || (target.loader !== 'fabric' && !target.loader.startsWith('fabric') && target.loader !== 'quilt' && !target.loader.startsWith('quilt'))} title={mods.length ? '检查 Modrinth 上的新版本' : '没有已安装的模组'} onClick={checkUpdates}><RefreshCw size={15} />{busy ? '正在检查…' : '检查模组更新'}</button>
+          <button className="button-secondary" disabled={busy || !mods.length} title="静态读取模组元数据，检查缺失依赖与冲突；不会执行模组代码" onClick={checkCompatibility}><ShieldCheck size={15} />检查兼容性</button>
           <button className="button-secondary" disabled={busy} onClick={() => void run(async () => { if (!window.confirm('导出会包含 mods/config 等本地文件，不包含存档。请确认你有权再分发这些文件，并自行检查配置中的私密信息。继续？')) return; const directory = await open({ directory: true }); if (typeof directory !== 'string') return; const path = await invoke<string>('export_modpack', { instanceId: target.id, directory, rightsConfirmed: true }); onNotice(`已导出到 ${path}`) })}><Upload size={15} />导出整合包</button>
         </div>
         <p className="muted-note">检查更新会把已安装模组文件的 SHA-1 哈希发送给 Modrinth 以查询新版本；仅用于本次查询。旧模组更新后会保留为 .old 文件。</p>
+        {issues && <div className="mod-issue-list" aria-live="polite">
+          {issues.length === 0 ? <p className="empty-management">静态检查未发现缺失依赖或冲突。这是基于模组元数据的尽力检查，不代表一定兼容。</p> : issues.map(issue => <div key={issue.code + issue.files.join()} className={`mod-issue-row ${issue.severity === 'error' ? 'is-error' : ''}`}>
+            <span className="mod-issue-copy"><strong>{issue.severity === 'error' ? '错误' : '警告'}</strong><small>{issue.message}</small>{issue.files.length > 0 && <small>涉及：{issue.files.join('、')}</small>}</span>
+          </div>)}
+        </div>}
         {updateReports && <div className="mod-update-list" aria-live="polite">
           {updateReports.filter(report => report.kind !== 'up_to_date').length === 0 ? <p className="empty-management">所有已识别的模组都是最新版本。</p> : updateReports.filter(report => report.kind !== 'up_to_date').map(report => <div key={report.fileName} className={`mod-update-row ${report.kind === 'available' ? 'is-available' : ''}`}>
             <span className="mod-update-copy" title={report.fileName}>

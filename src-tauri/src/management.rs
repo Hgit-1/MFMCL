@@ -126,6 +126,16 @@ pub fn list_mods(
 ) -> Result<Vec<ModFile>, String> {
     mods::list_mods(&instance(&store, &instance_id)?)
 }
+
+/// Static, best-effort mod compatibility findings (deps/conflicts). Reads JAR
+/// metadata only; never loads classes or executes mod code.
+#[tauri::command]
+pub fn inspect_mods(
+    instance_id: String,
+    store: State<'_, LauncherStore>,
+) -> Result<Vec<mods::ModIssue>, String> {
+    Ok(mods::inspect_mods(&instance(&store, &instance_id)?))
+}
 #[tauri::command]
 pub fn set_mod_enabled(
     instance_id: String,

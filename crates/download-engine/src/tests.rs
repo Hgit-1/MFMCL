@@ -399,6 +399,59 @@ async fn cancel_interrupts_stalled_response_and_retry_wait() {
     ));
 }
 
+/// Opt-in end-to-end test against a REAL aria2 sidecar binary (not a mock):
+/// set MFMCL_ARIA2_BINARY to a 1.37.0 aria2c. Mirrors the runtime path —
+/// loopback RPC session, checksum-pinned download, verification back in the
+/// engine, and graceful shutdown — without touching the public network.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires a real aria2 1.37.0 binary via MFMCL_ARIA2_BINARY"]
+async fn real_aria2_sidecar_downloads_and_verifies_through_the_engine() {
+    let binary =
+        std::env::var("MFMCL_ARIA2_BINARY").expect("MFMCL_ARIA2_BINARY must point to aria2c");
+    let dir = TestDir::new();
+    let server = mock(|_, _| Reply::ok(b"real aria2 payload")).await;
+    let session = aria2::Aria2Session::start(
+        std::path::Path::new(&binary),
+        &dir.0.join("aria2-home"),
+        aria2::Aria2Options::default(),
+    )
+    .await
+    .expect("real aria2 must start with a loopback RPC session");
+    let good = artifact(&dir, &server.url, b"real aria2 payload");
+    DownloadEngine::new(DownloadSettings {
+        aria2_enabled: true,
+        ..Default::default()
+    })
+    .unwrap()
+    .with_aria2(session.clone())
+    .download(&good, None)
+    .await
+    .expect("verified download via the real sidecar");
+    assert_eq!(
+        fs::read(&good.destination).await.unwrap(),
+        b"real aria2 payload"
+    );
+    // A tampered checksum must be rejected by the engine, not published.
+    let mut tampered = artifact(&dir, &server.url, b"real aria2 payload");
+    tampered.destination = dir.0.join("tampered.bin");
+    tampered.sha1 = Some("0".repeat(40));
+    let result = DownloadEngine::new(DownloadSettings {
+        aria2_enabled: true,
+        ..Default::default()
+    })
+    .unwrap()
+    .with_aria2(session.clone())
+    .download(&tampered, None)
+    .await;
+    assert!(
+        matches!(result, Err(DownloadError::Integrity(_))),
+        "{result:?}"
+    );
+    assert!(!tampered.destination.exists());
+    session.shutdown().await.expect("graceful shutdown");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn aria2_failure_falls_back_with_a_single_source_and_redacts_secret() {
