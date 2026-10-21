@@ -17,6 +17,14 @@
 .management-error { display: flex; gap: 8px; align-items: center; color: var(--danger) !important; }
 .empty-management { padding: 18px 0; font-size: 14px; color: var(--muted); }
 .mod-file-list { list-style: none; padding: 0; margin: 16px 0; max-height: 300px; overflow: auto; }
+.mod-update-list { margin-top: 14px; display: grid; gap: 8px; }
+.mod-update-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.mod-update-row.is-available { border-color: var(--accent-border); }
+.mod-update-copy { flex: 1; min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.mod-update-copy small { color: var(--quiet); }
+.mod-update-list .button-primary { justify-self: start; }
+.client-update-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.client-update-section p { margin: 0 0 12px; }
 .mod-file-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .mod-file-list li > span { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
 .mod-file-list small { display: block; color: var(--quiet); margin-top: 4px; }

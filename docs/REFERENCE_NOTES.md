@@ -26,8 +26,7 @@ These notes capture product and configuration patterns to investigate, not code 
 - A limited read-only review of the local `PCL/` reference focused on settings separation, download fallback, progress, and diagnostics. Several implementations are legacy-specific; no source is imported or ported.
 
 ## PCL2 login and update interaction review (read-only, 2026-10-21)
-
-A second limited read-only pass over the local `PCL/` checkout examined only the public login pages and the settings/about pages. The open-source build ships its self-update implementation as stubs (`ModSecret.vb` shows `UpdateCheckByButton` returning "该版本中不包含更新功能……"), so nothing update-related could be taken even as reference; only the visible interaction wording and settings layout were noted. No code, assets, strings, or branding are reused; the principles below are re-implemented from scratch against our own architecture.
+A second limited read-only pass over the local `PCL/` checkout examined only the public login pages and the settings/about pages, plus the mod-update wording in `PageInstanceMod.xaml.vb`. The open-source build ships its launcher self-update implementation as stubs (`ModSecret.vb` shows `UpdateCheckByButton` returning "该版本中不包含更新功能……"), so nothing update-related could be taken even as reference; only the visible interaction wording and settings layout were noted. No code, assets, strings, or branding are reused; the principles below are re-implemented from scratch against our own architecture.
 
 Login principles abstracted from PCL2's public pages:
 
@@ -42,7 +41,13 @@ Update principles abstracted from PCL2's settings/about wording (implementation 
 - Checks run in the background at startup; the about page also offers a manual "check update" button.
 - When an update has been downloaded, it is applied on next restart rather than replacing a running binary.
 
-For MFMCL these translate to: manage saved accounts (list, preselect, delete, silent refresh — refresh already happens at launch), and an update-check framework with an explicit user-chosen policy, manual check entry, changelog display, and hash-verified download to a user-chosen folder. Without code signing and update-signing keys, in-place self-replacement must stay disabled; downloads are verified against a pinned SHA-256 in our own manifest and the user runs the installer explicitly.
+Mod-update principles abstracted from PCL2's public mod page wording:
+
+- Before replacing anything, the launcher warns that new mod versions may break saves or other mods, advises against self-updating inside modpacks, asks the user to back up saves and read changelogs, and promises the previous file is recoverable.
+- The update flow shows a "可更新 (N)" style summary, updates files one by one, keeps the old file until the new one is in place, and reports how many mods were updated.
+- Client file updates re-check against official metadata; the game data itself is never silently mutated while unrecoverable.
+
+For MFMCL these translate to: manage saved accounts (list, preselect, delete, silent refresh — refresh already happens at launch); an update-check framework with an explicit user-chosen policy, manual check entry, changelog display, and hash-verified download to a user-chosen folder; and a Modrinth mod-update check that discloses hash sharing, confirms the risk in the same spirit (backup saves, modpack caution), verifies SHA-1 from Modrinth metadata, and keeps the previous JAR as a `.old` file. Without code signing and update-signing keys, in-place self-replacement must stay disabled; downloads are verified against a pinned SHA-256 in our own manifest and the user runs the installer explicitly.
 
 ## Sources
 

@@ -5,7 +5,7 @@ This record distinguishes implemented code, automated checks, and unverified rel
 ## Automated checks performed
 
 - Core Rust suites: `mc-metadata`, `download-engine`, `launcher-core` (including backups, mod JAR inspection, update-manifest parsing/version ordering, and account-removal store tests), and `launcher-auth`. Coverage includes source trust, bounded retry and cancellation, validated Range resume, corrupt hash rejection, authentication state/PKCE, Microsoft entitlement checks, Yggdrasil profile selection, launch placeholder expansion, secret redaction, interrupted task recovery, mod toggles, ZIP stream limits and import rollback.
-- Frontend: TypeScript/Vite production build, Oxlint, and Playwright browser tests for HTTPS skin-server consent/role selection, Microsoft command wiring and error display, repeated offline confirmation, installation pause/resume/cancel/retry, backup flows, saved-account removal with credential warnings, launcher update check/download/policy, invalid settings, theme contrast, and narrow-screen navigation. Native APIs in these tests are mocked.
+- Frontend: TypeScript/Vite production build, Oxlint, and Playwright browser tests for HTTPS skin-server consent/role selection, Microsoft command wiring and error display, repeated offline confirmation, installation pause/resume/cancel/retry, backup flows, saved-account removal with credential warnings, launcher update check/download/policy, Modrinth mod-update disclosure/warning/verified replacement, client update checks, invalid settings, theme contrast, and narrow-screen navigation. Native APIs in these tests are mocked; no live Modrinth/Mojang request is made.
 - Native Windows backend: `cargo check --target x86_64-pc-windows-gnu -p mfmcl-desktop --tests`, using real MinGW tools. This type-checks desktop commands/tests and the Windows credential adapter; it does not link or execute a Windows installer.
 - Linux credential adapter: `cargo check -p launcher-auth --features native-credentials`. The OS credential service itself has not been exercised with a real account.
 - Development entry point: the documented Tauri npm command now finds the project and starts Vite on `127.0.0.1:1420`. Native Linux compilation remains blocked by missing GTK/WebKit development packages in this container.
@@ -15,6 +15,10 @@ This record distinguishes implemented code, automated checks, and unverified rel
 ## Launcher self-update status
 
 The PCL2-inspired update feature is implemented as check/prompt/verified-download: a background startup check when the policy is "notify" (quiet failures), a manual check with changelog in settings, and a SHA-256-verified installer download into a user-chosen folder. The running binary is never replaced in place: without update-signing keys, automatic self-replacement would be unsafe, so the user runs the installer explicitly. Builds must set `MFMCL_UPDATE_MANIFEST` at compile time; without it, checks honestly report that no update source is configured. No production update endpoint exists yet.
+
+## Mod and client update status
+
+Mod update checks use Modrinth's documented hash-lookup and project-version endpoints against locally mocked responses only; no live Modrinth query or real mod replacement has been executed in this environment. Client update checks compare a fingerprint of artifact-bearing metadata (client JAR, asset index, libraries, logging) against the locally stored official profile; both fingerprints and republish detection are unit-tested, but no live Mojang republish scenario has been verified.
 
 ## CI configured, not locally proven
 

@@ -1,10 +1,12 @@
 use download_engine::{DownloadEngine, DownloadProgress, DownloadSettings};
 use launcher_core::{
-    CreateInstanceInput, InstanceRecord, InstanceState, LauncherStore,
+    ClientUpdateStatus, CreateInstanceInput, InstanceRecord, InstanceState, LauncherStore,
     loaders::{self, LoaderKind, LoaderVersion},
+    mod_updates::{self, ModUpdate, ModUpdateReport},
     modpacks::{self, PackPreview},
     mods::{self, ModFile},
 };
+use launcher_core::check_client_update as client_update_status_for;
 use std::{
     collections::HashSet,
     path::PathBuf,
@@ -134,6 +136,68 @@ pub fn set_mod_enabled(
 ) -> Result<(), String> {
     let _guard = operations.acquire(&instance_id)?;
     mods::set_mod_enabled(&instance(&store, &instance_id)?, &file_name, enabled)
+}
+
+/// Query Modrinth for newer mod versions. The frontend has already disclosed
+/// that installed file hashes are sent to Modrinth for this lookup.
+#[tauri::command]
+pub async fn check_mod_updates(
+    instance_id: String,
+    store: State<'_, LauncherStore>,
+    operations: State<'_, Operations>,
+) -> Result<Vec<ModUpdateReport>, String> {
+    let _guard = operations.acquire(&instance_id)?;
+    let target = instance(&store, &instance_id)?;
+    let mods_dir = target.game_dir.join("mods");
+    let files = mods::list_mods(&target)?;
+    let names: Vec<String> = files.iter().map(|file| file.file_name.clone()).collect();
+    let client = mod_updates::modrinth_client()?;
+    mod_updates::check_mod_updates(&client, &target, &mods_dir, &names).await
+}
+
+#[tauri::command]
+pub async fn update_mod(
+    instance_id: String,
+    update: ModUpdate,
+    app: AppHandle,
+    store: State<'_, LauncherStore>,
+    operations: State<'_, Operations>,
+    downloads: State<'_, Arc<crate::downloads::Downloads>>,
+) -> Result<String, String> {
+    let _guard = operations.acquire(&instance_id)?;
+    let target = instance(&store, &instance_id)?;
+    let control = downloads.start(
+        &instance_id,
+        &format!("更新模组 {}", update.new_file_name),
+        &store,
+        &app,
+    )?;
+    let engine = engine(&store)?.with_control(control);
+    let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
+    let result =
+        mod_updates::apply_mod_update(&target, &update, &target.game_dir.join("mods"), &engine)
+            .await;
+    // Emit final progress for the single artifact so task history closes cleanly.
+    drop(tx);
+    let _ = progress_task.await;
+    downloads.finish(&instance_id, result.is_ok(), &store, &app)?;
+    result
+}
+
+/// Compare the installed official profile against the current Mojang manifest.
+#[tauri::command]
+pub async fn check_client_update(
+    instance_id: String,
+    store: State<'_, LauncherStore>,
+) -> Result<ClientUpdateStatus, String> {
+    let target = instance(&store, &instance_id)?;
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())?;
+    client_update_status_for(&client, &target)
+        .await
+        .map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn preview_modpack(path: String) -> Result<PackPreview, String> {

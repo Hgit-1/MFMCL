@@ -2,9 +2,11 @@ use crate::{InstanceRecord, InstanceState, LauncherStore, StoreError};
 use download_engine::{ArtifactSpec, DownloadEngine, DownloadError, DownloadProgress};
 use futures_util::{StreamExt, TryStreamExt};
 use mc_metadata::{
-    AssetIndex, Library, LibraryRule, SourcePreference, fetch_manifest, fetch_version_metadata,
+    Artifact, AssetIndex, AssetIndexRef, GameVersionMetadata, Library, LibraryRule,
+    SourcePreference, fetch_manifest, fetch_version_metadata,
 };
 use regex::Regex;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
@@ -60,6 +62,69 @@ pub async fn install_vanilla(
             Err(error)
         }
     }
+}
+
+/// Compare the locally installed official profile against the current official
+/// manifest. Any difference in the artifact-bearing parts (client JAR, asset
+/// index, libraries, logging config) means Mojang republished files and the
+/// repair install should run. Loader overlays are version-scoped and untouched.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientUpdateStatus {
+    pub up_to_date: bool,
+    pub changed_files: usize,
+}
+
+pub async fn check_client_update(
+    client: &reqwest::Client,
+    instance: &InstanceRecord,
+) -> Result<ClientUpdateStatus, InstallError> {
+    if instance.state != InstanceState::Ready {
+        return Err(InstallError::InvalidMetadata(
+            "请先完成安装后再检查客户端更新。".to_owned(),
+        ));
+    }
+    let local_path = instance
+        .instance_dir
+        .join("versions")
+        .join(&instance.game_version)
+        .join(format!("{}.json", instance.game_version));
+    let local_bytes = tokio::fs::read(&local_path).await?;
+    let local: GameVersionMetadata = serde_json::from_slice(&local_bytes).map_err(|error| {
+        InstallError::InvalidMetadata(format!("local profile parse failed: {error}"))
+    })?;
+    let manifest = fetch_manifest(client, SourcePreference::Official).await?;
+    let remote = fetch_version_metadata(
+        client,
+        &manifest,
+        &instance.game_version,
+        SourcePreference::Official,
+    )
+    .await?;
+    let changed = artifact_fingerprint(&remote) != artifact_fingerprint(&local);
+    Ok(ClientUpdateStatus {
+        up_to_date: !changed,
+        changed_files: usize::from(changed),
+    })
+}
+
+/// Stable digest over the artifact-bearing parts of a profile.
+fn artifact_fingerprint(metadata: &GameVersionMetadata) -> String {
+    #[derive(serde::Serialize)]
+    struct ArtifactView<'a> {
+        downloads: &'a std::collections::HashMap<String, Artifact>,
+        asset_index: Option<&'a AssetIndexRef>,
+        libraries: &'a [Library],
+        logging: Option<&'a serde_json::Value>,
+    }
+    let view = ArtifactView {
+        downloads: &metadata.downloads,
+        asset_index: metadata.asset_index.as_ref(),
+        libraries: &metadata.libraries,
+        logging: metadata.logging.as_ref(),
+    };
+    let bytes = serde_json::to_vec(&view).expect("metadata view serialization");
+    hex::encode(Sha256::digest(&bytes))
 }
 
 async fn install_inner(
@@ -325,6 +390,34 @@ async fn install_inner(
 #[cfg(test)]
 mod asset_tests {
     use super::*;
+
+    #[test]
+    fn client_update_fingerprint_tracks_artifact_changes_only() {
+        let base: GameVersionMetadata = serde_json::from_value(serde_json::json!({
+            "id": "1.21.4",
+            "downloads": {"client": {"url": "https://piston-meta.mojang.com/a.jar", "sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size": 1}},
+            "assetIndex": {"id": "5", "url": "https://piston-meta.mojang.com/5.json", "sha1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "size": 2, "totalSize": 3},
+            "libraries": [{"name": "g:a:1", "downloads": {"artifact": {"url": "https://libraries.minecraft.net/g.jar", "sha1": "cccccccccccccccccccccccccccccccccccccccc", "size": 4}}}],
+            "arguments": {"game": ["--x"], "jvm": ["-Dy=1"]}
+        })).unwrap();
+        let mut republished = base.clone();
+        republished
+            .downloads
+            .get_mut("client")
+            .unwrap()
+            .sha1
+            .replace("dddddddddddddddddddddddddddddddddddddddd".to_owned());
+        assert_ne!(
+            artifact_fingerprint(&republished),
+            artifact_fingerprint(&base)
+        );
+        // Cosmetic-only changes (release time/type/argument text) do not trigger a repair.
+        let mut cosmetic = base.clone();
+        cosmetic
+            .extra
+            .insert("time".to_owned(), serde_json::json!("2026-01-01T00:00:00Z"));
+        assert_eq!(artifact_fingerprint(&cosmetic), artifact_fingerprint(&base));
+    }
 
     #[cfg(unix)]
     #[test]

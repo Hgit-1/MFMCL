@@ -5,7 +5,7 @@
 - `crates/mc-metadata`: official Minecraft version manifest, version profile, library, launch argument, and asset-index models. The official version manifest is the trust root; mirror-sourced version profiles are accepted only after matching the official SHA-1 entry.
 - `crates/download-engine`: explicit official/BMCLAPI source adapters, verified fallback candidates, bounded concurrency, retries, safe Range resume, pause/cancel checkpoints, temporary-file writes, SHA-1/SHA-256/size validation, atomic publication, and optional aria2 RPC integration.
 - `crates/launcher-auth`: Microsoft public-client PKCE authorization and Xbox/XSTS/Java entitlement checks; HTTPS Yggdrasil authentication; backend-only credential/session types and OS credential-store adapter.
-- `crates/launcher-core`: SQLite settings, account references (including per-account removal semantics), isolated instances and download history; vanilla install; supported Fabric/Quilt profile merge; mod enable/disable, inspection and Modrinth pack import/export; hash-checked backups; Java launch preparation; update-manifest parsing/version ordering; and local crash diagnostics.
+- `crates/launcher-core`: SQLite settings, account references (including per-account removal semantics), isolated instances and download history; vanilla install and official-manifest client update checks; supported Fabric/Quilt profile merge; mod enable/disable, inspection, Modrinth pack import/export and Modrinth mod updates; hash-checked backups; Java launch preparation; update-manifest parsing/version ordering; and local crash diagnostics.
 - `src-tauri`: desktop commands, OS app-data paths, keyring and system-browser adapters, loopback Microsoft callback server, launcher self-update check/download, Java child-process/log events, task controls, and native file/directory dialogs.
 - `ui`: Chinese-first React/TypeScript interface, login consent/profile dialogs, beginner-oriented setup, theme controls, tasks, loader/mod manager, and diagnostics.
 
@@ -23,6 +23,12 @@ flowchart LR
 ```
 
 The official index is never mirror-selected. Each metadata/artifact download keeps its original official URL and optional explicit mirror URL. The downloader does not apply a blanket host rewrite. Unhashed content is not combined across sources; modpack downloads require a provider hash. Files are verified before publication.
+
+## Mod updates and client update checks
+
+Mod update checks query Modrinth's public API with the SHA-1 hashes of installed mod JARs; the interface discloses this before checking. New releases are matched to the instance's exact game version and loader, downloaded only from `cdn.modrinth.com`, verified against Modrinth's SHA-1, and published by renaming: the previous JAR becomes `<name>.jar.old` and stays recoverable. Replacement happens one mod at a time with rollback if the rename fails; a risk confirmation covering save backups and modpack caution is always required. Mods found only on other platforms are reported as unrecognised rather than guessed.
+
+Minecraft client update checks re-read the official manifest and version profile (still SHA-1-verified against the manifest) and compare the artifact-bearing parts — client JAR, asset index, libraries, and logging config — with the locally stored profile. Cosmetic metadata changes never trigger a repair. Applying an update runs the normal verified install path, which re-downloads only changed files; Fabric/Quilt overlays are version-scoped and remain untouched.
 
 ## Storage and secret boundaries
 
