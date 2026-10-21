@@ -1,5 +1,4 @@
 use crate::InstanceRecord;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -285,12 +284,7 @@ fn read_bounded(path: &Path, max_bytes: u64) -> Result<String, DiagnosticError> 
 }
 
 fn redact(text: &str) -> String {
-    static SECRET_PATTERN: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let pattern = SECRET_PATTERN.get_or_init(|| {
-        Regex::new(r#"(?i)[\"']?(access[_-]?token|client[_-]?token|authorization|password|refresh[_-]?token)[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|Bearer\s+[^\s,;]+|[^\s,;]+)"#)
-            .expect("valid diagnostic redaction expression")
-    });
-    pattern.replace_all(text, "$1=[REDACTED]").into_owned()
+    crate::logs::redact_log(text, &[])
 }
 
 fn unique_archive_path(directory: &Path) -> PathBuf {

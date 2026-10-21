@@ -5,6 +5,8 @@
 node_modules/
 dist/
 .vite/
+playwright-report/
+test-results/
 
 # Rust
 /target/

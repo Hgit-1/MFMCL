@@ -39,6 +39,12 @@ import {
 } from 'lucide-react'
 import { beginLaunch, createInstance, createOfflineAccount, installInstance, inspectJava, isDesktopShell, listAccounts, listInstances, listVersions, loadSettings, readSettings, saveSettings, selectAccount } from './api'
 import type { AccountRecord, DownloadEvent, DownloadSource, InstanceRecord, LauncherSettings, PageId, ThemeId, VersionItem } from './types'
+import { accessibleAccent } from './theme'
+import { InstanceManager } from './components/InstanceManager'
+import { InstallationTasks } from './components/InstallationTasks'
+import { MicrosoftLoginDialog, SkinLoginDialog } from './components/AccountLoginDialogs'
+import './components/account-login.css'
+import './components/management.css'
 import './App.css'
 
 const initialSettings: LauncherSettings = {
@@ -50,6 +56,8 @@ const initialSettings: LauncherSettings = {
   ariaConnections: 8,
   ariaSplits: 4,
   showGameLog: true,
+  javaPath: '',
+  memoryMb: 2048,
 }
 
 const themeChoices: { id: ThemeId; label: string; color: string; note: string }[] = [
@@ -81,7 +89,7 @@ function App() {
   const [versions, setVersions] = useState<VersionItem[]>([])
   const [versionSource, setVersionSource] = useState<'loading' | 'official' | 'preview'>(() => isDesktopShell() ? 'loading' : 'preview')
   const [versionLoading, setVersionLoading] = useState(() => isDesktopShell())
-  const [dialog, setDialog] = useState<'instance' | 'offline-account' | 'skin-account' | 'account-picker' | null>(null)
+  const [dialog, setDialog] = useState<'instance' | 'offline-account' | 'skin-account' | 'microsoft-account' | 'account-picker' | null>(null)
   const [toast, setToast] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [instanceName, setInstanceName] = useState('我的第一个世界')
@@ -100,11 +108,25 @@ function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = settings.mode
     document.documentElement.dataset.palette = settings.theme
-    document.documentElement.style.setProperty('--user-accent', settings.customAccent)
+    const media = window.matchMedia('(prefers-color-scheme: light)')
+    const applyPalette = () => {
+      const palette = accessibleAccent(settings.customAccent, settings.mode === 'light' || (settings.mode === 'system' && media.matches))
+      document.documentElement.style.setProperty('--user-accent', palette.fill)
+      document.documentElement.style.setProperty('--accent-ink', palette.ink)
+      document.documentElement.style.setProperty('--accent-text', palette.text)
+    }
+    applyPalette()
+    media.addEventListener('change', applyPalette)
+    return () => media.removeEventListener('change', applyPalette)
+  }, [settings.customAccent, settings.mode, settings.theme])
+
+  useEffect(() => {
     document.documentElement.style.setProperty('--custom-background', settings.customBackground ? `url("${settings.customBackground}")` : 'none')
     if (!settingsLoaded) return
-    localStorage.setItem('mfmcl-settings', JSON.stringify(settings))
-    void saveSettings(settings, !showAdvanced).catch(() => undefined)
+    const timer = window.setTimeout(() => {
+      void saveSettings(settings, !showAdvanced).catch(() => setToast('设置保存失败；请检查存储空间和权限。'))
+    }, 250)
+    return () => window.clearTimeout(timer)
   }, [settings, showAdvanced, settingsLoaded])
 
   useEffect(() => {
@@ -113,7 +135,8 @@ function App() {
       setSettings(stored)
       setCustomAccent(stored.customAccent)
       setShowAdvanced(!beginnerMode)
-    }).catch(() => undefined).finally(() => setSettingsLoaded(true))
+      setSettingsLoaded(true)
+    }).catch(() => setToast('无法读取本地设置，已停止自动保存以避免覆盖原配置。'))
   }, [])
 
   useEffect(() => {
@@ -238,6 +261,16 @@ function App() {
     }
   }
 
+  const handleStop = async (instanceId: string) => {
+    if (!window.confirm('关闭正在运行的 Minecraft 进程？未保存的游戏进度可能会丢失。')) return
+    try {
+      await invoke('stop_game', { instanceId })
+      setToast('已请求关闭游戏进程。')
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '无法关闭游戏进程。')
+    }
+  }
+
   const handleInstall = async (instance: InstanceRecord) => {
     if (instance.state === 'ready') return
     setDownloadEvents([])
@@ -296,23 +329,16 @@ function App() {
     }
   }
 
-  const addSkinAccount = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const form = new FormData(event.currentTarget)
-    const name = String(form.get('skinName') ?? '').trim()
-    const server = String(form.get('skinServer') ?? '').trim()
-    if (!name || !server) {
-      setToast('请填写账号名称和认证服务器地址。')
-      return
-    }
-    try {
-      const url = new URL(server)
-      if (url.protocol !== 'https:' && url.hostname !== 'localhost') throw new Error('认证地址应使用 HTTPS。')
-    } catch (error) {
-      setToast(error instanceof Error ? error.message : '认证服务器地址无效。')
-      return
-    }
-    setToast('皮肤站认证接口尚未连接；账号信息不会保存在此预览界面。')
+  const handleAuthenticated = (account: AccountRecord) => {
+    // Display the newly saved profile immediately, then refresh from desktop storage.
+    setAccounts((current) => [account, ...current.filter((item) => item.id !== account.id).map((item) => ({ ...item, selected: false }))])
+    setSelectedAccount(account.id)
+    setDialog(null)
+    setToast(`${account.kind === 'microsoft' ? 'Microsoft' : '皮肤站'} 账户“${account.displayName}”已连接。`)
+    void listAccounts().then((items) => {
+      setAccounts(items)
+      setSelectedAccount(items.find((item) => item.selected)?.id ?? account.id)
+    }).catch(() => setToast('登录已完成，但账户列表刷新失败；请重新打开应用检查账户。'))
   }
 
   return (
@@ -338,7 +364,7 @@ function App() {
         <div className="sidebar-divider" />
         <div className="sidebar-section-label">快捷入口</div>
         <button className="nav-item nav-muted" onClick={() => setDialog('instance')}><Plus size={18} strokeWidth={1.8} /><span>创建新实例</span></button>
-        <button className="nav-item nav-muted" onClick={() => setToast('导入向导将在实例管理模块接入。')}><FolderOpen size={18} strokeWidth={1.8} /><span>导入游戏目录</span></button>
+        <button className="nav-item nav-muted" onClick={() => setPage('library')}><FolderOpen size={18} strokeWidth={1.8} /><span>导入整合包</span></button>
 
         <div className="sidebar-bottom">
           <div className="sidebar-help-card">
@@ -348,7 +374,7 @@ function App() {
           </div>
           <div className="sidebar-footer">
             <div className="avatar avatar-guest">G</div>
-            <div className="profile-meta"><strong>{accounts.find((item) => item.id === selectedAccount)?.displayName ?? '访客模式'}</strong><span>{accounts.find((item) => item.id === selectedAccount)?.kind === 'offline' ? '离线档案' : '尚未登录'}</span></div>
+            <div className="profile-meta"><strong>{accounts.find((item) => item.id === selectedAccount)?.displayName ?? '访客模式'}</strong><span>{accountKindLabel(accounts.find((item) => item.id === selectedAccount))}</span></div>
             <button className="icon-button profile-more" aria-label="账户选项" onClick={() => setDialog('account-picker')}><ChevronDown size={16} /></button>
           </div>
         </div>
@@ -370,19 +396,21 @@ function App() {
         </header>
 
         <div className="page-content">
-          {page === 'home' && <HomePage instances={instances} javaInfo={javaInfo} gameLogs={gameLogs} gameStatus={gameStatus} showGameLog={settings.showGameLog} onCreate={() => setDialog('instance')} onBrowse={() => setPage('library')} onSettings={() => setPage('settings')} onLaunch={handleLaunch} onInstall={handleInstall} onDiagnostics={(id) => void handleDiagnostics(id)} onAccount={() => setDialog('offline-account')} accountName={accounts.find((item) => item.id === selectedAccount)?.displayName} />}
+          {page === 'home' && <HomePage instances={instances} javaInfo={javaInfo} gameLogs={gameLogs} gameStatus={gameStatus} showGameLog={settings.showGameLog} onCreate={() => setDialog('instance')} onBrowse={() => setPage('library')} onSettings={() => setPage('settings')} onLaunch={handleLaunch} onStop={handleStop} onInstall={handleInstall} onDiagnostics={(id) => void handleDiagnostics(id)} onAccount={() => setDialog('offline-account')} accountName={accounts.find((item) => item.id === selectedAccount)?.displayName} />}
           {page === 'library' && <LibraryPage instances={instances} search={search} setSearch={setSearch} onCreate={() => setDialog('instance')} versionSource={versionSource} onInstall={handleInstall} onLaunch={handleLaunch} filteredVersions={filteredVersions} versionLoading={versionLoading} onToast={setToast} />}
-          {page === 'downloads' && <DownloadsPage source={settings.downloadSource} progress={downloadEvents} onCreate={() => setDialog('instance')} onToast={setToast} />}
-          {page === 'settings' && <SettingsPage settings={settings} updateSettings={updateSettings} showAdvanced={showAdvanced} setShowAdvanced={setShowAdvanced} customAccent={customAccent} setCustomAccent={setCustomAccent} onSkinAccount={() => setDialog('skin-account')} onOfflineAccount={() => setDialog('offline-account')} onDiagnostics={() => void handleDiagnostics()} onToast={setToast} />}
+          {page === 'library' && <InstanceManager instances={instances} onChanged={async () => setInstances(await listInstances())} onNotice={setToast} />}
+          {page === 'downloads' && <><DownloadsPage source={settings.downloadSource} progress={downloadEvents} onCreate={() => setDialog('instance')} onToast={setToast} /><InstallationTasks onNotice={setToast} retryableInstances={instances.filter((item) => item.state !== 'ready').map((item) => item.id)} onRetry={(id) => { const target = instances.find((item) => item.id === id); if (target) void handleInstall(target) }} /></>}
+          {page === 'settings' && <SettingsPage settings={settings} updateSettings={updateSettings} showAdvanced={showAdvanced} setShowAdvanced={setShowAdvanced} customAccent={customAccent} setCustomAccent={setCustomAccent} onMicrosoftAccount={() => setDialog('microsoft-account')} onSkinAccount={() => setDialog('skin-account')} onOfflineAccount={() => setDialog('offline-account')} onDiagnostics={() => void handleDiagnostics()} onToast={setToast} />}
         </div>
 
         <footer className="app-footer"><span><span className="footer-status-dot" />系统状态正常</span><span>预览构建 · 0.1.0</span><button onClick={() => setToast('完整版本信息将在 About 页面提供。')}>关于 MFMCL <ArrowUpRight size={12} /></button></footer>
       </main>
 
       {dialog === 'instance' && <InstanceDialog versions={versions} loading={versionLoading} versionSource={versionSource} name={instanceName} setName={setInstanceName} selectedVersion={selectedVersion} setSelectedVersion={setSelectedVersion} onClose={() => setDialog(null)} onSubmit={handleCreateInstance} />}
-      {dialog === 'offline-account' && <OfflineAccountDialog onClose={() => setDialog(null)} onSubmit={addOfflineAccount} onSkin={() => setDialog('skin-account')} />}
+      {dialog === 'offline-account' && <OfflineAccountDialog onClose={() => setDialog(null)} onSubmit={addOfflineAccount} onSkin={() => setDialog('skin-account')} onMicrosoft={() => setDialog('microsoft-account')} />}
       {dialog === 'account-picker' && <AccountPickerDialog accounts={accounts} selectedAccount={selectedAccount} onClose={() => setDialog(null)} onAdd={() => setDialog('offline-account')} onSelect={async (accountId) => { try { await selectAccount(accountId); setSelectedAccount(accountId); setAccounts((current) => current.map((account) => ({ ...account, selected: account.id === accountId }))); setDialog(null) } catch (error) { setToast(error instanceof Error ? error.message : '无法切换账户。') } }} />}
-      {dialog === 'skin-account' && <SkinAccountDialog onClose={() => setDialog(null)} onSubmit={addSkinAccount} />}
+      {dialog === 'skin-account' && <SkinLoginDialog onClose={() => setDialog(null)} onAuthenticated={handleAuthenticated} />}
+      {dialog === 'microsoft-account' && <MicrosoftLoginDialog onClose={() => setDialog(null)} onAuthenticated={handleAuthenticated} />}
       {toast && <div className="toast-message" role="status"><CircleCheck size={17} /><span>{toast}</span><button aria-label="关闭通知" onClick={() => setToast('')}><X size={15} /></button></div>}
     </div>
   )
@@ -392,7 +420,7 @@ function PageHeading({ eyebrow, title, description, action }: { eyebrow: string;
   return <div className="page-heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>
 }
 
-function HomePage({ instances, javaInfo, gameLogs, gameStatus, showGameLog, onCreate, onBrowse, onSettings, onLaunch, onInstall, onDiagnostics, onAccount, accountName }: { instances: InstanceRecord[]; javaInfo: { path: string; majorVersion: number; versionText: string } | null; gameLogs: Record<string, string>; gameStatus: Record<string, { status: string; logPath: string }>; showGameLog: boolean; onCreate: () => void; onBrowse: () => void; onSettings: () => void; onLaunch: (instanceId: string) => void; onInstall: (instance: InstanceRecord) => void; onDiagnostics: (instanceId: string) => void; onAccount: () => void; accountName?: string }) {
+function HomePage({ instances, javaInfo, gameLogs, gameStatus, showGameLog, onCreate, onBrowse, onSettings, onLaunch, onStop, onInstall, onDiagnostics, onAccount, accountName }: { instances: InstanceRecord[]; javaInfo: { path: string; majorVersion: number; versionText: string } | null; gameLogs: Record<string, string>; gameStatus: Record<string, { status: string; logPath: string }>; showGameLog: boolean; onCreate: () => void; onBrowse: () => void; onSettings: () => void; onLaunch: (instanceId: string) => void; onStop: (instanceId: string) => void; onInstall: (instance: InstanceRecord) => void; onDiagnostics: (instanceId: string) => void; onAccount: () => void; accountName?: string }) {
   const activeInstance = instances[0]
   const activeStatus = activeInstance ? gameStatus[activeInstance.id] : undefined
   return (
@@ -406,6 +434,7 @@ function HomePage({ instances, javaInfo, gameLogs, gameStatus, showGameLog, onCr
           <div className="hero-badge"><span className="badge-dot" />{activeStatus?.status === 'running' ? '游戏正在运行' : activeStatus?.status === 'crashed' ? '游戏已崩溃' : activeInstance ? activeInstance.state === 'ready' ? '可以启动' : activeInstance.state === 'failed' ? '需要修复' : '已创建实例' : '准备好开始'}</div>
           <div className="hero-title-block"><p className="hero-kicker">MINECRAFT JAVA EDITION</p><h2>{activeInstance ? <>{activeInstance.name}<br /><em>{activeInstance.gameVersion}</em></> : <>一片空白，<br /><em>正好开始。</em></>}</h2><p className="hero-description">{activeInstance ? `${activeInstance.loader === 'vanilla' ? '原版' : activeInstance.loader} · ${activeInstance.state === 'ready' ? '游戏文件已安装' : '独立游戏目录已准备好'}` : '先创建一个游戏实例。版本、Java 和安装步骤，我们会陪你一起完成。'}</p></div>
           <div className="hero-actions">{activeInstance ? activeStatus?.status === 'crashed' ? <button className="button-primary" onClick={() => onDiagnostics(activeInstance.id)}><CircleAlert size={16} />查看崩溃摘要<ArrowRight size={16} /></button> : <button className="button-primary" disabled={activeStatus?.status === 'running'} onClick={() => activeInstance.state === 'ready' ? onLaunch(activeInstance.id) : onInstall(activeInstance)}>{activeStatus?.status === 'running' ? <Activity size={16} /> : activeInstance.state === 'ready' ? <Play size={16} fill="currentColor" /> : <CloudDownload size={16} />}{activeStatus?.status === 'running' ? '游戏运行中' : activeInstance.state === 'ready' ? '启动游戏' : activeInstance.state === 'failed' ? '修复实例' : '安装游戏文件'}<ArrowRight size={16} /></button> : <button className="button-primary" onClick={onCreate}><Plus size={17} />创建第一个实例<ArrowRight size={16} /></button>}<button className="button-quiet" onClick={onBrowse}>{activeInstance ? '查看实例库' : '浏览版本'}<ChevronRight size={15} /></button></div>
+          {activeInstance && activeStatus?.status === 'running' && <div className="single-game-log"><span>Java 进程已启动，请等待游戏窗口就绪。</span><button className="button-secondary small" onClick={() => onStop(activeInstance.id)}>关闭游戏进程</button></div>}
           {showGameLog && activeInstance && gameLogs[activeInstance.id] && <div className="single-game-log"><Terminal size={13} /><span>最新日志</span><code>{gameLogs[activeInstance.id]}</code></div>}
         </div>
         <div className="hero-note"><Sparkles size={14} /><span>{activeInstance ? '每个实例都拥有独立的模组与世界目录' : '你的世界设置将彼此独立，不会互相覆盖'}</span></div>
@@ -481,18 +510,18 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`
 }
 
-function SettingsPage({ settings, updateSettings, showAdvanced, setShowAdvanced, customAccent, setCustomAccent, onSkinAccount, onOfflineAccount, onDiagnostics, onToast }: { settings: LauncherSettings; updateSettings: (patch: Partial<LauncherSettings>) => void; showAdvanced: boolean; setShowAdvanced: (value: boolean) => void; customAccent: string; setCustomAccent: (value: string) => void; onSkinAccount: () => void; onOfflineAccount: () => void; onDiagnostics: () => void; onToast: (message: string) => void }) {
+function SettingsPage({ settings, updateSettings, showAdvanced, setShowAdvanced, customAccent, setCustomAccent, onMicrosoftAccount, onSkinAccount, onOfflineAccount, onDiagnostics, onToast }: { settings: LauncherSettings; updateSettings: (patch: Partial<LauncherSettings>) => void; showAdvanced: boolean; setShowAdvanced: (value: boolean) => void; customAccent: string; setCustomAccent: (value: string) => void; onMicrosoftAccount: () => void; onSkinAccount: () => void; onOfflineAccount: () => void; onDiagnostics: () => void; onToast: (message: string) => void }) {
   const saveAccent = () => updateSettings({ customAccent })
   const currentTheme = themeChoices.find((theme) => theme.id === settings.theme) ?? themeChoices[0]
   return <div className="settings-page page-enter"><PageHeading eyebrow="偏好设置" title="按你的方式来。" description="常用选项用简单语言呈现，技术选项需要时再展开。" action={<button className={`mode-toggle ${showAdvanced ? 'is-on' : ''}`} onClick={() => setShowAdvanced(!showAdvanced)}><SlidersHorizontal size={15} />{showAdvanced ? '高级设置' : '简易设置'}<span className="toggle-track"><i /></span></button>} />
     <div className="settings-layout"><div className="settings-main">
       <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-appearance"><Palette size={17} /></div><div><h2>外观与颜色</h2><p>选择一个预设，或者调出属于你的颜色。</p></div></div><div className="theme-grid">{themeChoices.map((theme) => <button key={theme.id} className={`theme-option ${settings.theme === theme.id ? 'selected' : ''}`} onClick={() => updateSettings({ theme: theme.id, customAccent: theme.color })}><span className="theme-swatch" style={{ '--swatch': theme.color } as React.CSSProperties}>{settings.theme === theme.id && <Check size={13} />}</span><span className="theme-copy"><strong>{theme.label}</strong><small>{theme.note}</small></span>{settings.theme === theme.id && <span className="theme-selected">已选</span>}</button>)}</div><div className="custom-color-row"><div className="custom-color-label"><strong>自定义强调色</strong><span>按钮、选中态和重点标识</span></div><div className="color-input-wrap"><input aria-label="选择自定义强调色" type="color" value={customAccent} onChange={(event) => { setCustomAccent(event.target.value); updateSettings({ customAccent: event.target.value }) }} /><code>{customAccent.toUpperCase()}</code><button className="color-apply" onClick={saveAccent}>应用</button></div></div><div className="custom-background-row"><div className="custom-color-label"><strong>首页背景图片</strong><span>{settings.customBackground ? '已添加到本地设置，图片仅保存在此设备。' : '支持 PNG、JPEG、WebP，最大 2 MB。'}</span></div><div className="background-actions"><label className="button-secondary small background-picker"><Palette size={13} />选择图片<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; if (file.size > 2 * 1024 * 1024) { onToast('图片大小不能超过 2 MB。'); event.currentTarget.value = ''; return; } if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) { onToast('请选择 PNG、JPEG 或 WebP 图片。'); event.currentTarget.value = ''; return; } const reader = new FileReader(); reader.onload = () => { if (typeof reader.result === 'string') updateSettings({ customBackground: reader.result }); }; reader.onerror = () => onToast('无法读取这张图片。'); reader.readAsDataURL(file); event.currentTarget.value = ''; }} /></label>{settings.customBackground && <button className="button-secondary small" onClick={() => updateSettings({ customBackground: null })}><X size={13} />移除</button>}</div></div><div className="appearance-footer"><span>界面主题</span><div className="segmented-control"><button className={settings.mode === 'dark' ? 'selected' : ''} onClick={() => updateSettings({ mode: 'dark' })}><Moon size={14} />深色</button><button className={settings.mode === 'light' ? 'selected' : ''} onClick={() => updateSettings({ mode: 'light' })}><Sun size={14} />浅色</button><button className={settings.mode === 'system' ? 'selected' : ''} onClick={() => updateSettings({ mode: 'system' })}>跟随系统</button></div></div></section>
 
-      <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-download"><Download size={17} /></div><div><h2>下载与网络</h2><p>选择 Minecraft 文件来源和加速方式。</p></div></div><div className="setting-field"><div className="field-copy"><strong>下载来源</strong><span>混合模式会按文件校验后回退到可用来源。</span></div><div className="source-options"><SourceChoice active={settings.downloadSource === 'official'} title="官方" detail="Mojang 官方服务器" onClick={() => updateSettings({ downloadSource: 'official' })} /><SourceChoice active={settings.downloadSource === 'bmclapi'} title="BMCLAPI" detail="国内镜像" onClick={() => updateSettings({ downloadSource: 'bmclapi' })} /><SourceChoice active={settings.downloadSource === 'mixed'} title="混合" detail="镜像 + 官方回退" onClick={() => updateSettings({ downloadSource: 'mixed' })} /></div></div><div className="setting-divider" /><div className="setting-field aria-field"><div className="field-copy"><strong>下载加速</strong><span>aria2 组件状态：尚未接入</span></div><div className="aria-badge"><span className="aria-dot" />待配置</div></div>{showAdvanced && <div className="advanced-download"><div className="slider-setting"><div><strong>同时下载数</strong><span>{settings.ariaConnections} 个文件任务</span></div><input type="range" min="1" max="16" value={settings.ariaConnections} onChange={(event) => updateSettings({ ariaConnections: Number(event.target.value) })} /><span className="slider-value">{settings.ariaConnections}</span></div><div className="slider-setting"><div><strong>单文件连接数</strong><span>服务器支持时才会分段</span></div><input type="range" min="1" max="16" value={settings.ariaSplits} onChange={(event) => updateSettings({ ariaSplits: Number(event.target.value) })} /><span className="slider-value">{settings.ariaSplits}</span></div></div>}</section>
+      <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-download"><Download size={17} /></div><div><h2>下载与网络</h2><p>选择 Minecraft 文件来源和加速方式。</p></div></div><div className="setting-field"><div className="field-copy"><strong>下载来源</strong><span>混合模式会按文件校验后回退到可用来源。</span></div><div className="source-options"><SourceChoice active={settings.downloadSource === 'official'} title="官方" detail="Mojang 官方服务器" onClick={() => updateSettings({ downloadSource: 'official' })} /><SourceChoice active={settings.downloadSource === 'bmclapi'} title="BMCLAPI" detail="国内镜像" onClick={() => updateSettings({ downloadSource: 'bmclapi' })} /><SourceChoice active={settings.downloadSource === 'mixed'} title="混合" detail="镜像 + 官方回退" onClick={() => updateSettings({ downloadSource: 'mixed' })} /></div></div><div className="setting-divider" /><div className="setting-field aria-field"><div className="field-copy"><strong>下载加速</strong><span>aria2 组件仅用于固定版本发布构建；此开发构建默认使用原生校验下载器</span></div><div className="aria-badge"><span className="aria-dot" />待配置</div></div>{showAdvanced && <div className="advanced-download"><div className="slider-setting"><div><strong>同时下载数</strong><span>{settings.ariaConnections} 个文件任务</span></div><input type="range" min="1" max="16" value={settings.ariaConnections} onChange={(event) => updateSettings({ ariaConnections: Number(event.target.value) })} /><span className="slider-value">{settings.ariaConnections}</span></div><div className="slider-setting"><div><strong>单文件连接数</strong><span>服务器支持时才会分段</span></div><input type="range" min="1" max="16" value={settings.ariaSplits} onChange={(event) => updateSettings({ ariaSplits: Number(event.target.value) })} /><span className="slider-value">{settings.ariaSplits}</span></div></div>}</section>
 
-      <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-account"><ShieldCheck size={17} /></div><div><h2>账户与安全</h2><p>账户令牌会保存在系统凭据库中。</p></div></div><div className="account-setting-row"><div className="account-type-icon microsoft-icon">M</div><div className="field-copy"><strong>Microsoft 账户</strong><span>正版账户登录 · 浏览器授权流程</span></div><button className="button-secondary small" onClick={() => onToast('Microsoft 登录后端正在接入。')}>连接账户<ArrowRight size={13} /></button></div><div className="setting-divider" /><div className="account-setting-row"><div className="account-type-icon offline-icon"><Gamepad2 size={15} /></div><div className="field-copy"><strong>离线档案</strong><span>每次启动前都会再次确认。</span></div><button className="button-secondary small" onClick={onOfflineAccount}>添加档案<Plus size={13} /></button></div><div className="setting-divider" /><div className="account-setting-row"><div className="account-type-icon skin-icon"><Sparkles size={15} /></div><div className="field-copy"><strong>皮肤站账户</strong><span>支持可配置的 Yggdrasil 认证服务。</span></div><button className="button-secondary small" onClick={onSkinAccount}>配置服务<ArrowRight size={13} /></button></div></section>
+      <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-account"><ShieldCheck size={17} /></div><div><h2>账户与安全</h2><p>账户令牌会保存在系统凭据库中。</p></div></div><div className="account-setting-row"><div className="account-type-icon microsoft-icon">M</div><div className="field-copy"><strong>Microsoft 账户</strong><span>正版账户登录 · 浏览器授权流程</span></div><button className="button-secondary small" onClick={onMicrosoftAccount}>连接账户<ArrowRight size={13} /></button></div><div className="setting-divider" /><div className="account-setting-row"><div className="account-type-icon offline-icon"><Gamepad2 size={15} /></div><div className="field-copy"><strong>离线档案</strong><span>每次启动前都会再次确认。</span></div><button className="button-secondary small" onClick={onOfflineAccount}>添加档案<Plus size={13} /></button></div><div className="setting-divider" /><div className="account-setting-row"><div className="account-type-icon skin-icon"><Sparkles size={15} /></div><div className="field-copy"><strong>皮肤站账户</strong><span>支持可配置的 Yggdrasil 认证服务。</span></div><button className="button-secondary small" onClick={onSkinAccount}>配置服务<ArrowRight size={13} /></button></div></section>
 
-      {showAdvanced && <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-system"><Cpu size={17} /></div><div><h2>启动与诊断</h2><p>为需要手动调整的用户提供更多控制。</p></div></div><div className="setting-field"><div className="field-copy"><strong>单行游戏日志</strong><span>在启动状态区域显示最近一条 MC 日志。</span></div><button className={`switch ${settings.showGameLog ? 'checked' : ''}`} role="switch" aria-checked={settings.showGameLog} onClick={() => updateSettings({ showGameLog: !settings.showGameLog })}><i /></button></div><div className="setting-divider" /><div className="setting-field"><div className="field-copy"><strong>崩溃诊断</strong><span>摘要、查看原始日志或导出到指定文件夹。</span></div><button className="button-secondary small" onClick={onDiagnostics}><FileText size={13} />打开诊断</button></div></section>}
+      {showAdvanced && <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-system"><Cpu size={17} /></div><div><h2>启动与诊断</h2><p>为需要手动调整的用户提供更多控制。</p></div></div><div className="setting-field"><label className="form-label">Java 可执行文件（留空则自动检测）<input value={settings.javaPath} placeholder="/path/to/java 或 C:\\Java\\bin\\java.exe" onChange={e => updateSettings({ javaPath: e.target.value })} /></label><label className="form-label">最大游戏内存（MB）<input type="number" min={512} max={32768} step={256} value={settings.memoryMb} onChange={e => updateSettings({ memoryMb: Number(e.target.value) })} /></label></div><div className="setting-field"><div className="field-copy"><strong>单行游戏日志</strong><span>在启动状态区域显示最近一条 MC 日志。</span></div><button className={`switch ${settings.showGameLog ? 'checked' : ''}`} role="switch" aria-checked={settings.showGameLog} onClick={() => updateSettings({ showGameLog: !settings.showGameLog })}><i /></button></div><div className="setting-divider" /><div className="setting-field"><div className="field-copy"><strong>崩溃诊断</strong><span>摘要、查看原始日志或导出到指定文件夹。</span></div><button className="button-secondary small" onClick={onDiagnostics}><FileText size={13} />打开诊断</button></div></section>}
     </div>
     <aside className="settings-aside"><div className="settings-preview-card"><div className="preview-top"><span className="preview-eyebrow">界面预览</span><span className="preview-dots"><i /><i /><i /></span></div><div className="preview-scene"><div className="preview-sun" /><div className="preview-mountain mountain-one" /><div className="preview-mountain mountain-two" /><div className="preview-pixel-tree"><i /><i /><b /></div></div><div className="preview-actions"><span className="preview-action-icon"><Play size={12} fill="currentColor" /></span><span><strong>开始游戏</strong><small>你的下一个世界</small></span><ArrowRight size={14} /></div><div className="preview-theme-line"><span style={{ background: settings.customAccent }} /><span /><span />{currentTheme.label}</div></div><div className="settings-tip"><div className="tip-icon"><Sparkles size={15} /></div><div><strong>新手也能轻松上手</strong><p>推荐值会自动选择。开启高级设置后，才会显示下载连接数和游戏日志开关。</p></div></div><div className="privacy-card"><LockKeyhole size={15} /><div><strong>默认本地优先</strong><span>账户凭据与游戏存档不会自动上传。</span></div></div></aside></div>
   </div>
@@ -503,19 +532,20 @@ function SourceChoice({ active, title, detail, onClick }: { active: boolean; tit
 }
 
 function InstanceDialog({ versions, loading, versionSource, name, setName, selectedVersion, setSelectedVersion, onClose, onSubmit }: { versions: VersionItem[]; loading: boolean; versionSource: 'loading' | 'official' | 'preview'; name: string; setName: (value: string) => void; selectedVersion: string; setSelectedVersion: (value: string) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
-  return <Modal title="创建游戏实例" eyebrow="新建实例" onClose={onClose}><form onSubmit={onSubmit} className="dialog-form"><label className="form-label">给实例起个名字<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：生存世界" maxLength={48} /></label><label className="form-label">Minecraft 版本<select value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} required><option value="">选择一个正式版本</option>{versions.filter((version) => version.type === 'release').map((version) => <option key={version.id} value={version.id}>{version.id}</option>)}</select><span className="input-hint">{loading ? '正在读取 Minecraft 官方版本清单…' : versionSource === 'official' ? '版本清单来自官方元数据。' : '暂时无法连接官方清单，当前显示缓存预览版本。'}</span></label><div className="loader-select-card"><div className="loader-icon"><Layers3 size={17} /></div><div><strong>模组加载器</strong><span>先安装原版，后续可为实例添加加载器。</span></div><span className="loader-tag">Vanilla</span></div><div className="dialog-note"><ShieldCheck size={15} /><span>新实例会使用独立目录，原有世界不会被覆盖。</span></div><div className="dialog-actions"><button type="button" className="button-secondary" onClick={onClose}>取消</button><button type="submit" className="button-primary"><Plus size={15} />创建实例</button></div></form></Modal>
+  return <Modal title="创建游戏实例" eyebrow="新建实例" onClose={onClose}><form onSubmit={onSubmit} className="dialog-form"><label className="form-label">给实例起个名字<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：生存世界" maxLength={48} /></label><label className="form-label">Minecraft 版本<select value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} required><option value="">选择正式版、快照或历史版本</option>{versions.map((version) => <option key={version.id} value={version.id}>{version.id} · {version.type === 'release' ? '正式版' : version.type === 'snapshot' ? '快照' : '历史版'}</option>)}</select><span className="input-hint">{loading ? '正在读取 Minecraft 官方版本清单…' : versionSource === 'official' ? '版本清单来自官方元数据。' : '暂时无法连接官方清单，当前显示缓存预览版本。'}</span></label><div className="loader-select-card"><div className="loader-icon"><Layers3 size={17} /></div><div><strong>模组加载器</strong><span>先安装原版，后续可为实例添加加载器。</span></div><span className="loader-tag">Vanilla</span></div><div className="dialog-note"><ShieldCheck size={15} /><span>新实例会使用独立目录，原有世界不会被覆盖。</span></div><div className="dialog-actions"><button type="button" className="button-secondary" onClick={onClose}>取消</button><button type="submit" className="button-primary"><Plus size={15} />创建实例</button></div></form></Modal>
+}
+
+function accountKindLabel(account?: AccountRecord): string {
+  if (!account) return '尚未登录'
+  return account.kind === 'offline' ? '离线档案' : account.kind === 'microsoft' ? 'Microsoft 账户' : '皮肤站账户'
 }
 
 function AccountPickerDialog({ accounts, selectedAccount, onClose, onAdd, onSelect }: { accounts: AccountRecord[]; selectedAccount: string; onClose: () => void; onAdd: () => void; onSelect: (id: string) => void }) {
-  return <Modal title="选择账户" eyebrow="游戏身份" onClose={onClose}><div className="account-picker-list">{accounts.length ? accounts.map((account) => <button key={account.id} className={`account-picker-item ${account.id === selectedAccount ? 'selected' : ''}`} onClick={() => onSelect(account.id)}><span className="account-picker-avatar">{account.kind === 'offline' ? <Gamepad2 size={15} /> : <ShieldCheck size={15} />}</span><span><strong>{account.displayName}</strong><small>{account.kind === 'offline' ? '离线档案 · 启动时会提示' : account.kind === 'microsoft' ? 'Microsoft 账户' : account.authServer ?? '皮肤站账户'}</small></span>{account.id === selectedAccount && <Check size={15} />}</button>) : <div className="account-picker-empty">尚未添加账户。离线档案会在每次启动时要求确认。</div>}<button className="account-picker-add" onClick={onAdd}><Plus size={15} />添加其他账户</button></div></Modal>
+  return <Modal title="选择账户" eyebrow="游戏身份" onClose={onClose}><div className="account-picker-list">{accounts.length ? accounts.map((account) => <button key={account.id} className={`account-picker-item ${account.id === selectedAccount ? 'selected' : ''}`} onClick={() => onSelect(account.id)}><span className="account-picker-avatar">{account.kind === 'offline' ? <Gamepad2 size={15} /> : <ShieldCheck size={15} />}</span><span><strong>{account.displayName}</strong><small>{account.kind === 'offline' ? '离线档案 · 启动时会提示' : account.kind === 'microsoft' ? 'Microsoft 账户' : `皮肤站账户${account.authServer ? ` · ${account.authServer}` : ''}`}</small></span>{account.id === selectedAccount && <Check size={15} />}</button>) : <div className="account-picker-empty">尚未添加账户。离线档案会在每次启动时要求确认。</div>}<button className="account-picker-add" onClick={onAdd}><Plus size={15} />添加其他账户</button></div></Modal>
 }
 
-function OfflineAccountDialog({ onClose, onSubmit, onSkin }: { onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onSkin: () => void }) {
-  return <Modal title="添加账户" eyebrow="游戏身份" onClose={onClose}><div className="account-dialog-intro"><div className="account-dialog-icon"><Gamepad2 size={20} /></div><p>选择登录方式。离线档案每次启动前都会提醒你，且无法用于需要正版验证的服务器。</p></div><form onSubmit={onSubmit} className="dialog-form"><label className="form-label">离线档案名称<input name="playerName" autoFocus minLength={3} maxLength={16} pattern="[A-Za-z0-9_]{3,16}" placeholder="3–16 位英文字母、数字或下划线" required /></label><div className="warning-box"><CircleAlert size={16} /><span>离线档案不验证 Microsoft 游戏授权。请只用于你有权使用的本地或离线模式环境。</span></div><div className="dialog-actions"><button type="button" className="button-secondary" onClick={onSkin}>使用皮肤站账户</button><button type="submit" className="button-primary">添加离线档案<ArrowRight size={14} /></button></div></form><button className="microsoft-signin-button" onClick={() => window.alert('Microsoft 浏览器登录流程将在桌面认证后端接入。')}><span className="ms-logo">▦</span>使用 Microsoft 账户登录</button></Modal>
-}
-
-function SkinAccountDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
-  return <Modal title="连接皮肤站" eyebrow="第三方认证" onClose={onClose}><form onSubmit={onSubmit} className="dialog-form"><div className="warning-box neutral"><ShieldCheck size={16} /><span>请确认认证地址属于你信任的皮肤站。登录凭据只应提交给你明确授权的认证服务。</span></div><label className="form-label">认证服务器地址<input name="skinServer" type="url" placeholder="https://auth.example.com/" required /><span className="input-hint">仅支持 HTTPS；本机测试可使用 localhost。</span></label><label className="form-label">账户名称<input name="skinName" placeholder="皮肤站用户名" required /></label><label className="form-label">密码<input name="skinPassword" type="password" placeholder="不会保存到预览界面" required /></label><div className="dialog-actions"><button type="button" className="button-secondary" onClick={onClose}>取消</button><button type="submit" className="button-primary"><LockKeyhole size={14} />继续连接</button></div></form></Modal>
+function OfflineAccountDialog({ onClose, onSubmit, onSkin, onMicrosoft }: { onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; onSkin: () => void; onMicrosoft: () => void }) {
+  return <Modal title="添加账户" eyebrow="游戏身份" onClose={onClose}><div className="account-dialog-intro"><div className="account-dialog-icon"><Gamepad2 size={20} /></div><p>选择登录方式。离线档案每次启动前都会提醒你，且无法用于需要正版验证的服务器。</p></div><form onSubmit={onSubmit} className="dialog-form"><label className="form-label">离线档案名称<input name="playerName" autoFocus minLength={3} maxLength={16} pattern="[A-Za-z0-9_]{3,16}" placeholder="3–16 位英文字母、数字或下划线" required /></label><div className="warning-box"><CircleAlert size={16} /><span>离线档案不验证 Microsoft 游戏授权。请只用于你有权使用的本地或离线模式环境。</span></div><div className="dialog-actions"><button type="button" className="button-secondary" onClick={onSkin}>使用皮肤站账户</button><button type="submit" className="button-primary">添加离线档案<ArrowRight size={14} /></button></div></form><button className="microsoft-signin-button" onClick={onMicrosoft}><span className="ms-logo">▦</span>使用 Microsoft 账户登录</button></Modal>
 }
 
 function Modal({ title, eyebrow, onClose, children }: { title: string; eyebrow: string; onClose: () => void; children: React.ReactNode }) {

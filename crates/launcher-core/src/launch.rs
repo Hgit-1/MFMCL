@@ -11,10 +11,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
 use uuid::Uuid;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Debug, Error)]
 pub enum LaunchError {
-    #[error("only offline accounts are supported by the current launch backend")]
+    #[error("offline launch preparation requires an offline profile")]
     UnsupportedAccount,
     #[error("the selected instance is not installed")]
     NotInstalled,
@@ -34,6 +35,8 @@ pub enum LaunchError {
     JavaInspection(String),
     #[error("invalid legacy game arguments")]
     InvalidLegacyArguments,
+    #[error("invalid Minecraft account identity")]
+    InvalidIdentity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,12 +47,27 @@ pub struct JavaRuntimeInfo {
     pub version_text: String,
 }
 
-#[derive(Debug, Clone)]
+// Launch commands include access tokens for online sessions; never derive Debug for them.
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct PreparedLaunch {
+    #[zeroize(skip)]
     pub java_path: PathBuf,
     pub args: Vec<String>,
+    #[zeroize(skip)]
     pub working_directory: PathBuf,
+    #[zeroize(skip)]
     pub log_path: PathBuf,
+}
+
+/// Backend-only identity, supplied only after provider authentication and ownership checks.
+/// Never serialize or log this value.
+pub struct LaunchIdentity<'a> {
+    pub kind: AccountKind,
+    pub profile_id: &'a str,
+    pub player_name: &'a str,
+    pub access_token: &'a str,
+    pub client_id: &'a str,
+    pub xuid: &'a str,
 }
 
 pub fn prepare_offline_launch(
@@ -59,14 +77,77 @@ pub fn prepare_offline_launch(
     metadata: &GameVersionMetadata,
     configured_java: Option<PathBuf>,
 ) -> Result<PreparedLaunch, LaunchError> {
-    if instance.state != InstanceState::Ready {
-        return Err(LaunchError::NotInstalled);
-    }
     if account.kind != AccountKind::Offline {
         return Err(LaunchError::UnsupportedAccount);
     }
-    let java_path = configured_java.unwrap_or_else(|| PathBuf::from("java"));
-    let detected_java = detect_java_major(&java_path)?;
+    let id = offline_uuid(&account.display_name).simple().to_string();
+    let identity = LaunchIdentity {
+        kind: AccountKind::Offline,
+        profile_id: &id,
+        player_name: &account.display_name,
+        access_token: "0",
+        client_id: "",
+        xuid: "",
+    };
+    prepare_launch(data_root, instance, &identity, metadata, configured_java)
+}
+
+pub fn prepare_authenticated_launch(
+    data_root: &Path,
+    instance: &InstanceRecord,
+    identity: &LaunchIdentity<'_>,
+    metadata: &GameVersionMetadata,
+    configured_java: Option<PathBuf>,
+) -> Result<PreparedLaunch, LaunchError> {
+    if identity.kind == AccountKind::Offline {
+        return Err(LaunchError::UnsupportedAccount);
+    }
+    prepare_launch(data_root, instance, identity, metadata, configured_java)
+}
+
+fn prepare_launch(
+    data_root: &Path,
+    instance: &InstanceRecord,
+    identity: &LaunchIdentity<'_>,
+    metadata: &GameVersionMetadata,
+    configured_java: Option<PathBuf>,
+) -> Result<PreparedLaunch, LaunchError> {
+    if instance.state != InstanceState::Ready {
+        return Err(LaunchError::NotInstalled);
+    }
+    validate_identity(identity)?;
+    let runtime = detect_java_runtime(configured_java)?;
+    prepare_with_runtime(data_root, instance, identity, metadata, runtime)
+}
+
+fn validate_identity(identity: &LaunchIdentity<'_>) -> Result<(), LaunchError> {
+    if identity.profile_id.len() != 32
+        || !identity.profile_id.bytes().all(|b| b.is_ascii_hexdigit())
+        || Uuid::parse_str(identity.profile_id).map_or(true, |id| id.is_nil())
+        || identity.player_name.is_empty()
+        || identity.player_name.len() > 16
+        || !identity
+            .player_name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        || identity.access_token.is_empty()
+        || identity.access_token.len() > 65536
+        || identity.access_token.chars().any(char::is_control)
+    {
+        return Err(LaunchError::InvalidIdentity);
+    }
+    Ok(())
+}
+
+fn prepare_with_runtime(
+    data_root: &Path,
+    instance: &InstanceRecord,
+    identity: &LaunchIdentity<'_>,
+    metadata: &GameVersionMetadata,
+    runtime: JavaRuntimeInfo,
+) -> Result<PreparedLaunch, LaunchError> {
+    let java_path = PathBuf::from(runtime.path);
+    let detected_java = runtime.major_version;
     if let Some(required) = metadata
         .java_version
         .as_ref()
@@ -81,6 +162,12 @@ pub fn prepare_offline_launch(
         }
     }
 
+    crate::loaders::safe_version(&metadata.id).map_err(LaunchError::InvalidMetadata)?;
+    if metadata.id != instance.game_version {
+        return Err(LaunchError::InvalidMetadata(
+            "profile version does not match instance".into(),
+        ));
+    }
     let version_dir = instance.instance_dir.join("versions").join(&metadata.id);
     let client_jar = version_dir.join(format!("{}.jar", metadata.id));
     require_file(&client_jar)?;
@@ -103,7 +190,10 @@ pub fn prepare_offline_launch(
             .ok_or_else(|| {
                 LaunchError::InvalidMetadata(format!("invalid library path: {}", library.name))
             })?;
-        let path = libraries_dir.join(relative_path);
+        let path = libraries_dir.join(
+            crate::installer::safe_library_path(relative_path)
+                .map_err(|_| LaunchError::InvalidMetadata("unsafe library path".into()))?,
+        );
         require_file(&path)?;
         classpath.push(path);
     }
@@ -115,8 +205,8 @@ pub fn prepare_offline_launch(
         .collect::<Vec<_>>()
         .join(classpath_separator);
 
-    let player_name = account.display_name.clone();
-    let player_uuid = offline_uuid(&player_name).to_string().replace('-', "");
+    let player_name = identity.player_name.to_owned();
+    let player_uuid = identity.profile_id.to_ascii_lowercase();
     let asset_index = metadata
         .asset_index
         .as_ref()
@@ -175,14 +265,33 @@ pub fn prepare_offline_launch(
     {
         variables.insert("${path}".to_owned(), path.to_string_lossy().into_owned());
     }
-    variables.insert("${assets_index_name}".to_owned(), asset_index);
+    variables.insert("${assets_index_name}".to_owned(), asset_index.clone());
+    variables.insert(
+        "${game_assets}".to_owned(),
+        assets_dir
+            .join("virtual")
+            .join(asset_index)
+            .to_string_lossy()
+            .into_owned(),
+    );
     variables.insert("${auth_player_name}".to_owned(), player_name);
     variables.insert("${auth_uuid}".to_owned(), player_uuid);
-    variables.insert("${auth_access_token}".to_owned(), "0".to_owned());
-    variables.insert("${auth_session}".to_owned(), "0".to_owned());
-    variables.insert("${clientid}".to_owned(), String::new());
-    variables.insert("${auth_xuid}".to_owned(), String::new());
-    variables.insert("${user_type}".to_owned(), "legacy".to_owned());
+    variables.insert(
+        "${auth_access_token}".to_owned(),
+        identity.access_token.to_owned(),
+    );
+    variables.insert(
+        "${auth_session}".to_owned(),
+        identity.access_token.to_owned(),
+    );
+    variables.insert("${clientid}".to_owned(), identity.client_id.to_owned());
+    variables.insert("${auth_xuid}".to_owned(), identity.xuid.to_owned());
+    let user_type = match &identity.kind {
+        AccountKind::Microsoft => "msa",
+        AccountKind::SkinServer => "mojang",
+        AccountKind::Offline => "legacy",
+    };
+    variables.insert("${user_type}".to_owned(), user_type.to_owned());
     variables.insert("${user_properties}".to_owned(), "{}".to_owned());
     variables.insert("${resolution_width}".to_owned(), "1280".to_owned());
     variables.insert("${resolution_height}".to_owned(), "720".to_owned());
@@ -212,6 +321,18 @@ pub fn prepare_offline_launch(
         args.push("-cp".to_owned());
         args.push(classpath);
     }
+    if let Some(argument) = metadata
+        .logging
+        .as_ref()
+        .and_then(|v| v.get("client"))
+        .and_then(|v| v.get("argument"))
+        .and_then(serde_json::Value::as_str)
+    {
+        if let Some(path) = variables.get("${path}") {
+            require_file(Path::new(path))?;
+        }
+        args.push(replace_variables(argument, &variables));
+    }
     let main_class = metadata
         .main_class
         .as_deref()
@@ -235,9 +356,10 @@ pub fn prepare_offline_launch(
         java_path,
         args,
         working_directory: instance.game_dir.clone(),
-        log_path: data_root
+        log_path: instance
+            .instance_dir
             .join("logs")
-            .join(format!("{}-latest.log", instance.id)),
+            .join("launcher-latest.log"),
     })
 }
 
@@ -260,10 +382,26 @@ fn expand_argument(entry: &ArgumentEntry, variables: &HashMap<String, String>) -
 }
 
 fn replace_variables(value: &str, variables: &HashMap<String, String>) -> String {
-    let mut result = value.to_owned();
-    for (placeholder, replacement) in variables {
-        result = result.replace(placeholder, replacement);
+    // Expand only placeholders in the metadata, never text inside an access token or path.
+    let mut result = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find("${") {
+        result.push_str(&rest[..start]);
+        let Some(end) = rest[start..].find('}') else {
+            result.push_str(&rest[start..]);
+            return result;
+        };
+        let end = start + end + 1;
+        let placeholder = &rest[start..end];
+        result.push_str(
+            variables
+                .get(placeholder)
+                .map(String::as_str)
+                .unwrap_or(placeholder),
+        );
+        rest = &rest[end..];
     }
+    result.push_str(rest);
     result
 }
 
@@ -288,7 +426,10 @@ fn rules_allow(rules: &[mc_metadata::LibraryRule]) -> bool {
 pub fn detect_java_runtime(
     configured_java: Option<PathBuf>,
 ) -> Result<JavaRuntimeInfo, LaunchError> {
-    let candidates = configured_java.into_iter().chain(java_candidates());
+    if let Some(path) = configured_java {
+        return inspect_java(&path);
+    }
+    let candidates = java_candidates();
     let mut last_error = None;
     for candidate in candidates {
         match inspect_java(&candidate) {
@@ -329,10 +470,6 @@ fn inspect_java(java_path: &Path) -> Result<JavaRuntimeInfo, LaunchError> {
         major_version,
         version_text: text.lines().next().unwrap_or_default().trim().to_owned(),
     })
-}
-
-fn detect_java_major(java_path: &Path) -> Result<u32, LaunchError> {
-    inspect_java(java_path).map(|runtime| runtime.major_version)
 }
 
 fn parse_java_major(text: &str) -> Result<u32, LaunchError> {
@@ -403,5 +540,62 @@ mod tests {
             replace_variables("--username=${auth_player_name}", &vars),
             "--username=Alex"
         );
+    }
+
+    #[test]
+    fn authenticated_arguments_preserve_literal_zero_and_expand_identity_once() {
+        let root = std::env::temp_dir().join(format!("mfmcl-launch-{}", Uuid::new_v4()));
+        let instance = InstanceRecord {
+            id: "test".into(),
+            name: "test".into(),
+            game_version: "1.21.4".into(),
+            loader: "vanilla".into(),
+            instance_dir: root.join("instance"),
+            game_dir: root.join("instance/game"),
+            isolated: true,
+            state: InstanceState::Ready,
+            created_at: String::new(),
+        };
+        let dir = instance.instance_dir.join("versions/1.21.4");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("1.21.4.jar"), b"test").unwrap();
+        let runtime = JavaRuntimeInfo {
+            path: "java".into(),
+            major_version: 21,
+            version_text: String::new(),
+        };
+        for kind in [AccountKind::Microsoft, AccountKind::SkinServer] {
+            let identity = LaunchIdentity {
+                kind: kind.clone(),
+                profile_id: "123456781234423481231234567890ab",
+                player_name: "Online_Name",
+                access_token: "test-secret-${user_type}",
+                client_id: "public-id",
+                xuid: "12345",
+            };
+            let metadata: GameVersionMetadata = serde_json::from_value(serde_json::json!({
+                "id":"1.21.4", "mainClass":"net.minecraft.Main", "libraries":[],
+                "arguments":{"jvm":["-Dliteral=0"],"game":["--accessToken","${auth_access_token}","--username=${auth_player_name}","--uuid","${auth_uuid}","--type","${user_type}","--clientId","${clientid}","--xuid","${auth_xuid}","0"]}
+            })).unwrap();
+            let prepared =
+                prepare_with_runtime(&root, &instance, &identity, &metadata, runtime.clone())
+                    .unwrap();
+            assert!(prepared.args.contains(&"-Dliteral=0".to_owned()));
+            assert!(prepared.args.contains(&identity.access_token.to_owned()));
+            assert!(prepared.args.contains(&"--username=Online_Name".to_owned()));
+            assert!(prepared.args.contains(&identity.profile_id.to_owned()));
+            assert!(
+                prepared.args.contains(
+                    &if kind == AccountKind::Microsoft {
+                        "msa"
+                    } else {
+                        "mojang"
+                    }
+                    .to_owned()
+                )
+            );
+            assert_eq!(prepared.args.last().unwrap(), "0");
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }

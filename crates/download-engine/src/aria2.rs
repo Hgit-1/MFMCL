@@ -52,13 +52,46 @@ pub struct Aria2TaskStatus {
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Aria2Session {
     rpc_url: String,
     secret: String,
     client: Client,
     child: std::sync::Arc<Mutex<Child>>,
-    config_path: PathBuf,
+    config_path: std::sync::Arc<ConfigFile>,
+}
+
+struct ConfigFile(PathBuf);
+impl Drop for ConfigFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+impl std::fmt::Debug for Aria2Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Aria2Session")
+            .field("secret", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Best-effort removal when a caller drops an in-flight download future.
+pub(crate) struct TaskGuard {
+    session: Aria2Session,
+    gid: String,
+}
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let session = self.session.clone();
+            let gid = self.gid.clone();
+            runtime.spawn(async move {
+                if session.remove(&gid).await.is_err() {
+                    let _ = session.shutdown().await;
+                }
+            });
+        }
+    }
 }
 
 impl Aria2Session {
@@ -67,6 +100,11 @@ impl Aria2Session {
         working_dir: &Path,
         options: Aria2Options,
     ) -> Result<Self, Aria2Error> {
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .timeout(std::time::Duration::from_secs(4))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
         std::fs::create_dir_all(working_dir)?;
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
@@ -90,9 +128,11 @@ impl Aria2Session {
                 return Err(Aria2Error::Io(error));
             }
         }
+        let config_path = std::sync::Arc::new(ConfigFile(config_path));
         let mut command = Command::new(binary);
         command
-            .arg(format!("--conf-path={}", config_path.to_string_lossy()))
+            .kill_on_drop(true)
+            .arg(format!("--conf-path={}", config_path.0.to_string_lossy()))
             .current_dir(working_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -102,20 +142,11 @@ impl Aria2Session {
             use std::os::windows::process::CommandExt;
             command.as_std_mut().creation_flags(0x08000000);
         }
-        let child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                let _ = std::fs::remove_file(&config_path);
-                return Err(Aria2Error::Io(error));
-            }
-        };
+        let child = command.spawn()?;
         let session = Self {
             rpc_url: format!("http://127.0.0.1:{port}/jsonrpc"),
             secret,
-            client: Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(2))
-                .timeout(std::time::Duration::from_secs(4))
-                .build()?,
+            client,
             child: std::sync::Arc::new(Mutex::new(child)),
             config_path,
         };
@@ -126,6 +157,26 @@ impl Aria2Session {
         Ok(session)
     }
 
+    #[cfg(all(test, unix))]
+    pub(crate) fn failing_test_session(rpc_url: String, working_dir: &Path) -> Self {
+        Self {
+            rpc_url,
+            secret: "test-secret-must-not-appear".into(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(1))
+                .build()
+                .unwrap(),
+            child: std::sync::Arc::new(Mutex::new(
+                Command::new("/bin/sleep")
+                    .arg("30")
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap(),
+            )),
+            config_path: std::sync::Arc::new(ConfigFile(working_dir.join("test-aria2.conf"))),
+        }
+    }
+
     pub async fn add_uri(
         &self,
         urls: &[String],
@@ -133,10 +184,58 @@ impl Aria2Session {
         file_name: &str,
         checksum: Option<&str>,
     ) -> Result<String, Aria2Error> {
-        if urls.is_empty() {
-            return Err(Aria2Error::Rpc("no download URLs provided".to_owned()));
+        self.add_uri_bounded(urls, directory, file_name, checksum, 1)
+            .await
+    }
+
+    pub(crate) fn task_guard(&self, gid: String) -> TaskGuard {
+        TaskGuard {
+            session: self.clone(),
+            gid,
+        }
+    }
+
+    pub(crate) async fn pause(&self, gid: &str) -> Result<(), Aria2Error> {
+        self.rpc("aria2.forcePause", json!([gid])).await?;
+        Ok(())
+    }
+    pub(crate) async fn unpause(&self, gid: &str) -> Result<(), Aria2Error> {
+        self.rpc("aria2.unpause", json!([gid])).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn add_uri_bounded(
+        &self,
+        urls: &[String],
+        directory: &Path,
+        file_name: &str,
+        checksum: Option<&str>,
+        connections: u8,
+    ) -> Result<String, Aria2Error> {
+        if urls.is_empty()
+            || urls.iter().any(|s| {
+                reqwest::Url::parse(s)
+                    .ok()
+                    .is_none_or(|u| !crate::safe_url(&u))
+            })
+        {
+            return Err(Aria2Error::Rpc("unsafe or empty download URLs".to_owned()));
+        }
+        if urls.len() > 1 && checksum.is_none() {
+            return Err(Aria2Error::Rpc(
+                "multiple sources require a checksum".to_owned(),
+            ));
         }
         let mut options = BTreeMap::<String, Value>::new();
+        let connections = connections.clamp(1, 16).to_string();
+        options.insert("split".to_owned(), json!(connections));
+        options.insert("max-connection-per-server".to_owned(), json!(connections));
+        // Native HTTP handles redirects with our HTTPS-only redirect policy.
+        options.insert("max-http-redirect".to_owned(), json!("0"));
+        options.insert("max-tries".to_owned(), json!("3"));
+        options.insert("retry-wait".to_owned(), json!("1"));
+        options.insert("connect-timeout".to_owned(), json!("15"));
+        options.insert("timeout".to_owned(), json!("60"));
         options.insert("dir".to_owned(), json!(directory.to_string_lossy()));
         options.insert("out".to_owned(), json!(file_name));
         options.insert("continue".to_owned(), json!("true"));
@@ -174,7 +273,7 @@ impl Aria2Session {
     }
 
     pub async fn remove(&self, gid: &str) -> Result<(), Aria2Error> {
-        let _ = self.rpc("aria2.remove", json!([gid])).await?;
+        let _ = self.rpc("aria2.forceRemove", json!([gid])).await?;
         Ok(())
     }
 
@@ -185,7 +284,7 @@ impl Aria2Session {
             child.kill().await?;
         }
         let _ = child.wait().await;
-        let _ = std::fs::remove_file(&self.config_path);
+        let _ = std::fs::remove_file(&self.config_path.0);
         Ok(())
     }
 
@@ -225,8 +324,9 @@ impl Aria2Session {
             .await?
             .error_for_status()?;
         let body: Value = response.json().await?;
-        if let Some(error) = body.get("error") {
-            return Err(Aria2Error::Rpc(error.to_string()));
+        if body.get("error").is_some() {
+            // Remote RPC errors may echo request parameters, including the token.
+            return Err(Aria2Error::Rpc("remote procedure failed".to_owned()));
         }
         body.get("result")
             .cloned()

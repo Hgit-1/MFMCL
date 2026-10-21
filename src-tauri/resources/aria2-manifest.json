@@ -1,0 +1,5 @@
+{
+  "version": "1.37.0",
+  "platforms": {},
+  "note": "Source development build: native HTTP downloads are used until release-reviewed, SHA-256-pinned platform binaries are supplied. Never populate a hash from an untrusted download."
+}

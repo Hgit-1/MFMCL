@@ -1,21 +1,29 @@
 # MFMCL
 
-A cross-platform Minecraft Java Edition launcher, beginning with Windows, macOS, and Linux.
+MFMCL is an original Minecraft Java Edition launcher project for Windows, macOS, and Linux. Its Chinese-first interface focuses on guided setup and separate game instances.
 
-## Current project state
+## Implemented in the current development tree
 
-The initial desktop foundation is implemented: React/Tauri workspace, settings and isolated-instance storage, official version metadata access, verified official/BMCLAPI download source selection, optional aria2 RPC support, vanilla installation core, offline account profiles and guarded launch preparation, live process/log event plumbing, theme customization, and local diagnostic summary/export. The desktop UI is still evolving and should be considered an early development build.
+- Official Minecraft version metadata, explicit official/BMCLAPI/mixed artifact sources, size/hash verification, verified fallback, safe partial downloads, bounded concurrency, retry, pause, resume, cancellation, and persistent task recovery.
+- Vanilla instance installation and Java runtime detection, launch-argument expansion, memory configuration, live process/log events, diagnostic summaries, and local export.
+- Offline profiles, Microsoft public-client browser login with PKCE and Java entitlement validation, and HTTPS Yggdrasil skin-server login with explicit trust confirmation and role selection. Online credentials are stored through the operating system credential provider; no launcher client secret or borrowed Microsoft client ID is included.
+- Fabric and Quilt installation, mod enable/disable, and bounded Modrinth pack preview/import/export for supported Vanilla/Fabric/Quilt combinations.
+- Four theme presets, custom accent/background settings, and settings validation.
 
-Microsoft identity and skin-server token login, loader installation, modpack import, packaged aria2 binaries, and platform installers are not complete. The interface does not simulate these operations as if they succeeded.
+## Deliberate release gates and limits
 
-Android, iOS, and HarmonyOS local game execution remain research-only in [`docs/FUTURE.md`](docs/FUTURE.md).
+This is a development build, not a signed production release. The Linux container does not have the GTK/WebKit development libraries required to run the desktop shell, and no live Minecraft account/game launch or physical Windows/macOS run has been verified here. CI compiles the desktop backend on all three target operating systems; local Windows GNU cross-checks are compile checks, not packaged or executed Windows applications.
+
+The aria2 integration is optional and guarded by a platform-specific SHA-256/version manifest. That manifest currently contains no binary pins, so this source tree falls back to the Rust downloader; it does not ship an aria2 executable. A release must complete the GPL source/notice review before adding any binary. Forge and NeoForge, online mod catalogues, signed installers, and a verified install/upgrade/uninstall cycle remain unimplemented. Fabric/Quilt and supported Modrinth packs are the only modded formats currently handled.
+
+Android, iOS, and HarmonyOS local game execution remain documentation-only in [`docs/FUTURE.md`](docs/FUTURE.md).
 
 ## Development
 
-See [`docs/BUILDING.md`](docs/BUILDING.md) for prerequisites, frontend preview, tests, and native desktop builds. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the module and trust boundaries.
+See [`docs/BUILDING.md`](docs/BUILDING.md) for prerequisites, frontend preview, tests, and native desktop builds. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for module and trust boundaries, and [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) for distribution constraints.
 
-The root Git repository excludes the nested `/PCL/` reference checkout. Reference observations and third-party distribution constraints are documented in [`docs/REFERENCE_NOTES.md`](docs/REFERENCE_NOTES.md) and [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md).
+The root Git repository excludes the nested `/PCL/` reference checkout. Reference observations are abstracted in [`docs/REFERENCE_NOTES.md`](docs/REFERENCE_NOTES.md); no reference implementation or assets are copied.
 
-## Content and accounts
+## Accounts and game content
 
-MFMCL does not bundle Minecraft game files. Users must use an account authorized for the content they install. Offline profiles are explicitly identified and require a fresh confirmation each time launch is attempted; they do not bypass Microsoft entitlement checks or online-mode server authentication.
+MFMCL does not bundle or host Minecraft game files. Users must use an account authorized for the content they install. An offline profile does not verify Microsoft ownership and is clearly identified; every attempt to launch with it requires a fresh confirmation. It does not bypass Microsoft entitlement checks or online-mode server authentication. Skin-server credentials are submitted only after explicit confirmation of the HTTPS authentication root.

@@ -17,6 +17,8 @@ export interface LauncherSettings {
   ariaConnections: number
   ariaSplits: number
   showGameLog: boolean
+  javaPath: string
+  memoryMb: number
 }
 
 export interface InstanceRecord {
@@ -36,9 +38,14 @@ export interface AccountRecord {
   displayName: string
   kind: 'microsoft' | 'offline' | 'skin_server'
   authServer?: string | null
-  credentialRef?: string | null
   selected: boolean
   createdAt: string
+}
+
+// Authentication responses contain public profile metadata only, never credentials.
+export interface SkinLoginResult {
+  pendingId: string
+  profiles: { id: string; name: string }[]
 }
 
 export interface DownloadEvent {

@@ -205,7 +205,7 @@ pub enum ArgumentValue {
 pub struct AssetIndex {
     #[serde(default)]
     pub objects: HashMap<String, AssetObject>,
-    #[serde(default)]
+    #[serde(default, rename = "virtual")]
     pub virtual_assets: bool,
     #[serde(default)]
     pub map_to_resources: bool,

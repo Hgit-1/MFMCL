@@ -8,6 +8,10 @@ aria2 is optional and starts as a separate local process with a randomly generat
 
 No aria2 binary is currently included in the repository. Before distributing one, pin the source revision and build configuration, verify the release checksum, include the applicable GPL license and corresponding source/rebuild instructions, and review how that distribution interacts with the selected license for the MFMCL application. Do not redistribute a binary until this review is complete.
 
+## Authlib-Injector
+
+The desktop skin-server launch adapter fetches release metadata and a SHA-256-pinned Authlib-Injector JAR from the project's HTTPS artifact service. It checks bounded metadata and download sizes and uses the JAR as an explicit Java agent for the trusted root chosen by the user. No JAR is included in this repository or bundled with the launcher. Review the upstream project's license, notices, release provenance and terms before any redistribution; runtime use of a third-party authentication service does not establish Microsoft ownership or authorize copying Minecraft files.
+
 ## BMCLAPI
 
 BMCLAPI is an optional third-party mirror, not an official Mojang service. Users select it explicitly. Its source identity is retained in task events; downloaded bytes are verified against metadata from the official version index before publication.

@@ -23,8 +23,12 @@ tauri-build = { version = "2", features = [] }
 chrono.workspace = true
 download-engine = { path = "../crates/download-engine" }
 launcher-core = { path = "../crates/launcher-core" }
+launcher-auth = { path = "../crates/launcher-auth", features = ["native-credentials"] }
+open = "5"
+zeroize = "1"
 mc-metadata = { path = "../crates/mc-metadata" }
 reqwest.workspace = true
+regex.workspace = true
 tauri = { version = "2", features = [] }
 tokio.workspace = true
 serde.workspace = true

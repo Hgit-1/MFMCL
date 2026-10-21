@@ -1,12 +1,12 @@
 use crate::model::{
-    AccountKind, AccountProfile, CreateInstanceInput, InstanceRecord, InstanceState,
-    LauncherSettings,
+    AccountKind, AccountProfile, CreateInstanceInput, DownloadTask, DownloadTaskState,
+    InstanceRecord, InstanceState, LauncherSettings,
 };
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -22,8 +22,9 @@ pub enum StoreError {
     Poisoned,
 }
 
+#[derive(Clone)]
 pub struct LauncherStore {
-    connection: Mutex<Connection>,
+    connection: Arc<Mutex<Connection>>,
 }
 
 impl LauncherStore {
@@ -88,9 +89,74 @@ impl LauncherStore {
                 VALUES (1, datetime('now'));
             ",
         )?;
+        let has_instance_id = {
+            let mut columns = connection.prepare("PRAGMA table_info(download_tasks)")?;
+            let names = columns
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            names.iter().any(|name| name == "instance_id")
+        };
+        if !has_instance_id {
+            connection.execute(
+                "ALTER TABLE download_tasks ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, datetime('now'))", [])?;
+        }
+        // A previous process may have been interrupted. Never keep an instance or task falsely running.
+        connection.execute(
+            "UPDATE instances SET state = 'failed' WHERE state = 'installing'",
+            [],
+        )?;
+        connection.execute("UPDATE download_tasks SET state = 'interrupted', updated_at = datetime('now') WHERE state IN ('running', 'paused')", [])?;
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: Arc::new(Mutex::new(connection)),
         })
+    }
+
+    pub fn save_download_task(&self, task: &DownloadTask) -> Result<(), StoreError> {
+        let state = serde_json::to_value(&task.state)?;
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        connection.execute(
+            "INSERT INTO download_tasks(id, instance_id, label, source, state, completed_bytes, total_bytes, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET instance_id = excluded.instance_id, label = excluded.label, source = excluded.source,
+             state = excluded.state, completed_bytes = excluded.completed_bytes,
+             total_bytes = excluded.total_bytes, updated_at = excluded.updated_at",
+            params![task.id, task.instance_id, task.label, task.source, state.as_str(), task.completed_bytes.min(i64::MAX as u64) as i64,
+                task.total_bytes.map(|v| v.min(i64::MAX as u64) as i64), task.created_at, task.updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_download_tasks(&self) -> Result<Vec<DownloadTask>, StoreError> {
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let mut statement = connection.prepare("SELECT id, instance_id, label, source, state, completed_bytes, total_bytes, created_at, updated_at FROM download_tasks ORDER BY updated_at DESC LIMIT 100")?;
+        let rows = statement.query_map([], |row| {
+            let state: String = row.get(4)?;
+            let state = match state.as_str() {
+                "running" => DownloadTaskState::Running,
+                "paused" => DownloadTaskState::Paused,
+                "completed" => DownloadTaskState::Completed,
+                "cancelled" => DownloadTaskState::Cancelled,
+                "failed" => DownloadTaskState::Failed,
+                "interrupted" => DownloadTaskState::Interrupted,
+                _ => DownloadTaskState::Interrupted,
+            };
+            Ok(DownloadTask {
+                id: row.get(0)?,
+                instance_id: row.get(1)?,
+                label: row.get(2)?,
+                source: row.get(3)?,
+                state,
+                completed_bytes: row.get::<_, i64>(5)?.max(0) as u64,
+                total_bytes: row.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u64),
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::Database)
     }
 
     pub fn save_settings(&self, settings: &LauncherSettings) -> Result<(), StoreError> {
@@ -212,6 +278,27 @@ impl LauncherStore {
         Ok(())
     }
 
+    pub fn discard_uninstalled_instance(&self, id: &str) -> Result<(), StoreError> {
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        connection.execute(
+            "DELETE FROM instances WHERE id = ?1 AND state = 'not_installed'",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_instance_loader(&self, id: &str, loader: &str) -> Result<(), StoreError> {
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        if connection.execute(
+            "UPDATE instances SET loader = ?1 WHERE id = ?2",
+            params![loader, id],
+        )? == 0
+        {
+            return Err(StoreError::Invalid("Instance not found".into()));
+        }
+        Ok(())
+    }
+
     pub fn add_account(&self, account: &AccountProfile) -> Result<(), StoreError> {
         let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         let tx = connection.unchecked_transaction()?;
@@ -291,6 +378,50 @@ fn path_to_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_tasks_persist_and_interrupted_work_is_marked_truthfully() {
+        let path = std::env::temp_dir().join(format!("mfmcl-{}.sqlite", Uuid::new_v4()));
+        let store = LauncherStore::open(&path).unwrap();
+        let now = Utc::now().to_rfc3339();
+        let task = DownloadTask {
+            id: Uuid::new_v4().to_string(),
+            instance_id: "test-instance".into(),
+            label: "Minecraft 1.21.4".into(),
+            source: Some("official".into()),
+            state: DownloadTaskState::Running,
+            completed_bytes: 128,
+            total_bytes: Some(512),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.save_download_task(&task).unwrap();
+        assert_eq!(store.list_download_tasks().unwrap()[0].completed_bytes, 128);
+        drop(store);
+        let recovered = LauncherStore::open(&path).unwrap();
+        assert_eq!(
+            recovered.list_download_tasks().unwrap()[0].state,
+            DownloadTaskState::Interrupted
+        );
+        drop(recovered);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn account_ipc_serialization_hides_the_keyring_reference() {
+        let account = AccountProfile {
+            id: "account-id".into(),
+            display_name: "Player".into(),
+            kind: AccountKind::Microsoft,
+            auth_server: None,
+            credential_ref: Some("opaque-keyring-entry".into()),
+            selected: true,
+            created_at: "2026-10-21T00:00:00Z".into(),
+        };
+        let value = serde_json::to_value(account).unwrap();
+        assert!(value.get("credentialRef").is_none());
+        assert!(!value.to_string().contains("opaque-keyring-entry"));
+    }
 
     #[test]
     fn settings_round_trip_and_instances_are_isolated() {

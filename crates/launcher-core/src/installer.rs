@@ -69,7 +69,10 @@ async fn install_inner(
     instance: &InstanceRecord,
     progress: Option<mpsc::UnboundedSender<DownloadProgress>>,
 ) -> Result<(), InstallError> {
+    let control = engine.control();
+    control.checkpoint().await?;
     let manifest = fetch_manifest(client, SourcePreference::Official).await?;
+    control.checkpoint().await?;
     let metadata = fetch_version_metadata(
         client,
         &manifest,
@@ -239,6 +242,7 @@ async fn install_inner(
     download_artifacts(&engine, artifacts.into_values().collect(), progress.clone()).await?;
 
     for archive in native_archives {
+        control.checkpoint().await?;
         let path = archive.archive.clone();
         let destination = archive.destination.clone();
         let excludes = archive.excludes.clone();
@@ -314,34 +318,43 @@ async fn install_inner(
         let _ = index_id;
     }
 
+    control.checkpoint().await?;
     Ok(())
 }
 
-fn safe_library_path(path: PathBuf) -> Result<PathBuf, InstallError> {
-    if path.as_os_str().is_empty()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(InstallError::InvalidMetadata(
-            "library artifact contains an unsafe relative path".to_owned(),
-        ));
+#[cfg(test)]
+mod asset_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn virtual_asset_materialization_refuses_symlink_destinations() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("mfmcl-asset-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let victim = root.join("victim");
+        let destination = root.join("virtual/item");
+        std::fs::write(&source, b"verified asset").unwrap();
+        std::fs::write(&victim, b"keep safe").unwrap();
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        symlink(&victim, &destination).unwrap();
+        assert!(materialize_assets(&[(source, destination)]).is_err());
+        assert_eq!(std::fs::read(victim).unwrap(), b"keep safe");
+        std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+pub(crate) fn safe_library_path(path: PathBuf) -> Result<PathBuf, InstallError> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| InstallError::InvalidMetadata("non-UTF8 library path".into()))?;
+    crate::modpacks::safe_pack_path(text).map_err(InstallError::InvalidMetadata)?;
     Ok(path)
 }
 
 fn safe_relative_asset_path(name: &str) -> Result<PathBuf, InstallError> {
-    let path = Path::new(name);
-    if path.as_os_str().is_empty()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(InstallError::InvalidMetadata(
-            "asset index contains an unsafe path".to_owned(),
-        ));
-    }
-    Ok(path.to_path_buf())
+    crate::modpacks::safe_pack_path(name).map_err(InstallError::InvalidMetadata)
 }
 
 fn materialize_assets(copies: &[(PathBuf, PathBuf)]) -> Result<(), InstallError> {
@@ -352,16 +365,43 @@ fn materialize_assets(copies: &[(PathBuf, PathBuf)]) -> Result<(), InstallError>
                 source.display()
             )));
         }
+        match std::fs::symlink_metadata(destination) {
+            Ok(metadata) if metadata.file_type().is_file() => continue,
+            Ok(_) => {
+                return Err(InstallError::InvalidMetadata(
+                    "asset destination is not a regular file".into(),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent)?;
-        }
-        if destination.exists() {
-            continue;
         }
         match std::fs::hard_link(source, destination) {
             Ok(()) => {}
             Err(_) => {
-                std::fs::copy(source, destination)?;
+                let parent = destination.parent().ok_or_else(|| {
+                    InstallError::InvalidMetadata("asset destination has no parent".into())
+                })?;
+                let temp = parent.join(format!(".asset-{}.pending", uuid::Uuid::new_v4()));
+                let mut output = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temp)?;
+                let result = (|| {
+                    let mut input = File::open(source)?;
+                    io::copy(&mut input, &mut output)?;
+                    output.sync_all()?;
+                    std::fs::hard_link(&temp, destination)?;
+                    Ok::<(), io::Error>(())
+                })();
+                drop(output);
+                if let Err(error) = result {
+                    let _ = std::fs::remove_file(&temp);
+                    return Err(error.into());
+                }
+                std::fs::remove_file(&temp)?;
             }
         }
     }

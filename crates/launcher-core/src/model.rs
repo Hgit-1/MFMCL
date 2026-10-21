@@ -52,7 +52,15 @@ pub struct LauncherSettings {
     pub custom_background: Option<String>,
     pub beginner_mode: bool,
     pub show_game_log: bool,
+    #[serde(default)]
+    pub java_path: Option<PathBuf>,
+    #[serde(default = "default_memory")]
+    pub memory_mb: u32,
     pub download: DownloadSettings,
+}
+
+fn default_memory() -> u32 {
+    2048
 }
 
 impl Default for LauncherSettings {
@@ -65,6 +73,8 @@ impl Default for LauncherSettings {
             custom_background: None,
             beginner_mode: true,
             show_game_log: true,
+            java_path: None,
+            memory_mb: default_memory(),
             download: DownloadSettings::default(),
         }
     }
@@ -85,7 +95,8 @@ pub struct AccountProfile {
     pub display_name: String,
     pub kind: AccountKind,
     pub auth_server: Option<String>,
-    /// Opaque operating-system credential-store key; never contains the secret itself.
+    /// Opaque OS credential-store reference, never exposed over frontend IPC.
+    #[serde(skip_serializing)]
     pub credential_ref: Option<String>,
     pub selected: bool,
     pub created_at: String,
@@ -112,6 +123,31 @@ pub struct InstanceRecord {
     pub isolated: bool,
     pub state: InstanceState,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadTaskState {
+    Running,
+    Paused,
+    Completed,
+    Cancelled,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadTask {
+    pub id: String,
+    pub instance_id: String,
+    pub label: String,
+    pub source: Option<String>,
+    pub state: DownloadTaskState,
+    pub completed_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

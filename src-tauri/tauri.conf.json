@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "dev.mfmcl.launcher",
   "build": {
-    "beforeDevCommand": "npm --prefix ../ui run dev -- --host 127.0.0.1 --port 1420",
+    "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 1420 --strictPort",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm --prefix ../ui run build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../ui/dist"
   },
   "app": {
@@ -21,11 +21,12 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ipc: http://ipc.localhost https://piston-meta.mojang.com https://bmclapi2.bangbang93.com;"
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost;"
     }
   },
   "bundle": {
     "active": true,
+    "resources": ["resources/aria2-manifest.json"],
     "shortDescription": "Minecraft Java Edition launcher",
     "category": "Game",
     "icon": [
@@ -35,6 +36,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "targets": ["msi", "nsis", "dmg", "app", "deb", "appimage"]
+    "targets": "all"
   }
 }
