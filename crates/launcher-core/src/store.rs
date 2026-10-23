@@ -524,6 +524,34 @@ mod tests {
     }
 
     #[test]
+    fn legacy_settings_rows_keep_loading_with_defaults_for_newer_fields() {
+        let store = LauncherStore::open(":memory:").unwrap();
+        // The exact schema-1 JSON persisted by the first release, before
+        // javaPath/memoryMb/updatePolicy existed. Future fields must keep
+        // #[serde(default)] so old rows load instead of bricking settings.
+        let legacy = r##"{"schemaVersion":1,"themeMode":"dark","themePreset":"moss","customAccent":"#a6d991","customBackground":null,"beginnerMode":true,"showGameLog":true,"download":{"source":"mixed","maxConcurrentDownloads":6,"connectionsPerFile":2,"aria2Enabled":false}}"##;
+        let connection = store.connection.lock().unwrap();
+        connection
+            .execute(
+                "INSERT INTO app_settings(id, schema_version, json, updated_at) VALUES (1, 1, ?1, '2026-01-01')",
+                [legacy],
+            )
+            .unwrap();
+        drop(connection);
+        let loaded = store.load_settings().unwrap();
+        assert_eq!(loaded.download.source, mc_metadata::SourcePreference::Mixed);
+        assert_eq!(loaded.download.max_concurrent_downloads, 6);
+        assert_eq!(loaded.java_path, None);
+        assert_eq!(loaded.memory_mb, 2048);
+        assert_eq!(loaded.update_policy, crate::model::UpdatePolicy::Notify);
+        // Round-tripping modernizes the row without losing legacy values.
+        store.save_settings(&loaded).unwrap();
+        let reloaded = store.load_settings().unwrap();
+        assert_eq!(reloaded.download.source, mc_metadata::SourcePreference::Mixed);
+        assert_eq!(reloaded.update_policy, crate::model::UpdatePolicy::Notify);
+    }
+
+    #[test]
     fn settings_round_trip_and_instances_are_isolated() {
         let store = LauncherStore::open(":memory:").unwrap();
         let mut settings = LauncherSettings::default();

@@ -43,6 +43,8 @@ import type { AccountRecord, DownloadEvent, DownloadSource, InstanceRecord, Laun
 import { accessibleAccent } from './theme'
 import { BackupManager } from './components/BackupManager'
 import { UpdateCard } from './components/UpdateCard'
+import { FirstRunGuide } from './components/FirstRunGuide'
+import './components/first-run-guide.css'
 import { InstanceManager } from './components/InstanceManager'
 import { InstallationTasks } from './components/InstallationTasks'
 import { MicrosoftLoginDialog, SkinLoginDialog } from './components/AccountLoginDialogs'
@@ -410,7 +412,7 @@ function App() {
         </header>
 
         <div className="page-content">
-          {page === 'home' && <HomePage instances={instances} javaInfo={javaInfo} gameLogs={gameLogs} gameStatus={gameStatus} showGameLog={settings.showGameLog} onCreate={() => setDialog('instance')} onBrowse={() => setPage('library')} onSettings={() => setPage('settings')} onLaunch={handleLaunch} onStop={handleStop} onInstall={handleInstall} onDiagnostics={(id) => void handleDiagnostics(id)} onAccount={() => setDialog('offline-account')} accountName={accounts.find((item) => item.id === selectedAccount)?.displayName} />}
+          {page === 'home' && <HomePage instances={instances} javaInfo={javaInfo} gameLogs={gameLogs} gameStatus={gameStatus} showGameLog={settings.showGameLog} onCreate={() => setDialog('instance')} onBrowse={() => setPage('library')} onSettings={() => setPage('settings')} onLaunch={handleLaunch} onStop={handleStop} onInstall={handleInstall} onDiagnostics={(id) => void handleDiagnostics(id)} onAccount={() => setDialog('offline-account')} accountName={accounts.find((item) => item.id === selectedAccount)?.displayName} hasAccount={accounts.length > 0} />}
           {page === 'library' && <LibraryPage instances={instances} search={search} setSearch={setSearch} onCreate={() => setDialog('instance')} versionSource={versionSource} onInstall={handleInstall} onLaunch={handleLaunch} filteredVersions={filteredVersions} versionLoading={versionLoading} onToast={setToast} />}
           {page === 'library' && <InstanceManager instances={instances} onChanged={async () => setInstances(await listInstances())} onNotice={setToast} />}
           {page === 'library' && <BackupManager instances={instances} onChanged={async () => setInstances(await listInstances())} onNotice={setToast} />}
@@ -435,7 +437,7 @@ function PageHeading({ eyebrow, title, description, action }: { eyebrow: string;
   return <div className="page-heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>
 }
 
-function HomePage({ instances, javaInfo, gameLogs, gameStatus, showGameLog, onCreate, onBrowse, onSettings, onLaunch, onStop, onInstall, onDiagnostics, onAccount, accountName }: { instances: InstanceRecord[]; javaInfo: { path: string; majorVersion: number; versionText: string } | null; gameLogs: Record<string, string>; gameStatus: Record<string, { status: string; logPath: string }>; showGameLog: boolean; onCreate: () => void; onBrowse: () => void; onSettings: () => void; onLaunch: (instanceId: string) => void; onStop: (instanceId: string) => void; onInstall: (instance: InstanceRecord) => void; onDiagnostics: (instanceId: string) => void; onAccount: () => void; accountName?: string }) {
+function HomePage({ instances, javaInfo, gameLogs, gameStatus, showGameLog, onCreate, onBrowse, onSettings, onLaunch, onStop, onInstall, onDiagnostics, onAccount, accountName, hasAccount }: { instances: InstanceRecord[]; javaInfo: { path: string; majorVersion: number; versionText: string } | null; gameLogs: Record<string, string>; gameStatus: Record<string, { status: string; logPath: string }>; showGameLog: boolean; onCreate: () => void; onBrowse: () => void; onSettings: () => void; onLaunch: (instanceId: string) => void; onStop: (instanceId: string) => void; onInstall: (instance: InstanceRecord) => void; onDiagnostics: (instanceId: string) => void; onAccount: () => void; accountName?: string; hasAccount: boolean }) {
   const activeInstance = instances[0]
   const activeStatus = activeInstance ? gameStatus[activeInstance.id] : undefined
   return (
@@ -454,6 +456,8 @@ function HomePage({ instances, javaInfo, gameLogs, gameStatus, showGameLog, onCr
         </div>
         <div className="hero-note"><Sparkles size={14} /><span>{activeInstance ? '每个实例都拥有独立的模组与世界目录' : '你的世界设置将彼此独立，不会互相覆盖'}</span></div>
       </section>
+
+      <FirstRunGuide hasAccount={hasAccount} javaReady={!!javaInfo} instanceCount={instances.length} anyReady={instances.some((item) => item.state === 'ready')} onAccount={onAccount} onSettings={onSettings} onCreate={onCreate} />
 
       <div className="section-row"><div><h2 className="section-title">快速开始</h2><p className="section-caption">常用操作都在这里</p></div><button className="text-link" onClick={onSettings}>查看系统状态<ArrowRight size={14} /></button></div>
       <div className="quick-grid">
