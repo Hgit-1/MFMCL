@@ -1,8 +1,8 @@
-.native-dialog { width: min(760px, calc(100vw - 32px)); max-height: 88vh; overflow: auto; padding: 24px; border: 1px solid var(--line-strong); border-radius: 16px; color: var(--text); background: var(--surface); box-shadow: var(--shadow-card); }
+.native-dialog { width: min(760px, calc(100vw - 32px)); max-height: 88vh; overflow: auto; padding: 24px; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); color: var(--text); background: var(--surface); box-shadow: var(--shadow-card); }
 .native-dialog::backdrop { background: rgb(0 0 0 / .65); backdrop-filter: blur(6px); }
 .native-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .native-dialog-heading h2 { margin: 0; font-size: 22px; font-weight: 650; }
-.management-section { margin-top: 24px; padding: clamp(16px, 2vw, 24px); border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.management-section { margin-top: 24px; padding: clamp(16px, 2vw, 24px); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
 .management-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
 .management-toolbar h2 { margin: 0 0 6px; font-size: 18px; }
 .management-toolbar p, .management-panel p, .pack-preview p { margin: 0 0 14px; font-size: 14px; line-height: 1.65; color: var(--muted); }
@@ -18,7 +18,7 @@
 .empty-management { padding: 18px 0; font-size: 14px; color: var(--muted); }
 .mod-file-list { list-style: none; padding: 0; margin: 16px 0; max-height: 300px; overflow: auto; }
 .mod-update-list { margin-top: 14px; display: grid; gap: 8px; }
-.mod-update-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.mod-update-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-2); }
 .mod-update-row.is-available { border-color: var(--accent-border); }
 .mod-update-copy { flex: 1; min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
 .mod-update-copy small { color: var(--quiet); }
@@ -26,16 +26,16 @@
 .client-update-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
 .client-update-section p { margin: 0 0 12px; }
 .mod-issue-list { margin-top: 12px; display: grid; gap: 8px; }
-.mod-issue-row { padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.mod-issue-row { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-2); }
 .mod-issue-row.is-error { border-color: #e5484d; }
 .mod-issue-copy { display: grid; gap: 4px; overflow-wrap: anywhere; }
 .mod-issue-copy small { color: var(--quiet); }
 .catalog-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
 .catalog-section > p { margin: 0 0 12px; }
 .catalog-search { display: flex; gap: 8px; margin-bottom: 12px; }
-.catalog-search input { flex: 1; min-width: 0; min-height: 44px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--text); background: var(--surface-2); font-size: 14px; }
+.catalog-search input { flex: 1; min-width: 0; min-height: 44px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); color: var(--text); background: var(--surface-2); font-size: 14px; }
 .catalog-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
-.catalog-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }
+.catalog-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-2); }
 .catalog-copy { flex: 1; min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
 .catalog-copy small { color: var(--quiet); }
 .catalog-version-list .mod-update-row { border-color: var(--line); background: var(--surface-2); }

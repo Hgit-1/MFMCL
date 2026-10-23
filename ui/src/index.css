@@ -14,6 +14,33 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-optical-sizing: auto;
+
+  /* ── Design tokens (Apple 8pt grid · Material 3 motion · skill scale) ── */
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  /* Radii: one language, three sizes + pill */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 99px;
+  /* Elevation: one resting shadow + one lift shadow, tinted by the surface */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .18), 0 6px 20px rgba(0, 0, 0, .12);
+  --shadow-lift: 0 2px 4px rgba(0, 0, 0, .16), 0 14px 34px rgba(0, 0, 0, .18);
+  /* Motion */
+  --ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --ease-spring: cubic-bezier(.34, 1.4, .64, 1);
+  --duration-fast: 150ms;
+  --duration-move: 220ms;
+  /* Control metrics */
+  --control-height: 44px;
+  --control-height-sm: 36px;
+  --focus-ring: 0 0 0 3px var(--accent-soft, rgba(166, 217, 145, .25));
 }
 
 * { box-sizing: border-box; }
@@ -21,7 +48,29 @@ html { min-width: 320px; min-height: 100%; }
 body { min-width: 320px; min-height: 100vh; margin: 0; }
 button, input, select { font: inherit; }
 button { color: inherit; }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent, #a6d991); outline-offset: 3px; }
+
+/* One consistent keyboard focus language across every control. */
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent, #a6d991);
+  outline-offset: 2px;
+}
+
 ::selection { background: rgba(166, 217, 145, .3); color: #fff; }
 
+/* Quiet, theme-aware scrollbars. */
+* { scrollbar-width: thin; scrollbar-color: var(--surface-3, #202d25) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: var(--radius-pill); background: var(--surface-3, #202d25) content-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+
 #root { min-height: 100vh; }
+
+/* Respect reduced-motion: keep state changes, drop travel and flourish. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

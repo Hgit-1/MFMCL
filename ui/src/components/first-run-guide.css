@@ -1,12 +1,12 @@
 .guide-card { padding: 20px 22px; margin-top: 24px; }
 .guide-steps { list-style: none; display: grid; gap: 8px; margin: 16px 0 0; padding: 0; }
-.guide-steps li { display: flex; align-items: center; gap: 14px; min-height: 56px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.guide-steps li { display: flex; align-items: center; gap: 14px; min-height: 56px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-2); }
 .guide-steps li.done { border-color: var(--accent-border); background: var(--accent-soft); }
 .guide-steps li.done .guide-step-icon { color: var(--accent-text, var(--accent)); }
 .guide-step-icon { flex: 0 0 auto; color: var(--quiet); display: grid; place-items: center; }
 .guide-step-copy { flex: 1; min-width: 0; display: grid; gap: 4px; }
 .guide-step-copy strong { display: flex; align-items: center; gap: 7px; font-size: 14px; color: var(--text); }
-.guide-step-copy strong small { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface-3); color: var(--quiet); font-size: 10px; }
+.guide-step-copy strong small { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface-3); color: var(--quiet); font-size: 13px; }
 .guide-steps li.done .guide-step-copy strong small { background: var(--accent); color: var(--accent-ink, #000); }
 .guide-step-copy > span { color: var(--muted); font-size: 12px; line-height: 1.6; }
 .guide-steps .button-secondary { min-height: 44px; flex: 0 0 auto; }
