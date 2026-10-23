@@ -54,7 +54,7 @@ import './App.css'
 
 const initialSettings: LauncherSettings = {
   theme: 'moss',
-  customAccent: '#a6d991',
+  customAccent: '#00d285',
   customBackground: null,
   mode: 'dark',
   downloadSource: 'official',
@@ -67,10 +67,10 @@ const initialSettings: LauncherSettings = {
 }
 
 const themeChoices: { id: ThemeId; label: string; color: string; note: string }[] = [
-  { id: 'moss', label: '苔原绿', color: '#a6d991', note: '沉静自然' },
-  { id: 'ember', label: '暖焰橙', color: '#f2a773', note: '温暖明亮' },
-  { id: 'lavender', label: '雾紫', color: '#b9a5ff', note: '柔和克制' },
-  { id: 'ocean', label: '湖水青', color: '#7ed4c1', note: '清爽专注' },
+  { id: 'moss', label: '极光绿', color: '#00d285', note: '沉静自然' },
+  { id: 'ember', label: '琥珀橙', color: '#f59e0b', note: '温暖明亮' },
+  { id: 'lavender', label: '星辉紫', color: '#8b5cf6', note: '柔和克制' },
+  { id: 'ocean', label: '晴空蓝', color: '#38bdf8', note: '清爽专注' },
 ]
 
 const navItems: { id: PageId; label: string; icon: typeof House }[] = [
@@ -118,6 +118,7 @@ function App() {
     const applyPalette = () => {
       const palette = accessibleAccent(settings.customAccent, settings.mode === 'light' || (settings.mode === 'system' && media.matches))
       document.documentElement.style.setProperty('--user-accent', palette.fill)
+      document.documentElement.style.setProperty('--user-accent-rgb', palette.rgb)
       document.documentElement.style.setProperty('--accent-ink', palette.ink)
       document.documentElement.style.setProperty('--accent-text', palette.text)
     }

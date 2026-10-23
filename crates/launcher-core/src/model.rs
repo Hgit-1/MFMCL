@@ -80,7 +80,7 @@ impl Default for LauncherSettings {
             schema_version: 1,
             theme_mode: ThemeMode::Dark,
             theme_preset: ThemePreset::Moss,
-            custom_accent: "#a6d991".to_owned(),
+            custom_accent: "#00d285".to_owned(),
             custom_background: None,
             beginner_mode: true,
             show_game_log: true,

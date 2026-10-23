@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { AccountRecord, InstanceRecord, LauncherSettings, SkinLoginResult, VersionItem } from './types'
 
 export const isDesktopShell = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-export const defaultSettings = (): LauncherSettings => ({ theme: 'moss', customAccent: '#a6d991', customBackground: null, mode: 'dark', downloadSource: 'official', ariaConnections: 4, ariaSplits: 4, showGameLog: true, javaPath: '', memoryMb: 2048, updatePolicy: 'notify' })
+export const defaultSettings = (): LauncherSettings => ({ theme: 'moss', customAccent: '#00d285', customBackground: null, mode: 'dark', downloadSource: 'official', ariaConnections: 4, ariaSplits: 4, showGameLog: true, javaPath: '', memoryMb: 2048, updatePolicy: 'notify' })
 export function validateSettings(value: unknown): LauncherSettings {
   const fallback = defaultSettings()
   if (!value || typeof value !== 'object') return fallback

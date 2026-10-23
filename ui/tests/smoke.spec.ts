@@ -7,7 +7,7 @@ test('custom colours remain legible in dark and light themes', () => {
     for (const light of [true, false]) {
       const theme = accessibleAccent(colour, light)
       expect(contrast(theme.ink, theme.fill)).toBeGreaterThanOrEqual(4.5)
-      expect(contrast(theme.text, light ? '#ffffff' : '#151f19')).toBeGreaterThanOrEqual(4.5)
+      expect(contrast(theme.text, light ? '#ffffff' : '#17202f')).toBeGreaterThanOrEqual(4.5)
     }
   }
 })
@@ -16,7 +16,7 @@ test('persisted preferences are treated as untrusted input', () => {
   expect(settings.ariaConnections).toBe(4)
   expect(settings.customBackground).toBeNull()
   expect(settings.memoryMb).toBe(2048)
-  expect(settings.customAccent).toBe('#a6d991')
+  expect(settings.customAccent).toBe('#00d285')
 })
 test('preview is honest about native operations and restores theme', async ({ page }) => {
   await page.goto('/')
@@ -24,12 +24,12 @@ test('preview is honest about native operations and restores theme', async ({ pa
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByRole('button', { name: '浅色' }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-  await page.getByRole('button', { name: '湖水青 清爽专注' }).click()
+  await page.getByRole('button', { name: '晴空蓝 清爽专注' }).click()
   await page.waitForFunction(() => JSON.parse(localStorage.getItem('mfmcl-settings') ?? '{}').theme === 'ocean')
   await page.reload()
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-  await expect(page.getByRole('button', { name: /湖水青/ })).toContainText('已选')
+  await expect(page.getByRole('button', { name: /晴空蓝/ })).toContainText('已选')
   await page.getByRole('button', { name: '实例库', exact: true }).click()
   await page.getByRole('button', { name: '导入整合包', exact: true }).last().click()
   await expect(page.getByRole('status')).toContainText('桌面应用')

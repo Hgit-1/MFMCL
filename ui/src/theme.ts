@@ -9,15 +9,17 @@ export function contrast(a: string, b: string): number {
   return (high + .05) / (low + .05)
 }
 export function accessibleAccent(input: string, light: boolean) {
-  const fill = /^#[\da-f]{6}$/i.test(input) ? input : '#a6d991'
+  const fill = /^#[\da-f]{6}$/i.test(input) ? input : '#00d285'
   const ink = contrast(fill, '#ffffff') > contrast(fill, '#000000') ? '#ffffff' : '#000000'
   let text = fill
-  const surface = light ? '#ffffff' : '#151f19'
+  const surface = light ? '#ffffff' : '#17202f'
   const destination = light ? [0, 0, 0] : [255, 255, 255]
   const source = rgb(fill).map(c => c * 255)
   for (let i = 0; contrast(text, surface) < 4.5 && i <= 100; i++) {
     const ratio = i / 100
     text = '#' + source.map((c, j) => Math.round(c * (1 - ratio) + destination[j] * ratio).toString(16).padStart(2, '0')).join('')
   }
-  return { fill, ink, text }
+  // Raw channels feed rgba() glow shadows without extra parsing in CSS.
+  const rgbChannels = source.map(c => Math.round(c)).join(', ')
+  return { fill, ink, text, rgb: rgbChannels }
 }
