@@ -1,0 +1,282 @@
+{
+  "title": "原野 FIELD / Minecraft Java 启动器设计",
+  "format": "Sketch ZIP/JSON, document version 121",
+  "board_count": 44,
+  "page_count": 9,
+  "symbol_count": 6,
+  "text_style_count": 73,
+  "artboards": [
+    {
+      "key": "cover",
+      "name": "00 / 原野 FIELD · 独立启动器设计",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "guide",
+      "name": "01 / 使用说明与设计边界",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "tokens",
+      "name": "02 / 色彩与排版",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "components",
+      "name": "03 / 可编辑控件与状态",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "home",
+      "name": "04 / 开始 · 浅色",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "home-dark",
+      "name": "04 / 开始 · 深色",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "home-compact",
+      "name": "05 / 开始 · 紧凑窗口 1024 × 720",
+      "width": 1024,
+      "height": 720
+    },
+    {
+      "key": "welcome",
+      "name": "06 / 首次使用 · 欢迎",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "create",
+      "name": "07 / 安装 · 选择玩法",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "configure",
+      "name": "08 / 安装 · 推荐配置",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "install-review",
+      "name": "09 / 安装 · 确认计划",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "installing",
+      "name": "10 / 安装 · 正在准备",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "paused",
+      "name": "11 / 下载已暂停",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "ready",
+      "name": "11 / 你的游戏准备好了",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "launch",
+      "name": "11 / 正在启动山间小屋",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "running",
+      "name": "11 / 游戏正在运行",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "library",
+      "name": "12 / 我的游戏",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "instance",
+      "name": "13 / 游戏详情",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "discover",
+      "name": "14 / 发现内容",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "content-detail",
+      "name": "15 / 内容详情与安装",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "mods",
+      "name": "16 / 模组管理",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "compatibility",
+      "name": "17 / 兼容性与变更确认",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "import",
+      "name": "18 / 导入游戏与整合包",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "downloads",
+      "name": "19 / 下载任务",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "download-error",
+      "name": "20 / 下载失败 · 可恢复",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "backups",
+      "name": "21 / 存档与备份",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "restore",
+      "name": "22 / 恢复备份 · 二次确认",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "crash",
+      "name": "23 / 游戏没有正常启动",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "servers",
+      "name": "24 / 服务器收藏",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "account",
+      "name": "25 / 账户 · 微软授权",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "auth-wait",
+      "name": "26 / 等待你在浏览器完成授权",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "personalize",
+      "name": "27 / 个性化 · 即时预览",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "settings",
+      "name": "28 / 设置 · 推荐与高级分离",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "empty",
+      "name": "状态 / 还没有自己的游戏",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "offline",
+      "name": "状态 / 当前处于离线状态",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "cancel-install",
+      "name": "状态 / 要取消这次安装吗？",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "stop-game",
+      "name": "状态 / 要结束正在运行的游戏吗？",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "backup-created",
+      "name": "状态 / 备份已创建",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "restore-done",
+      "name": "状态 / 存档恢复完成",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "account-ready",
+      "name": "状态 / 账户已经连接",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "files-info",
+      "name": "状态 / 打开游戏文件夹",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "filters",
+      "name": "状态 / 筛选兼容内容",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "logs",
+      "name": "状态 / 诊断日志 · 脱敏预览",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "key": "delete",
+      "name": "状态 / 移除游戏前，请确认",
+      "width": 1440,
+      "height": 900
+    }
+  ],
+  "limits": [
+    "Design only; no launcher backend",
+    "No Figma native .fig exported",
+    "No target-editor import verified",
+    "Fixed layout, not Figma Auto Layout",
+    "Prototype transitions only; no real service requests"
+  ],
+  "source_policy": "Original geometry and text; PCL source and UI not read."
+}

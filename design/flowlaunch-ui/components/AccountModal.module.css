@@ -1,0 +1,115 @@
+.layoutWithSidebar {
+  display: flex;
+  align-items: stretch;
+  gap: 24px;
+  min-width: 0;
+}
+
+.welcomeSection { min-width: 0; flex: 1 1 auto; }
+.welcomeContent { display: flex; flex-direction: column; gap: 16px; }
+.welcomeIcon { display: flex; justify-content: flex-start; }
+.logoIcon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--color-primary-500), var(--color-secondary-500));
+  color: white;
+  font-size: 22px;
+  font-weight: 700;
+}
+.welcomeContent h2 { color: var(--color-text-primary); font-size: var(--text-2xl); line-height: 1.25; }
+.welcomeDescription { color: var(--color-text-secondary); line-height: 1.65; }
+.infoCards { display: grid; gap: 10px; }
+.infoCard { display: flex; gap: 12px; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-base); background: var(--color-bg-secondary); }
+.infoCard > svg { flex: 0 0 20px; color: var(--color-primary-500); }
+.infoCard h4, .quickTips h4 { margin-bottom: 3px; color: var(--color-text-primary); font-size: var(--text-base); }
+.infoCard p, .quickTips li { color: var(--color-text-secondary); font-size: var(--text-sm); line-height: 1.5; }
+.quickTips { padding: 12px 14px; border-left: 3px solid var(--color-primary-500); background: var(--color-bg-secondary); }
+.quickTips ul { padding-left: 18px; }
+.notice { display: flex; align-items: flex-start; gap: 10px; margin-top: 18px; padding: 12px; border-radius: var(--radius-base); background: color-mix(in srgb, var(--color-primary-500) 9%, var(--color-bg-secondary)); color: var(--color-text-secondary); }
+.notice > svg { flex: 0 0 20px; color: var(--color-primary-500); }
+.notice p, .notice li { font-size: var(--text-sm); line-height: 1.55; }
+.notice h4 { margin-bottom: 5px; color: var(--color-text-primary); }
+.notice ul { padding-left: 18px; }
+.warning { background: color-mix(in srgb, var(--color-warning-500) 12%, var(--color-bg-secondary)); }
+.warning > svg { color: var(--color-warning-600); }
+.recentSidebar { width: 250px; flex: 0 0 250px; min-width: 0; padding-left: 24px; border-left: 1px solid var(--color-border); }
+.recentSidebar > h4 { margin-bottom: 12px; color: var(--color-text-primary); font-size: var(--text-base); }
+.recentList { display: flex; flex-direction: column; gap: 8px; }
+.recentAccountWrapper { min-width: 0; }
+.recentAccount { position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px; border: 1px solid var(--color-border); border-radius: var(--radius-base); background: var(--color-bg-secondary); }
+.recentInfo, .accountDetails, .gridItemInfo, .editInfo { min-width: 0; flex: 1; }
+.recentName, .gridItemName { display: block; overflow: hidden; color: var(--color-text-primary); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.recentType, .gridItemType, .accountType { display: block; color: var(--color-text-secondary); font-size: var(--text-xs); }
+.recentBadge, .gridItemBadge { color: var(--color-success-600); }
+.recentActions { display: flex; gap: 4px; }
+.recentActions button, .gridItemActions button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 30px; padding: 4px 7px; border: 0; border-radius: var(--radius-sm); cursor: pointer; font: inherit; font-size: var(--text-xs); }
+.recentActionEdit, .gridActionEdit { background: var(--color-bg-elevated); color: var(--color-text-secondary); }
+.recentActionUse, .gridActionUse { background: var(--color-primary-500); color: white; }
+.recentHint { margin: 10px 0; color: var(--color-text-disabled); font-size: var(--text-xs); }
+.addAccountBtn, .addAccountButton { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; min-height: 42px; border: 1px dashed var(--color-border); border-radius: var(--radius-base); background: transparent; color: var(--color-primary-500); cursor: pointer; font: inherit; }
+.addAccountBtn:hover, .addAccountButton:hover { background: var(--color-bg-secondary); }
+.addAccountMenu { display: flex; flex-direction: column; gap: 6px; }
+.addAccountMenu button { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-elevated); color: var(--color-text-primary); cursor: pointer; font: inherit; text-align: left; }
+.addAccountMenu button span { flex: 1; }
+.addAccountMenu button:hover { background: var(--color-bg-secondary); }
+.accountManagement, .editAccount, .methodDetail { display: flex; flex-direction: column; gap: 18px; }
+.currentAccountSection, .accountListSection { display: flex; flex-direction: column; gap: 12px; }
+.currentAccountSection h3, .accountListSection h3 { color: var(--color-text-primary); font-size: var(--text-lg); }
+.accountInfo { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid var(--color-border); border-radius: var(--radius-base); background: var(--color-bg-secondary); }
+.accountInfo button { margin-left: auto; }
+.ownershipBadge { display: inline-flex; align-items: center; gap: 5px; width: fit-content; margin-top: 6px; font-size: var(--text-xs); }
+.ownershipBadge svg { width: 16px; height: 16px; }
+.verified { color: var(--color-success-600); }
+.unverified { color: var(--color-warning-600); }
+.accountGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.accountGridItem { position: relative; min-width: 0; min-height: 72px; padding: 10px; border: 1px solid var(--color-border); border-radius: var(--radius-base); background: var(--color-bg-secondary); }
+.gridItemContent { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.gridItemBadge { margin-left: auto; }
+.gridItemActions { display: flex; gap: 5px; margin-top: 8px; }
+.gridItemActions button { flex: 1; }
+.actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 2px; }
+.editPreview { display: flex; align-items: center; gap: 14px; }
+.skinUpload, .modelSelect { display: flex; flex-direction: column; gap: 8px; }
+.uploadLabel { display: flex; flex-direction: column; gap: 3px; }
+.uploadLabel strong, .modelSelect strong { color: var(--color-text-primary); }
+.uploadLabel span { color: var(--color-text-secondary); font-size: var(--text-sm); }
+.uploadArea { display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 12px; border: 1px dashed var(--color-border); border-radius: var(--radius-base); color: var(--color-text-secondary); }
+.modelOptions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.modelOption { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--color-border); border-radius: var(--radius-base); background: var(--color-bg-elevated); color: var(--color-text-primary); cursor: pointer; font: inherit; text-align: left; }
+.modelOption.active { border-color: var(--color-primary-500); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary-500) 18%, transparent); }
+.modelPreview { display: grid; place-items: center; width: 46px; height: 46px; overflow: hidden; border-radius: var(--radius-sm); background: var(--color-bg-secondary); }
+.skinModel { width: 42px; height: 42px; object-fit: contain; image-rendering: pixelated; }
+.playerAvatarFrame { flex: 0 0 auto; overflow: hidden; border-radius: var(--radius-sm); background: var(--color-bg-secondary); }
+.playerAvatar { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
+.playerAvatarFallback { display: grid; place-items: center; width: 100%; height: 100%; color: var(--color-primary-500); font-weight: 700; }
+.detailHeader { display: flex; align-items: center; gap: 12px; }
+.detailHeader h3 { color: var(--color-text-primary); font-size: var(--text-lg); }
+.detailHeader p { color: var(--color-text-secondary); font-size: var(--text-sm); }
+.methodIcon { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; border-radius: var(--radius-base); background: var(--color-bg-secondary); color: var(--color-primary-500); }
+.infoBox { padding: 14px; border: 1px solid var(--color-border); border-radius: var(--radius-base); background: var(--color-bg-secondary); color: var(--color-text-secondary); }
+.infoBox h4 { margin-bottom: 7px; color: var(--color-text-primary); }
+.infoBox ol, .infoBox ul { padding-left: 20px; font-size: var(--text-sm); line-height: 1.65; }
+
+@media (max-width: 700px) {
+  .layoutWithSidebar { flex-direction: column; }
+  .recentSidebar { width: 100%; min-width: 0; padding: 18px 0 0; border-top: 1px solid var(--color-border); border-left: 0; }
+  .accountGrid { grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); }
+  .currentAccountSection .accountInfo { flex-wrap: wrap; }
+  .currentAccountSection .accountInfo button { margin-left: 0; }
+  .modelOptions { grid-template-columns: 1fr; }
+  .uploadArea { flex-wrap: wrap; }
+}
+
+@media (max-width: 420px) {
+  .actions { flex-wrap: wrap; }
+  .actions button { flex: 1 1 100%; }
+  .currentAccountSection .accountInfo { align-items: center; gap: 12px; padding: 12px; }
+  .accountDetails { flex: 1 1 calc(100% - 96px); }
+  .ownershipBadge { flex-wrap: wrap; }
+  .accountGrid { grid-template-columns: minmax(0, 1fr); }
+  .gridItemContent { flex-direction: row; justify-content: flex-start; }
+  .gridItemInfo { align-items: flex-start; }
+}

@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { AccountRecord, InstanceRecord, LauncherSettings, SkinLoginResult, VersionItem } from './types'
 
 export const isDesktopShell = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-export const defaultSettings = (): LauncherSettings => ({ theme: 'moss', customAccent: '#00d285', customBackground: null, mode: 'dark', downloadSource: 'official', ariaConnections: 4, ariaSplits: 4, showGameLog: true, javaPath: '', memoryMb: 2048, updatePolicy: 'notify' })
+export const defaultSettings = (): LauncherSettings => ({ theme: 'moss', customAccent: '#00d285', customBackground: null, mode: 'dark', downloadSource: 'official', ariaConnections: 4, ariaSplits: 4, showGameLog: true, javaPath: '', memoryMb: 2048, windowWidth: 854, windowHeight: 480, extraJvmArgs: '', updatePolicy: 'notify' })
 export function validateSettings(value: unknown): LauncherSettings {
   const fallback = defaultSettings()
   if (!value || typeof value !== 'object') return fallback
@@ -17,7 +17,10 @@ export function validateSettings(value: unknown): LauncherSettings {
     ariaConnections: number(v.ariaConnections, 4, 16), ariaSplits: number(v.ariaSplits, 4, 16),
     showGameLog: typeof v.showGameLog === 'boolean' ? v.showGameLog : true,
     javaPath: typeof v.javaPath === 'string' && v.javaPath.length < 4096 ? v.javaPath : '',
-    memoryMb: number(v.memoryMb, 2048, 32768, 512),
+    memoryMb: number(v.memoryMb, 2048, 4294967295, 512),
+    windowWidth: number(v.windowWidth, 854, 7680, 640),
+    windowHeight: number(v.windowHeight, 480, 4320, 360),
+    extraJvmArgs: typeof v.extraJvmArgs === 'string' && v.extraJvmArgs.length <= 8192 ? v.extraJvmArgs : '',
     updatePolicy: ['notify', 'off'].includes(String(v.updatePolicy)) ? v.updatePolicy as LauncherSettings['updatePolicy'] : fallback.updatePolicy,
   }
 }
@@ -26,12 +29,12 @@ export function readSettings(): LauncherSettings | null {
 }
 export async function loadSettings(): Promise<{ settings: LauncherSettings; beginnerMode: boolean }> {
   if (!isDesktopShell()) return { settings: readSettings() ?? defaultSettings(), beginnerMode: true }
-  const stored = await invoke<{ themeMode: string; themePreset: string; customAccent: string; customBackground: string | null; beginnerMode: boolean; showGameLog: boolean; javaPath?: string; memoryMb?: number; updatePolicy?: string; download: { source: string; maxConcurrentDownloads: number; connectionsPerFile: number } }>('get_settings')
-  return { settings: validateSettings({ theme: stored.themePreset, customAccent: stored.customAccent, customBackground: stored.customBackground, mode: stored.themeMode, downloadSource: stored.download.source, ariaConnections: stored.download.maxConcurrentDownloads, ariaSplits: stored.download.connectionsPerFile, showGameLog: stored.showGameLog, javaPath: stored.javaPath ?? '', memoryMb: stored.memoryMb ?? 2048, updatePolicy: stored.updatePolicy ?? 'notify' }), beginnerMode: stored.beginnerMode }
+  const stored = await invoke<{ themeMode: string; themePreset: string; customAccent: string; customBackground: string | null; beginnerMode: boolean; showGameLog: boolean; javaPath?: string; memoryMb?: number; windowWidth?: number; windowHeight?: number; extraJvmArgs?: string; updatePolicy?: string; download: { source: string; maxConcurrentDownloads: number; connectionsPerFile: number } }>('get_settings')
+  return { settings: validateSettings({ theme: stored.themePreset, customAccent: stored.customAccent, customBackground: stored.customBackground, mode: stored.themeMode, downloadSource: stored.download.source, ariaConnections: stored.download.maxConcurrentDownloads, ariaSplits: stored.download.connectionsPerFile, showGameLog: stored.showGameLog, javaPath: stored.javaPath ?? '', memoryMb: stored.memoryMb ?? 2048, windowWidth: stored.windowWidth ?? 854, windowHeight: stored.windowHeight ?? 480, extraJvmArgs: stored.extraJvmArgs ?? '', updatePolicy: stored.updatePolicy ?? 'notify' }), beginnerMode: stored.beginnerMode }
 }
 export async function saveSettings(settings: LauncherSettings, beginnerMode: boolean): Promise<void> {
   if (isDesktopShell()) {
-    await invoke('save_settings', { settings: { schemaVersion: 1, themeMode: settings.mode, themePreset: settings.theme, customAccent: settings.customAccent, customBackground: settings.customBackground, beginnerMode, showGameLog: settings.showGameLog, javaPath: settings.javaPath || null, memoryMb: settings.memoryMb, updatePolicy: settings.updatePolicy, download: { source: settings.downloadSource, maxConcurrentDownloads: settings.ariaConnections, connectionsPerFile: settings.ariaSplits, aria2Enabled: true } } })
+    await invoke('save_settings', { settings: { schemaVersion: 2, themeMode: settings.mode, themePreset: settings.theme, customAccent: settings.customAccent, customBackground: settings.customBackground, beginnerMode, showGameLog: settings.showGameLog, javaPath: settings.javaPath || null, memoryMb: settings.memoryMb, windowWidth: settings.windowWidth, windowHeight: settings.windowHeight, extraJvmArgs: settings.extraJvmArgs, updatePolicy: settings.updatePolicy, download: { source: settings.downloadSource, maxConcurrentDownloads: settings.ariaConnections, connectionsPerFile: settings.ariaSplits, aria2Enabled: true } } })
     // Avoid duplicating multi-megabyte images in the WebView preference cache.
     localStorage.setItem('mfmcl-settings', JSON.stringify({ ...settings, customBackground: null }))
   } else localStorage.setItem('mfmcl-settings', JSON.stringify(settings))
@@ -39,9 +42,18 @@ export async function saveSettings(settings: LauncherSettings, beginnerMode: boo
 export async function listVersions(): Promise<VersionItem[]> { return isDesktopShell() ? invoke('list_versions') : [] }
 export async function listInstances(): Promise<InstanceRecord[]> { return isDesktopShell() ? invoke('list_instances') : [] }
 export async function listAccounts(): Promise<AccountRecord[]> { return isDesktopShell() ? invoke('list_accounts') : [] }
-export async function inspectJava(): Promise<{ path: string; majorVersion: number; versionText: string }> {
+export async function getSystemMemory(): Promise<{ totalMb: number; recommendedMb: number; maximumGameMb: number }> {
+  if (!isDesktopShell()) return { totalMb: 8192, recommendedMb: 2048, maximumGameMb: 6144 }
+  return invoke('get_system_memory')
+}
+export interface JavaRuntimeInfo { path: string; majorVersion: number; versionText: string }
+export async function inspectJava(): Promise<JavaRuntimeInfo> {
   if (!isDesktopShell()) throw new Error('Java 检测需要桌面应用后端。')
   return invoke('detect_java')
+}
+export async function inspectJavaPath(path: string): Promise<JavaRuntimeInfo> {
+  if (!isDesktopShell()) throw new Error('Java 检测需要桌面应用后端。')
+  return invoke('inspect_java_path', { path })
 }
 function requireDesktop() { if (!isDesktopShell()) throw new Error('此操作需要桌面应用；当前仅为界面预览。') }
 export async function createInstance(version: string, name: string): Promise<InstanceRecord> { requireDesktop(); return invoke('create_instance', { version, name }) }

@@ -12,9 +12,10 @@ use download_engine::{
 };
 use launcher_core::{
     AccountKind, AccountProfile, CreateInstanceInput, DiagnosticSummary, InstanceState,
-    JavaRuntimeInfo, LauncherSettings, LauncherStore, detect_java_runtime,
-    export_instance_diagnostics, install_vanilla, prepare_authenticated_launch,
-    prepare_offline_launch, summarize_instance,
+    JavaRuntimeInfo, LauncherSettings, LauncherStore, SystemMemoryInfo, apply_launch_settings,
+    detect_java_runtime, discover_java_runtimes, export_instance_diagnostics, install_vanilla,
+    prepare_authenticated_launch, prepare_offline_launch, summarize_instance, system_memory_info,
+    validate_settings,
 };
 use mc_metadata::{GameVersionMetadata, SourcePreference, fetch_manifest};
 use serde::Serialize;
@@ -85,47 +86,33 @@ async fn list_versions() -> Result<Vec<VersionListItem>, String> {
 }
 #[tauri::command]
 fn get_settings(store: State<'_, LauncherStore>) -> Result<LauncherSettings, String> {
-    store.load_settings().map_err(|e| e.to_string())
+    let settings = store.load_settings().map_err(|e| e.to_string())?;
+    validate_settings(&settings, Some(system_memory_info().maximum_game_mb))?;
+    Ok(settings)
+}
+#[tauri::command]
+fn get_system_memory() -> SystemMemoryInfo {
+    system_memory_info()
 }
 #[tauri::command]
 fn save_settings(
     settings: LauncherSettings,
     store: State<'_, LauncherStore>,
 ) -> Result<(), String> {
-    if !(1..=16).contains(&settings.download.max_concurrent_downloads)
-        || !(1..=16).contains(&settings.download.connections_per_file)
-    {
-        return Err("下载并发数必须在 1 到 16 之间。".into());
-    }
-    if !(512..=32768).contains(&settings.memory_mb)
-        || settings
-            .java_path
-            .as_ref()
-            .is_some_and(|p| p.as_os_str().len() > 4096)
-    {
-        return Err("游戏内存必须在 512–32768 MB 范围，Java 路径不能过长。".into());
-    }
-    if settings.custom_accent.len() != 7
-        || !settings.custom_accent.starts_with('#')
-        || !settings.custom_accent[1..]
-            .chars()
-            .all(|c| c.is_ascii_hexdigit())
-    {
-        return Err("强调色必须为 #RRGGBB。".into());
-    }
-    if settings.custom_background.as_ref().is_some_and(|image| {
-        image.len() > 3 * 1024 * 1024
-            || !(image.starts_with("data:image/png;base64,")
-                || image.starts_with("data:image/jpeg;base64,")
-                || image.starts_with("data:image/webp;base64,"))
-    }) {
-        return Err("背景只能是有限大小的本地 PNG、JPEG 或 WebP 图片。".into());
-    }
+    validate_settings(&settings, Some(system_memory_info().maximum_game_mb))?;
     store.save_settings(&settings).map_err(|e| e.to_string())
 }
 #[tauri::command]
 fn detect_java() -> Result<JavaRuntimeInfo, String> {
     detect_java_runtime(None).map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn list_java_runtimes() -> Vec<JavaRuntimeInfo> {
+    discover_java_runtimes()
+}
+#[tauri::command]
+fn inspect_java_path(path: String) -> Result<JavaRuntimeInfo, String> {
+    launcher_core::inspect_java_path(path.into()).map_err(|e| e.to_string())
 }
 #[tauri::command]
 fn get_system_info(app: tauri::AppHandle) -> Result<SystemInfo, String> {
@@ -392,7 +379,7 @@ async fn launch_instance(
         .map_err(|e| format!("无法读取版本配置：{e}"))?;
     let metadata: GameVersionMetadata =
         serde_json::from_slice(&bytes).map_err(|e| format!("版本配置已损坏：{e}"))?;
-    let settings = store.load_settings().map_err(|e| e.to_string())?;
+    validate_settings(&settings, Some(system_memory_info().maximum_game_mb))?;
     let mut secrets = Vec::new();
     let mut prepared = if account.kind == AccountKind::Offline {
         prepare_offline_launch(&root, &instance, &account, &metadata, settings.java_path)
@@ -428,9 +415,16 @@ async fn launch_instance(
             format!("-javaagent:{}={}", agent.to_string_lossy(), server),
         );
     }
-    prepared
-        .args
-        .insert(0, format!("-Xmx{}M", settings.memory_mb.clamp(512, 32768)));
+    apply_launch_settings(
+        &mut prepared,
+        &settings,
+        system_memory_info().recommended_mb,
+        metadata
+            .main_class
+            .as_deref()
+            .ok_or("Minecraft 主类缺失。")?,
+    )
+    .map_err(|error| error.to_string())?;
     let secrets = Arc::new(secrets);
     let registry = processes.0.clone();
     if let Some(parent) = prepared.log_path.parent() {
@@ -445,6 +439,9 @@ async fn launch_instance(
         .open(&prepared.log_path)
         .await
         .map_err(|e| e.to_string())?;
+    if !settings.pre_launch_command.trim().is_empty() {
+        run_pre_launch_command(&settings.pre_launch_command, &prepared.working_directory).await?;
+    }
     let shared_log = Arc::new(tokio::sync::Mutex::new(log_file));
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
     {
@@ -470,6 +467,12 @@ async fn launch_instance(
             return Err(format!("无法启动 Java：{error}"));
         }
     };
+    let launcher_hidden = settings.launcher_visibility == launcher_core::LauncherVisibility::Hide;
+    if launcher_hidden {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.hide();
+        }
+    }
     let stdout = child.stdout.take().ok_or("无法读取游戏输出。")?;
     let stderr = child.stderr.take().ok_or("无法读取游戏错误输出。")?;
     let stdout_task = tokio::spawn(consume_game_log(
@@ -509,6 +512,12 @@ async fn launch_instance(
         if let Ok(mut running) = registry.lock() {
             running.remove(&instance_id);
         }
+        if launcher_hidden {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
         let _ = app.emit(
             "game-process",
             GameProcessEvent {
@@ -525,6 +534,39 @@ async fn launch_instance(
         );
     });
     Ok(())
+}
+
+async fn run_pre_launch_command(
+    command: &str,
+    working_directory: &std::path::Path,
+) -> Result<(), String> {
+    let parts = shlex::split(command)
+        .ok_or_else(|| "启动前命令格式无效，请检查引号是否成对。".to_owned())?;
+    let (program, args) = parts
+        .split_first()
+        .ok_or_else(|| "启动前命令不能为空。".to_owned())?;
+    if program.contains("..") {
+        return Err("启动前命令不能使用包含 .. 的路径。".into());
+    }
+    let status = Command::new(program)
+        .args(args)
+        .current_dir(working_directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .await
+        .map_err(|error| format!("无法执行启动前命令：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "启动前命令退出码异常：{}",
+            status
+                .code()
+                .map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+        ))
+    }
 }
 
 async fn consume_game_log<R>(
@@ -605,6 +647,8 @@ pub fn run() {
             get_settings,
             save_settings,
             detect_java,
+            list_java_runtimes,
+            inspect_java_path,
             get_system_info,
             list_instances,
             create_instance,

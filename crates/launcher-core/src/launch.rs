@@ -6,7 +6,7 @@ use mc_metadata::{ArgumentEntry, ArgumentValue, GameVersionMetadata};
 use md5::{Digest, Md5};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
@@ -45,6 +45,64 @@ pub struct JavaRuntimeInfo {
     pub path: String,
     pub major_version: u32,
     pub version_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemMemoryInfo {
+    pub total_mb: u32,
+    pub recommended_mb: u32,
+    pub maximum_game_mb: u32,
+}
+
+pub fn system_memory_info() -> SystemMemoryInfo {
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let physical_bytes = system.total_memory();
+    // sysinfo reports host RAM on some Linux container setups; respect the container's limit too.
+    let total_bytes = cgroup_memory_limit_bytes()
+        .filter(|limit| *limit > 0 && *limit < u64::MAX / 2)
+        .map_or(physical_bytes, |limit| physical_bytes.min(limit));
+    let total_mb = (total_bytes / (1024 * 1024)).min(u32::MAX as u64) as u32;
+    let (total_mb, maximum_game_mb, recommended_mb) = recommended_memory_for_total(total_mb);
+    SystemMemoryInfo {
+        total_mb,
+        recommended_mb,
+        maximum_game_mb,
+    }
+}
+
+fn cgroup_memory_limit_bytes() -> Option<u64> {
+    for path in [
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    ] {
+        if let Ok(value) = std::fs::read_to_string(path) {
+            if let Ok(limit) = value.trim().parse::<u64>() {
+                return Some(limit);
+            }
+        }
+    }
+    None
+}
+
+fn recommended_memory_for_total(total_mb: u32) -> (u32, u32, u32) {
+    // Keep at least 1.5 GiB for the OS, desktop and launcher; reserve 20% on larger machines.
+    let reserve_mb = 1536_u32.max(total_mb / 5);
+    let maximum_game_mb = total_mb.saturating_sub(reserve_mb).max(512);
+    let recommended_mb = (maximum_game_mb / 2).clamp(512, 4096);
+    (total_mb, maximum_game_mb, recommended_mb)
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    #[test]
+    fn memory_recommendation_leaves_system_headroom() {
+        assert_eq!(recommended_memory_for_total(8192), (8192, 6554, 3277));
+        assert_eq!(recommended_memory_for_total(1024), (1024, 512, 512));
+    }
 }
 
 // Launch commands include access tokens for online sessions; never derive Debug for them.
@@ -423,6 +481,24 @@ fn rules_allow(rules: &[mc_metadata::LibraryRule]) -> bool {
     allowed
 }
 
+pub fn inspect_java_path(path: PathBuf) -> Result<JavaRuntimeInfo, LaunchError> {
+    inspect_java(&path)
+}
+
+pub fn discover_java_runtimes() -> Vec<JavaRuntimeInfo> {
+    let mut seen = HashSet::new();
+    java_candidates()
+        .into_iter()
+        .take(128)
+        .filter_map(|candidate| {
+            let identity = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
+            let key = if cfg!(windows) { identity.to_string_lossy().to_lowercase() } else { identity.to_string_lossy().into_owned() };
+            if !seen.insert(key) { return None; }
+            inspect_java(&candidate).ok()
+        })
+        .collect()
+}
+
 pub fn detect_java_runtime(
     configured_java: Option<PathBuf>,
 ) -> Result<JavaRuntimeInfo, LaunchError> {
@@ -441,17 +517,59 @@ pub fn detect_java_runtime(
 }
 
 fn java_candidates() -> Vec<PathBuf> {
+    let executable = if cfg!(windows) { "java.exe" } else { "java" };
     let mut candidates = Vec::new();
     if let Some(java_home) = std::env::var_os("JAVA_HOME") {
-        let executable = if cfg!(windows) { "java.exe" } else { "java" };
         candidates.push(PathBuf::from(java_home).join("bin").join(executable));
     }
-    candidates.push(PathBuf::from(if cfg!(windows) {
-        "java.exe"
-    } else {
-        "java"
-    }));
+    if let Some(path) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&path).map(|directory| directory.join(executable)));
+    }
+
+    let mut roots = Vec::new();
+    if cfg!(target_os = "linux") {
+        roots.extend([PathBuf::from("/usr/lib/jvm"), PathBuf::from("/usr/java"), PathBuf::from("/opt/java")]);
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            roots.extend([home.join(".jdks"), home.join(".sdkman/candidates/java"), home.join(".local/share/mise/installs/java")]);
+        }
+    } else if cfg!(target_os = "macos") {
+        roots.extend([PathBuf::from("/Library/Java/JavaVirtualMachines"), PathBuf::from("/opt/homebrew/opt"), PathBuf::from("/usr/local/opt")]);
+        if let Some(home) = std::env::var_os("HOME") {
+            roots.push(PathBuf::from(home).join("Library/Java/JavaVirtualMachines"));
+        }
+    } else if cfg!(windows) {
+        for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            if let Some(root) = std::env::var_os(variable) {
+                let root = PathBuf::from(root);
+                roots.extend([root.join("Java"), root.join("Eclipse Adoptium"), root.join("Microsoft"), root.join("Programs/Eclipse Adoptium")]);
+            }
+        }
+    }
+    for root in roots {
+        add_java_root_candidates(&mut candidates, &root, executable);
+    }
+
+    let mut seen = HashSet::new();
+    candidates.retain(|candidate| {
+        let identity = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
+        let key = if cfg!(windows) { identity.to_string_lossy().to_lowercase() } else { identity.to_string_lossy().into_owned() };
+        seen.insert(key)
+    });
     candidates
+}
+
+fn add_java_root_candidates(candidates: &mut Vec<PathBuf>, root: &Path, executable: &str) {
+    candidates.push(root.join("bin").join(executable));
+    let Ok(entries) = std::fs::read_dir(root) else { return; };
+    for entry in entries.flatten().take(64) {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) { continue; }
+        let directory = entry.path();
+        candidates.push(directory.join("bin").join(executable));
+        if cfg!(target_os = "macos") {
+            candidates.push(directory.join("Contents/Home/bin").join(executable));
+        }
+    }
 }
 
 fn inspect_java(java_path: &Path) -> Result<JavaRuntimeInfo, LaunchError> {

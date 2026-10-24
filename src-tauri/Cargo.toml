@@ -29,6 +29,7 @@ zeroize = "1"
 mc-metadata = { path = "../crates/mc-metadata" }
 reqwest.workspace = true
 regex.workspace = true
+shlex.workspace = true
 tauri = { version = "2", features = [] }
 tokio.workspace = true
 serde.workspace = true

@@ -1,0 +1,60 @@
+.card {
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-base);
+  transition: all var(--duration-base) var(--ease);
+}
+
+.default {
+  box-shadow: var(--shadow-sm);
+}
+
+.elevated {
+  box-shadow: var(--shadow-md);
+}
+
+.outlined {
+  border: 1px solid var(--color-border);
+  box-shadow: none;
+}
+
+/* 内边距 */
+.padding-none {
+  padding: 0;
+}
+
+.padding-sm {
+  padding: var(--space-md);
+}
+
+.padding-md {
+  padding: var(--space-base);
+}
+
+.padding-lg {
+  padding: var(--space-lg);
+}
+
+/* 悬停效果 */
+.hoverable {
+  cursor: pointer;
+}
+
+.hoverable:hover {
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-2px);
+}
+
+.hoverable:active {
+  transform: translateY(0);
+  box-shadow: var(--shadow-md);
+}
+
+/* 选中状态 */
+.selected {
+  border: 2px solid var(--color-primary-500);
+  box-shadow: var(--shadow-lg);
+}
+
+.selected.outlined {
+  border: 2px solid var(--color-primary-500);
+}

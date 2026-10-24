@@ -19,6 +19,9 @@ export interface LauncherSettings {
   showGameLog: boolean
   javaPath: string
   memoryMb: number
+  windowWidth: number
+  windowHeight: number
+  extraJvmArgs: string
   updatePolicy: 'notify' | 'off'
 }
 

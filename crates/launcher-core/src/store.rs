@@ -160,6 +160,7 @@ impl LauncherStore {
     }
 
     pub fn save_settings(&self, settings: &LauncherSettings) -> Result<(), StoreError> {
+        crate::validate_settings(settings, None).map_err(StoreError::Invalid)?;
         let json = serde_json::to_string(settings)?;
         let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         connection.execute(
@@ -544,10 +545,26 @@ mod tests {
         assert_eq!(loaded.java_path, None);
         assert_eq!(loaded.memory_mb, 2048);
         assert_eq!(loaded.update_policy, crate::model::UpdatePolicy::Notify);
+        assert_eq!(loaded.memory_mode, crate::model::MemoryMode::Custom);
+        assert_eq!(
+            loaded.garbage_collector,
+            crate::model::GarbageCollector::Auto
+        );
+        assert_eq!(
+            loaded.launcher_visibility,
+            crate::model::LauncherVisibility::Keep
+        );
+        let encoded = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(encoded["memoryMode"], "custom");
+        assert_eq!(encoded["garbageCollector"], "auto");
+        assert_eq!(encoded["launcherVisibility"], "keep");
         // Round-tripping modernizes the row without losing legacy values.
         store.save_settings(&loaded).unwrap();
         let reloaded = store.load_settings().unwrap();
-        assert_eq!(reloaded.download.source, mc_metadata::SourcePreference::Mixed);
+        assert_eq!(
+            reloaded.download.source,
+            mc_metadata::SourcePreference::Mixed
+        );
         assert_eq!(reloaded.update_policy, crate::model::UpdatePolicy::Notify);
     }
 
@@ -557,7 +574,7 @@ mod tests {
         let mut settings = LauncherSettings::default();
         settings.download.source = crate::model::DownloadSettings::default().source;
         store.save_settings(&settings).unwrap();
-        assert_eq!(store.load_settings().unwrap().schema_version, 1);
+        assert_eq!(store.load_settings().unwrap().schema_version, 3);
 
         let input = CreateInstanceInput {
             name: "Creative test".to_owned(),

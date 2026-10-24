@@ -38,7 +38,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { beginLaunch, checkLauncherUpdate, createInstance, createOfflineAccount, installInstance, inspectJava, isDesktopShell, listAccounts, listInstances, listVersions, loadSettings, readSettings, removeAccount, saveSettings, selectAccount } from './api'
+import { beginLaunch, checkLauncherUpdate, createInstance, createOfflineAccount, getSystemMemory, installInstance, inspectJava, inspectJavaPath, isDesktopShell, listAccounts, listInstances, listVersions, loadSettings, readSettings, removeAccount, saveSettings, selectAccount } from './api'
 import type { AccountRecord, DownloadEvent, DownloadSource, InstanceRecord, LauncherSettings, PageId, ThemeId, VersionItem } from './types'
 import { accessibleAccent } from './theme'
 import { BackupManager } from './components/BackupManager'
@@ -63,6 +63,9 @@ const initialSettings: LauncherSettings = {
   showGameLog: true,
   javaPath: '',
   memoryMb: 2048,
+  windowWidth: 854,
+  windowHeight: 480,
+  extraJvmArgs: '',
   updatePolicy: 'notify',
 }
 
@@ -104,6 +107,7 @@ function App() {
   const [accounts, setAccounts] = useState<AccountRecord[]>([])
   const [instances, setInstances] = useState<InstanceRecord[]>([])
   const [javaInfo, setJavaInfo] = useState<{ path: string; majorVersion: number; versionText: string } | null>(null)
+  const [memoryInfo, setMemoryInfo] = useState<{ totalMb: number; recommendedMb: number; maximumGameMb: number } | null>(null)
   const [downloadEvents, setDownloadEvents] = useState<DownloadEvent[]>([])
   const [gameLogs, setGameLogs] = useState<Record<string, string>>({})
   const [gameStatus, setGameStatus] = useState<Record<string, { status: string; logPath: string }>>({})
@@ -147,6 +151,11 @@ function App() {
   }, [])
 
   useEffect(() => {
+    void getSystemMemory().then(setMemoryInfo).catch(() => setMemoryInfo(null))
+    void inspectJava().then(setJavaInfo).catch(() => setJavaInfo(null))
+  }, [])
+
+  useEffect(() => {
     void listVersions()
       .then((items) => {
         setVersions(items.length ? items : previewVersions)
@@ -158,7 +167,6 @@ function App() {
       })
       .finally(() => setVersionLoading(false))
     void listInstances().then(setInstances).catch(() => undefined)
-    void inspectJava().then(setJavaInfo).catch(() => setJavaInfo(null))
     void listAccounts().then((items) => {
       setAccounts(items)
       setSelectedAccount(items.find((item) => item.selected)?.id ?? '')
@@ -418,7 +426,7 @@ function App() {
           {page === 'library' && <InstanceManager instances={instances} onChanged={async () => setInstances(await listInstances())} onNotice={setToast} />}
           {page === 'library' && <BackupManager instances={instances} onChanged={async () => setInstances(await listInstances())} onNotice={setToast} />}
           {page === 'downloads' && <><DownloadsPage source={settings.downloadSource} progress={downloadEvents} onCreate={() => setDialog('instance')} onToast={setToast} /><InstallationTasks onNotice={setToast} retryableInstances={instances.filter((item) => item.state !== 'ready').map((item) => item.id)} onRetry={(id) => { const target = instances.find((item) => item.id === id); if (target) void handleInstall(target) }} /></>}
-          {page === 'settings' && <SettingsPage settings={settings} updateSettings={updateSettings} showAdvanced={showAdvanced} setShowAdvanced={setShowAdvanced} customAccent={customAccent} setCustomAccent={setCustomAccent} onMicrosoftAccount={() => setDialog('microsoft-account')} onSkinAccount={() => setDialog('skin-account')} onOfflineAccount={() => setDialog('offline-account')} onDiagnostics={() => void handleDiagnostics()} onToast={setToast} />}
+          {page === 'settings' && <SettingsPage settings={settings} updateSettings={updateSettings} showAdvanced={showAdvanced} setShowAdvanced={setShowAdvanced} customAccent={customAccent} setCustomAccent={setCustomAccent} memoryInfo={memoryInfo} javaInfo={javaInfo} setJavaInfo={setJavaInfo} onMicrosoftAccount={() => setDialog('microsoft-account')} onSkinAccount={() => setDialog('skin-account')} onOfflineAccount={() => setDialog('offline-account')} onDiagnostics={() => void handleDiagnostics()} onToast={setToast} />}
         </div>
 
         <footer className="app-footer"><span><span className="footer-status-dot" />系统状态正常</span><span>预览构建 · 0.1.0</span><button onClick={() => setToast('完整版本信息将在 About 页面提供。')}>关于 MFMCL <ArrowUpRight size={12} /></button></footer>
@@ -530,7 +538,7 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`
 }
 
-function SettingsPage({ settings, updateSettings, showAdvanced, setShowAdvanced, customAccent, setCustomAccent, onMicrosoftAccount, onSkinAccount, onOfflineAccount, onDiagnostics, onToast }: { settings: LauncherSettings; updateSettings: (patch: Partial<LauncherSettings>) => void; showAdvanced: boolean; setShowAdvanced: (value: boolean) => void; customAccent: string; setCustomAccent: (value: string) => void; onMicrosoftAccount: () => void; onSkinAccount: () => void; onOfflineAccount: () => void; onDiagnostics: () => void; onToast: (message: string) => void }) {
+function SettingsPage({ settings, updateSettings, showAdvanced, setShowAdvanced, customAccent, setCustomAccent, memoryInfo, javaInfo, setJavaInfo, onMicrosoftAccount, onSkinAccount, onOfflineAccount, onDiagnostics, onToast }: { settings: LauncherSettings; updateSettings: (patch: Partial<LauncherSettings>) => void; showAdvanced: boolean; setShowAdvanced: (value: boolean) => void; customAccent: string; setCustomAccent: (value: string) => void; memoryInfo: { totalMb: number; recommendedMb: number; maximumGameMb: number } | null; javaInfo: { path: string; majorVersion: number; versionText: string } | null; setJavaInfo: (value: { path: string; majorVersion: number; versionText: string } | null) => void; onMicrosoftAccount: () => void; onSkinAccount: () => void; onOfflineAccount: () => void; onDiagnostics: () => void; onToast: (message: string) => void }) {
   const saveAccent = () => updateSettings({ customAccent })
   const currentTheme = themeChoices.find((theme) => theme.id === settings.theme) ?? themeChoices[0]
   return <div className="settings-page page-enter"><PageHeading eyebrow="偏好设置" title="按你的方式来。" description="常用选项用简单语言呈现，技术选项需要时再展开。" action={<button className={`mode-toggle ${showAdvanced ? 'is-on' : ''}`} onClick={() => setShowAdvanced(!showAdvanced)}><SlidersHorizontal size={15} />{showAdvanced ? '高级设置' : '简易设置'}<span className="toggle-track"><i /></span></button>} />
@@ -543,7 +551,7 @@ function SettingsPage({ settings, updateSettings, showAdvanced, setShowAdvanced,
 
       <UpdateCard policy={settings.updatePolicy} onPolicyChange={(updatePolicy) => updateSettings({ updatePolicy })} onNotice={onToast} />
 
-      {showAdvanced && <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-system"><Cpu size={17} /></div><div><h2>启动与诊断</h2><p>为需要手动调整的用户提供更多控制。</p></div></div><div className="setting-field"><label className="form-label">Java 可执行文件（留空则自动检测）<input value={settings.javaPath} placeholder="/path/to/java 或 C:\\Java\\bin\\java.exe" onChange={e => updateSettings({ javaPath: e.target.value })} /></label><label className="form-label">最大游戏内存（MB）<input type="number" min={512} max={32768} step={256} value={settings.memoryMb} onChange={e => updateSettings({ memoryMb: Number(e.target.value) })} /></label></div><div className="setting-field"><div className="field-copy"><strong>单行游戏日志</strong><span>在启动状态区域显示最近一条 MC 日志。</span></div><button className={`switch ${settings.showGameLog ? 'checked' : ''}`} role="switch" aria-checked={settings.showGameLog} onClick={() => updateSettings({ showGameLog: !settings.showGameLog })}><i /></button></div><div className="setting-divider" /><div className="setting-field"><div className="field-copy"><strong>崩溃诊断</strong><span>摘要、查看原始日志或导出到指定文件夹。</span></div><button className="button-secondary small" onClick={onDiagnostics}><FileText size={13} />打开诊断</button></div></section>}
+      {showAdvanced && <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-system"><Cpu size={17} /></div><div><h2>启动与诊断</h2><p>为需要手动调整的用户提供更多控制。</p></div></div><div className="setting-field"><label className="form-label">最大游戏内存（MB）<input type="range" min={512} max={memoryInfo?.maximumGameMb ?? 8192} step={256} value={Math.min(settings.memoryMb, memoryInfo?.maximumGameMb ?? 8192)} onChange={event => updateSettings({ memoryMb: Number(event.target.value) })} /><span className="input-hint">当前 {settings.memoryMb} MB。{memoryInfo ? `检测到 ${formatBytes(memoryInfo.totalMb * 1024 * 1024)} 物理内存；推荐 ${memoryInfo.recommendedMb} MB，动态上限 ${memoryInfo.maximumGameMb} MB。` : '正在检测本机内存…'} JVM 按需增长，不会启动时一次性占满。</span></label><button className="button-secondary small" type="button" onClick={() => memoryInfo && updateSettings({ memoryMb: memoryInfo.recommendedMb })}>使用推荐值</button></div><div className="setting-field"><label className="form-label">Java 可执行文件（留空则自动检测）<input value={settings.javaPath} placeholder="/path/to/java 或 C:\\Java\\bin\\java.exe" onChange={e => updateSettings({ javaPath: e.target.value })} /><span className="input-hint">{javaInfo ? `当前检测：Java ${javaInfo.majorVersion} · ${javaInfo.versionText}` : '尚未检测到已选 Java。'}</span></label><div className="setting-actions"><button className="button-secondary small" onClick={() => void inspectJava().then(info => { setJavaInfo(info); updateSettings({ javaPath: '' }); onToast(`已选择自动检测到的 Java ${info.majorVersion}。`) }).catch(error => onToast(error instanceof Error ? error.message : '未检测到可用 Java。'))}>自动检测</button><button className="button-secondary small" onClick={() => void (async () => { try { const selected = await open({ multiple: false, directory: false, title: '选择 Java 可执行文件' }); if (typeof selected !== 'string') return; const info = await inspectJavaPath(selected); setJavaInfo(info); updateSettings({ javaPath: info.path }); onToast(`已验证 Java ${info.majorVersion}。`) } catch (error) { onToast(error instanceof Error ? error.message : 'Java 路径无效。') } })()}>选择并验证</button></div></div><div className="setting-field"><label className="form-label">游戏窗口宽度<input type="number" min={640} max={7680} step={16} value={settings.windowWidth} onChange={e => updateSettings({ windowWidth: Number(e.target.value) })} /></label><label className="form-label">游戏窗口高度<input type="number" min={360} max={4320} step={16} value={settings.windowHeight} onChange={e => updateSettings({ windowHeight: Number(e.target.value) })} /></label></div><label className="form-label">附加 JVM 参数<input value={settings.extraJvmArgs} maxLength={8192} placeholder="例如：-XX:+UseZGC" onChange={e => updateSettings({ extraJvmArgs: e.target.value })} /><span className="input-hint">最大堆内存参数由上方设置管理，请勿重复填写 -Xmx。</span></label><div className="setting-field"><div className="field-copy"><strong>单行游戏日志</strong><span>在启动状态区域显示最近一条 MC 日志。</span></div><button className={`switch ${settings.showGameLog ? 'checked' : ''}`} role="switch" aria-checked={settings.showGameLog} onClick={() => updateSettings({ showGameLog: !settings.showGameLog })}><i /></button></div><div className="setting-divider" /><div className="setting-field"><div className="field-copy"><strong>崩溃诊断</strong><span>摘要、查看原始日志或导出到指定文件夹。</span></div><button className="button-secondary small" onClick={onDiagnostics}><FileText size={13} />打开诊断</button></div></section>}
     </div>
     <aside className="settings-aside"><div className="settings-preview-card"><div className="preview-top"><span className="preview-eyebrow">界面预览</span><span className="preview-dots"><i /><i /><i /></span></div><div className="preview-scene"><div className="preview-sun" /><div className="preview-mountain mountain-one" /><div className="preview-mountain mountain-two" /><div className="preview-pixel-tree"><i /><i /><b /></div></div><div className="preview-actions"><span className="preview-action-icon"><Play size={12} fill="currentColor" /></span><span><strong>开始游戏</strong><small>你的下一个世界</small></span><ArrowRight size={14} /></div><div className="preview-theme-line"><span style={{ background: settings.customAccent }} /><span /><span />{currentTheme.label}</div></div><div className="settings-tip"><div className="tip-icon"><Sparkles size={15} /></div><div><strong>新手也能轻松上手</strong><p>推荐值会自动选择。开启高级设置后，才会显示下载连接数和游戏日志开关。</p></div></div><div className="privacy-card"><LockKeyhole size={15} /><div><strong>默认本地优先</strong><span>账户凭据与游戏存档不会自动上传。</span></div></div></aside></div>
   </div>

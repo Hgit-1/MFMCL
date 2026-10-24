@@ -1,0 +1,100 @@
+{
+  "schemaPackage": "@sketch-hq/sketch-file-format@6.5.0",
+  "checks": [
+    {
+      "name": "document.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "meta.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "user.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "pages/EBCB0761-4F66-57BA-8C8C-274FBB3CEB61.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "pages/02A61033-4704-583E-B16E-05F081F5B688.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "pages/2E06C046-5501-5D29-A2CB-4894AC8AD6E4.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "pages/00A7A406-2AEE-5D96-8ED9-308186700214.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "pages/83B31CCE-3F7E-5200-836B-3F9583C4384F.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "pages/B22AA132-D512-51F7-8DC1-D9FB09CD7341.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "pages/C8D25DD8-9AEB-592F-8D08-F6D4D0ACA403.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "pages/EC64C5C5-CE70-5DB9-96C1-7FDF1BE2841C.json",
+      "valid": true,
+      "errors": []
+    },
+    {
+      "name": "pages/95F0C630-1D18-5DFC-B177-BB23802069D0.json",
+      "valid": true,
+      "errors": []
+    }
+  ],
+  "structuralChecks": [
+    {
+      "name": "unique-layer-ids",
+      "valid": true
+    },
+    {
+      "name": "prototype-destinations-exist",
+      "valid": true
+    },
+    {
+      "name": "symbol-sources-exist",
+      "valid": true
+    },
+    {
+      "name": "no-raster-only-screens",
+      "valid": true
+    },
+    {
+      "name": "text-is-editable",
+      "valid": true
+    },
+    {
+      "name": "utf16-text-ranges",
+      "valid": true
+    }
+  ],
+  "valid": true,
+  "targetEditorImportTested": false,
+  "counts": {
+    "artboards": 44,
+    "layers": 2769,
+    "textLayers": 954,
+    "prototypeLinks": 336,
+    "symbols": 6
+  }
+}
