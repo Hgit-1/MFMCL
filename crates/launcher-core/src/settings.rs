@@ -103,12 +103,18 @@ pub fn validate_settings(
     }
     if settings.speed_limit_kbps > 1_048_576
         || !(60..=100).contains(&settings.opacity)
-        || settings.cache_directory.as_ref().is_some_and(|path| path.as_os_str().len() > 4096)
-        || settings.download_directory.as_ref().is_some_and(|path| path.as_os_str().len() > 4096)
+        || settings
+            .cache_directory
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().len() > 4096)
+        || settings
+            .download_directory
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().len() > 4096)
     {
         return Err("下载速度、透明度或目录设置超出允许范围。".to_owned());
     }
-
+    for value in [
         ("社区源", settings.community_source.as_str()),
         (
             "模组包文件名格式",
@@ -336,7 +342,7 @@ mod tests {
         apply_launch_settings(&mut launch, &settings, 3072, "net.minecraft.Main").unwrap();
         assert!(launch.args.contains(&"-Xmx3072M".to_owned()));
         assert!(launch.args.contains(&"-XX:+UseG1GC".to_owned()));
-        assert_eq!(launch.args.last().unwrap(), "1");
+        assert_eq!(launch.args.last().unwrap(), "--width=1");
 
         settings.game_args = "--accessToken replaced".into();
         assert!(matches!(

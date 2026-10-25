@@ -74,7 +74,8 @@ pub fn system_memory_info() -> SystemMemoryInfo {
 
     let physical_bytes = system.total_memory();
     // sysinfo reports host RAM on some Linux container setups; respect the container's limit too.
-    let limit_bytes = cgroup_memory_limit_bytes().filter(|limit| *limit > 0 && *limit < u64::MAX / 2);
+    let limit_bytes =
+        cgroup_memory_limit_bytes().filter(|limit| *limit > 0 && *limit < u64::MAX / 2);
     let total_bytes = limit_bytes
         .map_or(physical_bytes, |limit| physical_bytes.min(limit))
         .max(1);
@@ -89,7 +90,9 @@ pub fn system_memory_info() -> SystemMemoryInfo {
     let host_used = system.used_memory();
     let host_available = system.available_memory();
     let ratio = match limit_bytes {
-        Some(limit) if physical_bytes > 0 => limit.min(physical_bytes) as f64 / physical_bytes as f64,
+        Some(limit) if physical_bytes > 0 => {
+            limit.min(physical_bytes) as f64 / physical_bytes as f64
+        }
         _ => 1.0,
     };
 
@@ -97,8 +100,8 @@ pub fn system_memory_info() -> SystemMemoryInfo {
         Some(_) => cgroup_memory_current_bytes().map(|bytes| bytes.min(total_bytes)),
         None => (host_used > 0).then(|| host_used.min(total_bytes)),
     };
-    let available_bytes = (host_available > 0)
-        .then(|| ((host_available as f64 * ratio) as u64).min(total_bytes));
+    let available_bytes =
+        (host_available > 0).then(|| ((host_available as f64 * ratio) as u64).min(total_bytes));
 
     let (total_mb, maximum_game_mb, recommended_mb) = recommended_memory_for_total(raw_total_mb);
     SystemMemoryInfo {
@@ -164,10 +167,18 @@ mod memory_tests {
         let info = system_memory_info();
         assert!(info.total_mb > 0);
         if let Some(used) = info.used_mb {
-            assert!(used <= info.total_mb, "used {used} > total {}", info.total_mb);
+            assert!(
+                used <= info.total_mb,
+                "used {used} > total {}",
+                info.total_mb
+            );
         }
         if let Some(available) = info.available_mb {
-            assert!(available <= info.total_mb, "available {available} > total {}", info.total_mb);
+            assert!(
+                available <= info.total_mb,
+                "available {available} > total {}",
+                info.total_mb
+            );
         }
     }
 }
@@ -558,9 +569,17 @@ pub fn discover_java_runtimes() -> Vec<JavaRuntimeInfo> {
         .into_iter()
         .take(128)
         .filter_map(|candidate| {
-            let identity = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
-            let key = if cfg!(windows) { identity.to_string_lossy().to_lowercase() } else { identity.to_string_lossy().into_owned() };
-            if !seen.insert(key) { return None; }
+            let identity = candidate
+                .canonicalize()
+                .unwrap_or_else(|_| candidate.clone());
+            let key = if cfg!(windows) {
+                identity.to_string_lossy().to_lowercase()
+            } else {
+                identity.to_string_lossy().into_owned()
+            };
+            if !seen.insert(key) {
+                return None;
+            }
             inspect_java(&candidate).ok()
         })
         .collect()
@@ -595,13 +614,25 @@ fn java_candidates() -> Vec<PathBuf> {
 
     let mut roots = Vec::new();
     if cfg!(target_os = "linux") {
-        roots.extend([PathBuf::from("/usr/lib/jvm"), PathBuf::from("/usr/java"), PathBuf::from("/opt/java")]);
+        roots.extend([
+            PathBuf::from("/usr/lib/jvm"),
+            PathBuf::from("/usr/java"),
+            PathBuf::from("/opt/java"),
+        ]);
         if let Some(home) = std::env::var_os("HOME") {
             let home = PathBuf::from(home);
-            roots.extend([home.join(".jdks"), home.join(".sdkman/candidates/java"), home.join(".local/share/mise/installs/java")]);
+            roots.extend([
+                home.join(".jdks"),
+                home.join(".sdkman/candidates/java"),
+                home.join(".local/share/mise/installs/java"),
+            ]);
         }
     } else if cfg!(target_os = "macos") {
-        roots.extend([PathBuf::from("/Library/Java/JavaVirtualMachines"), PathBuf::from("/opt/homebrew/opt"), PathBuf::from("/usr/local/opt")]);
+        roots.extend([
+            PathBuf::from("/Library/Java/JavaVirtualMachines"),
+            PathBuf::from("/opt/homebrew/opt"),
+            PathBuf::from("/usr/local/opt"),
+        ]);
         if let Some(home) = std::env::var_os("HOME") {
             roots.push(PathBuf::from(home).join("Library/Java/JavaVirtualMachines"));
         }
@@ -609,7 +640,12 @@ fn java_candidates() -> Vec<PathBuf> {
         for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
             if let Some(root) = std::env::var_os(variable) {
                 let root = PathBuf::from(root);
-                roots.extend([root.join("Java"), root.join("Eclipse Adoptium"), root.join("Microsoft"), root.join("Programs/Eclipse Adoptium")]);
+                roots.extend([
+                    root.join("Java"),
+                    root.join("Eclipse Adoptium"),
+                    root.join("Microsoft"),
+                    root.join("Programs/Eclipse Adoptium"),
+                ]);
             }
         }
     }
@@ -619,8 +655,14 @@ fn java_candidates() -> Vec<PathBuf> {
 
     let mut seen = HashSet::new();
     candidates.retain(|candidate| {
-        let identity = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
-        let key = if cfg!(windows) { identity.to_string_lossy().to_lowercase() } else { identity.to_string_lossy().into_owned() };
+        let identity = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone());
+        let key = if cfg!(windows) {
+            identity.to_string_lossy().to_lowercase()
+        } else {
+            identity.to_string_lossy().into_owned()
+        };
         seen.insert(key)
     });
     candidates
@@ -628,9 +670,13 @@ fn java_candidates() -> Vec<PathBuf> {
 
 fn add_java_root_candidates(candidates: &mut Vec<PathBuf>, root: &Path, executable: &str) {
     candidates.push(root.join("bin").join(executable));
-    let Ok(entries) = std::fs::read_dir(root) else { return; };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten().take(64) {
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) { continue; }
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
         let directory = entry.path();
         candidates.push(directory.join("bin").join(executable));
         if cfg!(target_os = "macos") {

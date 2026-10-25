@@ -2,6 +2,8 @@ import { invoke } from '@tauri-apps/api/core'
 import type { AccountRecord, InstanceRecord, LauncherSettings, SkinLoginResult, VersionItem } from './types'
 
 export const isDesktopShell = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+/** Largest game heap the launcher will persist; kept in step with the slider's upper bound. */
+export const MAX_MEMORY_MB = 32768
 export const defaultSettings = (): LauncherSettings => ({ theme: 'moss', customAccent: '#00d285', customBackground: null, mode: 'dark', downloadSource: 'official', ariaConnections: 4, ariaSplits: 4, showGameLog: true, javaPath: '', memoryMb: 2048, windowWidth: 854, windowHeight: 480, extraJvmArgs: '', updatePolicy: 'notify' })
 export function validateSettings(value: unknown): LauncherSettings {
   const fallback = defaultSettings()
@@ -17,7 +19,7 @@ export function validateSettings(value: unknown): LauncherSettings {
     ariaConnections: number(v.ariaConnections, 4, 16), ariaSplits: number(v.ariaSplits, 4, 16),
     showGameLog: typeof v.showGameLog === 'boolean' ? v.showGameLog : true,
     javaPath: typeof v.javaPath === 'string' && v.javaPath.length < 4096 ? v.javaPath : '',
-    memoryMb: number(v.memoryMb, 2048, 4294967295, 512),
+    memoryMb: number(v.memoryMb, 2048, MAX_MEMORY_MB, 512),
     windowWidth: number(v.windowWidth, 854, 7680, 640),
     windowHeight: number(v.windowHeight, 480, 4320, 360),
     extraJvmArgs: typeof v.extraJvmArgs === 'string' && v.extraJvmArgs.length <= 8192 ? v.extraJvmArgs : '',
