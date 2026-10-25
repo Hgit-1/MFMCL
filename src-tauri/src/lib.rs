@@ -379,11 +379,18 @@ async fn launch_instance(
         .map_err(|e| format!("无法读取版本配置：{e}"))?;
     let metadata: GameVersionMetadata =
         serde_json::from_slice(&bytes).map_err(|e| format!("版本配置已损坏：{e}"))?;
+    let settings = store.load_settings().map_err(|e| e.to_string())?;
     validate_settings(&settings, Some(system_memory_info().maximum_game_mb))?;
     let mut secrets = Vec::new();
     let mut prepared = if account.kind == AccountKind::Offline {
-        prepare_offline_launch(&root, &instance, &account, &metadata, settings.java_path)
-            .map_err(|e| e.to_string())?
+        prepare_offline_launch(
+            &root,
+            &instance,
+            &account,
+            &metadata,
+            settings.java_path.clone(),
+        )
+        .map_err(|e| e.to_string())?
     } else {
         let session = authentication::refresh(&account).await?;
         let identity = launcher_core::LaunchIdentity {
@@ -399,7 +406,7 @@ async fn launch_instance(
             &instance,
             &identity,
             &metadata,
-            settings.java_path,
+            settings.java_path.clone(),
         )
         .map_err(|e| e.to_string())?;
         secrets.push(session.access_token.clone());
@@ -646,6 +653,7 @@ pub fn run() {
             list_versions,
             get_settings,
             save_settings,
+            get_system_memory,
             detect_java,
             list_java_runtimes,
             inspect_java_path,
