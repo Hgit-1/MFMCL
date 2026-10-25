@@ -1,0 +1,504 @@
+/* 内存分配卡片。视觉参照 PCL2 的 PageSetupLaunch：*/
+/* - 滑条是一条细轨道 + 圆形滑块（MySlider 的 LineFore/LineBack + ShapeDot）， */
+/*   已填充部分用强调色，未填充部分用低对比度的描边色。 */
+/* - 自动模式下整行变灰并禁止交互（PCL: SliderRamCustom.IsEnabled = False）， */
+/*   但数值仍然显示，因为自动值本身就是有意义的分配结果。 */
+
+.group {
+  margin: 0 0 23px;
+}
+
+.group h3 {
+  margin: 0 0 9px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.copy strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.copy span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.modeRow,
+.field,
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 62px;
+  padding: 11px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+}
+
+/* 自定义滑条的容器：数值在上，轨道居中，刻度在下。 */
+.field {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.field > .copy {
+  padding-top: 3px;
+}
+
+.control {
+  display: flex;
+  width: min(340px, 100%);
+  flex: 0 1 340px;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sliderHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+.value {
+  color: var(--color-primary-text);
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.total {
+  color: var(--color-text-disabled);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- 滑条本体 ------------------------------------------------------------ */
+
+.slider {
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  --fill: 0%;
+}
+
+/* 轨道：用两层渐变画「已填充 / 未填充」，避免额外的 DOM 结构。 */
+.slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 99px;
+  background:
+    linear-gradient(to right,
+      color-mix(in srgb, var(--color-primary-500) 92%, transparent) 0 var(--fill),
+      color-mix(in srgb, var(--color-text-secondary) 24%, transparent) var(--fill) 100%);
+}
+
+.slider::-moz-range-track {
+  height: 4px;
+  border-radius: 99px;
+  background:
+    linear-gradient(to right,
+      color-mix(in srgb, var(--color-primary-500) 92%, transparent) 0 var(--fill),
+      color-mix(in srgb, var(--color-text-secondary) 24%, transparent) var(--fill) 100%);
+}
+
+/* 滑块：PCL 的 ShapeDot 是空心圆点，这里做成实心并加一圈底色描边， */
+/* 保证在深色和浅色主题下都从轨道上“浮”起来。 */
+.slider::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  appearance: none;
+  border: 2px solid var(--color-bg-elevated);
+  border-radius: 50%;
+  background: var(--color-primary-500);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary-500) 46%, transparent), 0 1px 4px #0003;
+  transition: transform 0.14s var(--ease, ease), box-shadow 0.14s var(--ease, ease);
+}
+
+.slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-bg-elevated);
+  border-radius: 50%;
+  background: var(--color-primary-500);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary-500) 46%, transparent), 0 1px 4px #0003;
+}
+
+.slider:hover::-webkit-slider-thumb { transform: scale(1.12); }
+.slider:hover::-moz-range-thumb { transform: scale(1.12); }
+
+.slider:active::-webkit-slider-thumb { transform: scale(1.22); }
+.slider:active::-moz-range-thumb { transform: scale(1.22); }
+
+.slider:focus-visible {
+  outline: none;
+}
+
+.slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary-500) 32%, transparent), 0 1px 4px #0003;
+}
+
+.slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary-500) 32%, transparent), 0 1px 4px #0003;
+}
+
+.slider:disabled {
+  cursor: not-allowed;
+}
+
+.slider:disabled::-webkit-slider-runnable-track {
+  background:
+    linear-gradient(to right,
+      color-mix(in srgb, var(--color-text-disabled) 34%, transparent) 0 var(--fill),
+      color-mix(in srgb, var(--color-text-secondary) 16%, transparent) var(--fill) 100%);
+}
+
+.slider:disabled::-moz-range-track {
+  background:
+    linear-gradient(to right,
+      color-mix(in srgb, var(--color-text-disabled) 34%, transparent) 0 var(--fill),
+      color-mix(in srgb, var(--color-text-secondary) 16%, transparent) var(--fill) 100%);
+}
+
+.slider:disabled::-webkit-slider-thumb {
+  border-color: var(--color-bg-primary);
+  background: color-mix(in srgb, var(--color-text-disabled) 62%, var(--color-bg-elevated));
+  box-shadow: none;
+}
+
+.slider:disabled::-moz-range-thumb {
+  border-color: var(--color-bg-primary);
+  background: color-mix(in srgb, var(--color-text-disabled) 62%, var(--color-bg-elevated));
+  box-shadow: none;
+}
+
+.ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -2px;
+  color: var(--color-text-disabled);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 自动模式：整块降透明度 + 去掉悬停反馈，但保留可读性。 */
+.fieldDisabled .copy,
+.fieldDisabled .control {
+  opacity: 0.58;
+}
+
+.fieldDisabled .copy strong {
+  color: var(--color-text-secondary);
+}
+
+/* --- 内存模式开关（取代原来的两段式单选） -------------------------------- */
+
+/*
+ * 结构：左文字 —— 轨道 —— 右文字。滑块位置本身就是状态指示，
+ * 当前一侧的文字同时加深颜色，做双重强调（不只靠颜色区分）。
+ */
+.modeSwitch {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.modeLabel {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  transition: color 0.16s;
+}
+
+.modeLabelActive {
+  color: var(--color-primary-text);
+  font-weight: 600;
+}
+
+.modeSwitch:hover .modeLabel {
+  color: var(--color-text-primary);
+}
+
+.modeSwitch:hover .modeLabelActive {
+  color: var(--color-primary-text);
+}
+
+.modeSwitch:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary-500) 60%, transparent);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
+}
+
+.modeSwitch:focus-visible .track {
+  outline: 2px solid color-mix(in srgb, var(--color-primary-500) 60%, transparent);
+  outline-offset: 1px;
+}
+
+/*
+ * 轨道比设置页的普通开关略宽（44×24 vs 38×22）：这里左右还有文字，
+ * 滑块行程更明显才能一眼看出停在哪一侧。
+ */
+.track {
+  display: block;
+  width: 44px;
+  height: 24px;
+  flex: none;
+  padding: 3px;
+  border-radius: 99px;
+  background: var(--color-border);
+  transition: background 0.18s var(--ease);
+}
+
+.track i {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.18s var(--ease);
+}
+
+.trackOn {
+  background: var(--color-primary-500);
+}
+
+.trackOn i {
+  transform: translateX(20px);
+}
+
+/* --- 内存条（PCL 的 PanRamDisplay） ------------------------------------- */
+
+.barRow {
+  padding: 12px 0 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+}
+
+.bar {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--color-text-secondary) 14%, transparent);
+}
+
+/*
+ * 已使用段：中性灰，明显区别于游戏的强调色。
+ * 它表示「这台机器上其它程序已经占掉的」，不是用户能分配的，所以刻意不用主色，
+ * 也不做渐变，避免被误读成可操作的部分。
+ */
+.barUsed {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--color-text-secondary) 46%, transparent);
+  transition: width 0.2s var(--ease, ease);
+}
+
+.barGame {
+  position: absolute;
+  inset: 0 auto 0 0;
+  /* left 由内联 style 给出（已使用段的右边界），这里只兜底为 0。 */
+  left: 0;
+  border-radius: 99px;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--color-primary-500) 62%, transparent),
+    var(--color-primary-500)
+  );
+  transition: left 0.2s var(--ease, ease), width 0.2s var(--ease, ease);
+}
+
+/* 拿不到已用量时游戏段从最左开始，右端保持圆角。 */
+.barGameFirst {
+  left: 0;
+}
+
+.barLegend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 7px;
+  color: var(--color-primary-text);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.barLegend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dotGame {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-primary-500);
+}
+
+/* 已使用段的图例点：与 .barUsed 同色，让图例与条形成对应。 */
+.dotUsed {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-text-secondary) 46%, transparent);
+}
+
+.legendUsed {
+  color: var(--color-text-secondary);
+}
+
+.legendMuted {
+  color: var(--color-text-disabled);
+}
+
+/* --- 开关（与 SettingsPanel 的 switch 保持一致） ------------------------ */
+
+.row:last-of-type {
+  border-bottom: 0;
+}
+
+.switch {
+  width: 38px;
+  height: 22px;
+  flex: none;
+  padding: 3px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--color-border);
+  cursor: pointer;
+  transition: background 0.18s;
+}
+
+.switch i {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px #0003;
+  transition: transform 0.18s;
+}
+
+.switchOn {
+  background: var(--color-primary-500);
+}
+
+.switchOn i {
+  transform: translateX(16px);
+}
+
+/* --- 警告与设备内存 ----------------------------------------------------- */
+
+.warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 10px 0 0;
+  color: var(--color-warning-600, #b45309);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.warning svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.deviceRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--color-text-disabled);
+  font-size: 10px;
+}
+
+.deviceRow svg {
+  flex: none;
+  color: var(--color-primary-text);
+}
+
+.deviceNote {
+  line-height: 1.5;
+}
+
+.deviceRow input {
+  width: 64px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 10px;
+  outline: none;
+}
+
+.deviceRow input:focus {
+  border-color: var(--color-primary-500);
+}
+
+.linkButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-primary-text);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.linkButton:hover {
+  color: var(--color-primary-600);
+}
+
+@media (max-width: 480px) {
+  .field,
+  .modeRow,
+  .row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .control {
+    width: 100%;
+    flex-basis: auto;
+  }
+
+  /* 窄屏下开关跟着左对齐，不再走 width:100%——它不是输入控件，拉满反而空。 */
+  .modeSwitch {
+    align-self: flex-start;
+  }
+}

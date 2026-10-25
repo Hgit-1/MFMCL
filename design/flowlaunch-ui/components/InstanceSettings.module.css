@@ -1,0 +1,411 @@
+.page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--color-bg-primary);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-secondary) 40%, transparent) transparent;
+}
+
+.inner {
+  width: min(880px, 100%);
+  margin: 0 auto;
+  padding: clamp(16px, 3vw, 32px) clamp(14px, 3vw, 32px) 40px;
+}
+
+/* --- 页头 ---------------------------------------------------------------- */
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.headerCopy {
+  min-width: 0;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.back:hover {
+  color: var(--color-primary-text);
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--color-primary-text);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .13em;
+}
+
+.title {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: clamp(20px, 2.6vw, 26px);
+  font-weight: 650;
+  letter-spacing: -.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color .16s, background .16s;
+}
+
+.action:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary-500) 7%, var(--color-bg-elevated));
+}
+
+.launch {
+  border-color: var(--color-primary-solid);
+  background: var(--color-primary-solid);
+  color: var(--color-on-primary);
+  font-weight: 600;
+}
+
+.launch:hover {
+  border-color: var(--color-primary-solid-hover);
+  background: var(--color-primary-solid-hover);
+}
+
+/* --- 只读摘要 ------------------------------------------------------------ */
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 18px;
+}
+
+.fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 99px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.fact b {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+/* --- 设置分组 ------------------------------------------------------------ */
+
+.section {
+  margin-bottom: 16px;
+  padding: 2px 18px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-bg-elevated);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 0 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sectionIcon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-primary-500) 12%, var(--color-bg-secondary));
+  color: var(--color-primary-text);
+}
+
+.sectionHead h2 {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.sectionHead small {
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 0;
+}
+
+.row + .row {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+/* 一组「一行设置 + 展开的控件」。外层不再自带内边距，内边距由里面的 .row 提供，
+   否则上下两层 padding 叠加，展开的控件会比标题缩进更多。 */
+.block {
+  padding: 2px 0;
+}
+
+.block + .block {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.block > .row {
+  padding: 11px 0;
+}
+
+.block > .detail {
+  margin-bottom: 12px;
+}
+
+.copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.copy strong {
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.copy span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.control {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+/* --- 值型控件（滑条、尺寸、参数） ---------------------------------------- */
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-secondary);
+}
+
+.detailHead {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.detailHead output {
+  color: var(--color-primary-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.detailHead small {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.range {
+  width: 100%;
+  accent-color: var(--color-primary-500);
+}
+
+.ticks {
+  display: flex;
+  justify-content: space-between;
+  color: var(--color-text-disabled);
+  font-size: 9px;
+}
+
+.dimensions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.dimensions input {
+  width: 84px;
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
+  outline: none;
+}
+
+.dimensions input:focus-visible {
+  border-color: var(--color-primary-500);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary-500) 15%, transparent);
+}
+
+.dimensions span {
+  color: var(--color-text-disabled);
+  font-size: 10px;
+}
+
+.text {
+  width: 100%;
+  min-height: 60px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  outline: none;
+  resize: vertical;
+}
+
+.text:focus-visible {
+  border-color: var(--color-primary-500);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary-500) 15%, transparent);
+}
+
+/* --- 页脚 ---------------------------------------------------------------- */
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding: 13px 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-secondary);
+}
+
+.footerText {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.footerText b {
+  color: var(--color-primary-text);
+  font-weight: 600;
+}
+
+.reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.reset:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  border-color: color-mix(in srgb, var(--color-danger-500) 40%, var(--color-border));
+}
+
+.reset:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.javaCard :global(section) {
+  width: 100%;
+  margin: 0;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--color-bg-secondary);
+  box-shadow: none;
+}
+
+.javaCard {
+  padding: 2px 0 14px;
+}
+
+@media (max-width: 620px) {
+  .row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .control {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .headerActions {
+    width: 100%;
+  }
+
+  .headerActions .action {
+    flex: 1;
+    justify-content: center;
+  }
+}

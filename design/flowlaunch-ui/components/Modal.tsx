@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { useI18n } from '../utils/i18n';
 import styles from './Modal.module.css';
 
 export interface ModalProps {
@@ -21,6 +22,7 @@ export const Modal: React.FC<ModalProps> = ({
   closeOnOverlay = true,
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
+  const { t } = useI18n();
 
   useEffect(() => {
     if (isOpen) {
@@ -63,7 +65,7 @@ export const Modal: React.FC<ModalProps> = ({
             <button
               className={styles.closeButton}
               onClick={onClose}
-              aria-label="关闭"
+              aria-label={t('common.close')}
             >
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                 <path d="M15 5L5 15M5 5l10 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>

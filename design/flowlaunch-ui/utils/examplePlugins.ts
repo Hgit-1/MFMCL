@@ -8,7 +8,7 @@ export const LaunchLoggerPlugin: Plugin = {
   id: 'launch-logger',
   name: '启动日志记录器',
   version: '1.0.0',
-  author: 'FlowLaunch Team',
+  author: 'MFMC Team',
   description: '记录游戏启动历史，生成统计报告',
   enabled: true,
   hooks: {
@@ -37,7 +37,7 @@ export const AutoBackupPlugin: Plugin = {
   id: 'auto-backup',
   name: '自动备份',
   version: '1.0.0',
-  author: 'FlowLaunch Team',
+  author: 'MFMC Team',
   description: '启动前自动备份存档，保护游戏数据',
   enabled: true,
   hooks: {
@@ -60,7 +60,7 @@ export const ModConflictDetectorPlugin: Plugin = {
   id: 'mod-conflict-detector',
   name: '模组冲突检测',
   version: '1.0.0',
-  author: 'FlowLaunch Team',
+  author: 'MFMC Team',
   description: '智能检测模组冲突，提前预警',
   enabled: true,
   hooks: {
@@ -90,7 +90,7 @@ export const PinkThemePlugin: Plugin = {
   id: 'pink-theme',
   name: '粉色主题',
   version: '1.0.0',
-  author: 'FlowLaunch Team',
+  author: 'MFMC Team',
   description: '温柔的粉色配色方案',
   enabled: false, // 默认禁用
   hooks: {
@@ -123,13 +123,13 @@ export const PerformanceMonitorPlugin: Plugin = {
   id: 'performance-monitor',
   name: '性能监控',
   version: '1.0.0',
-  author: 'FlowLaunch Team',
+  author: 'MFMC Team',
   description: '实时监控启动器性能和资源占用',
   enabled: false,
   hooks: {
     onInstanceLaunch: async (instance) => {
       console.log(`[性能监控] 启动实例: ${instance.name}`);
-      console.log(`[性能监控] 内存使用: ${(performance.memory as any)?.usedJSHeapSize / 1024 / 1024 || 'N/A'} MB`);
+      console.log(`[性能监控] 内存使用: ${(performance as any).memory?.usedJSHeapSize / 1024 / 1024 || 'N/A'} MB`);
     },
     customViews: [
       {

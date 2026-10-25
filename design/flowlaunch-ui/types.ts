@@ -103,6 +103,7 @@ export type AppContext =
   | 'home'
   | 'instance-detail'
   | 'store'
+  | 'plugins'
   | 'downloads'
   | 'diagnostics';
 

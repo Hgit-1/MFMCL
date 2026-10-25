@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Modal } from './Modal';
+import { DefaultUserAvatar } from './DefaultUserAvatar';
 import type { Account } from '../types';
+import { useI18n } from '../utils/i18n';
 import styles from './AccountModal.module.css';
 
 // 简化图标
@@ -37,30 +39,33 @@ interface Props {
 }
 
 function SkinModel({ model }: { model: 'steve' | 'alex' }) {
+  const { t } = useI18n();
   const modelName = model === 'steve' ? 'Steve' : 'Alex';
   return (
     <img
       className={styles.skinModel}
       src={`/demo-avatars/models/${model}-head.png`}
-      alt={`${modelName} 头颅预览`}
+      alt={t('account.modelAlt', { values: { model: modelName } })}
       draggable={false}
     />
   );
 }
 
 function PlayerAvatar({ username, avatar, size = 36 }: { username: string; avatar?: string; size?: number }) {
+  const { t } = useI18n();
   return (
     <div className={styles.playerAvatarFrame} style={{ width: size, height: size }}>
       {avatar ? (
-        <img className={styles.playerAvatar} src={avatar} alt={`${username} 的 Minecraft 头颅`} />
+        <img className={styles.playerAvatar} src={avatar} alt={t('account.avatarAlt', { values: { name: username } })} />
       ) : (
-        <span className={styles.playerAvatarFallback} aria-label={`${username} 的头像占位符`}>{username.slice(0, 1).toUpperCase()}</span>
+        <DefaultUserAvatar className={styles.playerAvatarFallback} label={t('account.avatarPlaceholder', { values: { name: username } })} />
       )}
     </div>
   );
 }
 
 export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentAccounts = [], onUpdateAccount }: Props) {
+  const { t } = useI18n();
   const [method, setMethod] = useState<LoginMethod | null>(null);
   const [offlineName, setOfflineName] = useState('');
   const [serverUrl, setServerUrl] = useState('');
@@ -143,40 +148,40 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
 
   if (editingAccount) {
     return (
-      <Modal isOpen={isOpen} onClose={() => setEditingAccount(null)} title="编辑账户" size="md">
+      <Modal isOpen={isOpen} onClose={() => setEditingAccount(null)} title={t('account.editTitle')} size="md">
         <div className={styles.editAccount}>
           <div className={styles.editPreview}>
             <PlayerAvatar username={editUsername || editingAccount.username} avatar={editingAccount.avatar} size={80} />
             <div className={styles.editInfo}>
               <h3>{editUsername || editingAccount.username}</h3>
               <p className={styles.accountType}>
-                {editingAccount.type === 'microsoft' ? 'Microsoft 账户' : editingAccount.type === 'offline' ? '离线模式' : '第三方认证'}
+                {editingAccount.type === 'microsoft' ? t('account.microsoft') : editingAccount.type === 'offline' ? t('account.offline') : t('account.thirdParty')}
               </p>
             </div>
           </div>
 
           <Input
-            label="用户名"
+            label={t('account.username')}
             value={editUsername}
             onChange={(e) => setEditUsername(e.target.value)}
-            hint={editingAccount.type === 'microsoft' ? 'Microsoft 账户用户名由微软管理' : '3-16个字符，字母、数字和下划线'}
+            hint={editingAccount.type === 'microsoft' ? t('account.usernameHintMs') : t('account.usernameHintOffline')}
             disabled={editingAccount.type === 'microsoft'}
           />
 
           <div className={styles.skinUpload}>
             <label className={styles.uploadLabel}>
-              <strong>皮肤文件</strong>
-              <span>PNG 格式，64×64 或 64×32 像素</span>
+              <strong>{t('account.skinFile')}</strong>
+              <span>{t('account.skinFileHint')}</span>
             </label>
             <div className={styles.uploadArea}>
               <UploadIcon />
-              <span>点击上传皮肤文件</span>
+              <span>{t('account.skinUpload')}</span>
               <input type="file" accept="image/png" style={{ display: 'none' }} />
             </div>
           </div>
 
           <div className={styles.modelSelect}>
-            <label><strong>皮肤模型</strong></label>
+            <label><strong>{t('account.skinModel')}</strong></label>
             <div className={styles.modelOptions}>
               <button
                 type="button"
@@ -187,7 +192,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                 <div className={styles.modelPreview}>
                   <SkinModel model="steve" />
                 </div>
-                <span>Steve（粗臂）</span>
+                <span>{t('account.skinSteve')}</span>
               </button>
               <button
                 type="button"
@@ -198,7 +203,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                 <div className={styles.modelPreview}>
                   <SkinModel model="alex" />
                 </div>
-                <span>Alex（细臂）</span>
+                <span>{t('account.skinAlex')}</span>
               </button>
             </div>
           </div>
@@ -206,16 +211,16 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
           {editingAccount.type === 'offline' && (
             <div className={styles.notice}>
               <AlertIcon />
-              <p>离线模式的皮肤仅在本地生效。多人游戏中的皮肤显示由服务器决定。</p>
+              <p>{t('account.skinOfflineNotice')}</p>
             </div>
           )}
 
           <div className={styles.actions}>
             <Button onClick={handleSaveEdit} disabled={!editUsername.trim()}>
-              保存更改
+              {t('account.saveChanges')}
             </Button>
             <Button variant="ghost" onClick={() => setEditingAccount(null)}>
-              取消
+              {t('common.cancel')}
             </Button>
           </div>
         </div>
@@ -225,38 +230,38 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
 
   if (currentAccount && !method) {
     return (
-      <Modal isOpen={isOpen} onClose={onClose} title="账户管理" size="lg">
+      <Modal isOpen={isOpen} onClose={onClose} title={t('account.management')} size="lg">
         <div className={styles.accountManagement}>
           <div className={styles.currentAccountSection}>
-            <h3>当前账户</h3>
+            <h3>{t('account.current')}</h3>
             <div className={styles.accountInfo}>
               <PlayerAvatar username={currentAccount.username} avatar={currentAccount.avatar} size={64} />
               <div className={styles.accountDetails}>
                 <h4>{currentAccount.username}</h4>
                 <p className={styles.accountType}>
-                  {currentAccount.type === 'microsoft' ? 'Microsoft 账户' : currentAccount.type === 'offline' ? '离线模式' : '第三方认证'}
+                  {currentAccount.type === 'microsoft' ? t('account.microsoft') : currentAccount.type === 'offline' ? t('account.offline') : t('account.thirdParty')}
                 </p>
                 <div className={`${styles.ownershipBadge} ${currentAccount.hasMinecraft ? styles.verified : styles.unverified}`}>
                   {currentAccount.hasMinecraft ? (
-                    <><ShieldCheckIcon /> Java 版所有权已确认</>
+                    <><ShieldCheckIcon /> {t('account.ownershipVerified')}</>
                   ) : (
-                    <><AlertIcon /> 未验证所有权</>
+                    <><AlertIcon /> {t('account.ownershipUnverified')}</>
                   )}
                 </div>
               </div>
               <Button onClick={() => handleEditAccount(currentAccount)} size="sm" icon={<EditIcon />}>
-                编辑
+                {t('common.edit')}
               </Button>
             </div>
 
             <div className={styles.notice}>
               <ShieldCheckIcon />
-              <p>切换账户不会影响已安装的游戏、模组或存档。</p>
+              <p>{t('account.switchSafe')}</p>
             </div>
           </div>
 
           <div className={styles.accountListSection}>
-            {recentAccounts.length > 0 && <h3>其他账户</h3>}
+            {recentAccounts.length > 0 && <h3>{t('account.others')}</h3>}
             <div className={styles.accountGrid}>
               {recentAccounts.map((account) => (
                   <div
@@ -270,7 +275,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                       <div className={styles.gridItemInfo}>
                         <span className={styles.gridItemName}>{account.username}</span>
                         <span className={styles.gridItemType}>
-                          {account.type === 'microsoft' ? 'Microsoft' : account.type === 'offline' ? '离线' : '第三方'}
+                          {account.type === 'microsoft' ? 'Microsoft' : account.type === 'offline' ? t('account.offlineShort') : t('account.thirdPartyShort')}
                         </span>
                       </div>
                       {account.hasMinecraft && (
@@ -287,7 +292,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                             e.stopPropagation();
                             handleEditAccount(account);
                           }}
-                          title="编辑"
+                          title={t('common.edit')}
                         >
                           <EditIcon />
                         </button>
@@ -297,7 +302,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                             e.stopPropagation();
                             onLogin(account);
                           }}
-                          title="切换到此账户"
+                          title={t('account.switchTo')}
                         >
                           <LoginIcon />
                         </button>
@@ -316,7 +321,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                       aria-expanded={showAddMenu}
                     >
                       <PlusIcon />
-                      <span>添加账户</span>
+                      <span>{t('account.add')}</span>
                     </button>
                   ) : (
                     <div className={styles.addAccountMenu}>
@@ -327,12 +332,12 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                       </button>
                       <button onClick={() => { setShowAddMenu(false); setMethod('offline'); }}>
                         <UserIcon />
-                        <span>离线模式</span>
+                        <span>{t('account.offline')}</span>
                         <ChevronRightIcon />
                       </button>
                       <button onClick={() => { setShowAddMenu(false); setMethod('thirdparty'); }}>
                         <ServerIcon />
-                        <span>第三方</span>
+                        <span>{t('account.thirdPartyShort')}</span>
                         <ChevronRightIcon />
                       </button>
                     </div>
@@ -342,7 +347,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
           </div>
 
           <div className={styles.actions}>
-            <Button onClick={onClose}>关闭</Button>
+            <Button onClick={onClose}>{t('common.close')}</Button>
           </div>
         </div>
       </Modal>
@@ -350,7 +355,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
   }
 
   return (
-    <Modal isOpen={isOpen} onClose={() => { resetView(); onClose(); }} title="选择登录方式" size="lg">
+    <Modal isOpen={isOpen} onClose={() => { resetView(); onClose(); }} title={t('account.chooseMethod')} size="lg">
       {!method && (
         <div className={styles.layoutWithSidebar}>
           <div className={styles.welcomeSection}>
@@ -358,56 +363,54 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
               <div className={styles.welcomeIcon}>
                 <div className={styles.logoIcon}>FL</div>
               </div>
-              <h2>欢迎使用 FlowLaunch</h2>
+              <h2>{t('account.welcome')}</h2>
               <p className={styles.welcomeDescription}>
-                选择右侧的账户登录，或点击"添加账户"按钮添加新账户。
-                <br />
-                支持微软账户、离线模式和第三方认证服务。
+                {t('account.welcomeHint')}
               </p>
 
               <div className={styles.infoCards}>
                 <div className={styles.infoCard}>
                   <ShieldCheckIcon />
                   <div>
-                    <h4>安全登录</h4>
-                    <p>微软账户通过系统浏览器安全授权，不会保存明文密码</p>
+                    <h4>{t('account.secureLogin')}</h4>
+                    <p>{t('account.secureLoginHint')}</p>
                   </div>
                 </div>
                 <div className={styles.infoCard}>
                   <UserIcon />
                   <div>
-                    <h4>多账户管理</h4>
-                    <p>支持同时管理多个账户，快速切换无需重复登录</p>
+                    <h4>{t('account.multiAccount')}</h4>
+                    <p>{t('account.multiAccountHint')}</p>
                   </div>
                 </div>
                 <div className={styles.infoCard}>
                   <ServerIcon />
                   <div>
-                    <h4>灵活接入</h4>
-                    <p>支持离线模式和自定义认证服务器，适应不同使用场景</p>
+                    <h4>{t('account.flexible')}</h4>
+                    <p>{t('account.flexibleHint')}</p>
                   </div>
                 </div>
               </div>
 
               <div className={styles.quickTips}>
-                <h4>快速提示</h4>
+                <h4>{t('account.quickTips')}</h4>
                 <ul>
-                  <li>推荐使用 Microsoft 账户获得完整功能支持</li>
-                  <li>离线模式仅适用于单人游戏或支持离线的服务器</li>
-                  <li>第三方认证需要从服务器管理员获取 API 地址</li>
+                  <li>{t('account.tipMicrosoft')}</li>
+                  <li>{t('account.tipOffline')}</li>
+                  <li>{t('account.tipThirdParty')}</li>
                 </ul>
               </div>
             </div>
 
             <div className={styles.notice}>
               <ShieldCheckIcon />
-              <p>切换账户不会影响已安装的游戏、模组或存档。所有账户数据仅存储在本地。</p>
+              <p>{t('account.switchSafeLocal')}</p>
             </div>
           </div>
 
           {recentAccounts.length > 0 && (
             <aside className={styles.recentSidebar}>
-              <h4>最近使用</h4>
+              <h4>{t('account.recent')}</h4>
               <div className={styles.recentList}>
                 {recentAccounts.map((account) => (
                   <div
@@ -421,7 +424,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                       <div className={styles.recentInfo}>
                         <span className={styles.recentName}>{account.username}</span>
                         <span className={styles.recentType}>
-                          {account.type === 'microsoft' ? 'Microsoft' : account.type === 'offline' ? '离线' : '第三方'}
+                          {account.type === 'microsoft' ? 'Microsoft' : account.type === 'offline' ? t('account.offlineShort') : t('account.thirdPartyShort')}
                         </span>
                       </div>
                       {account.hasMinecraft && hoveredAccountId !== account.id && (
@@ -439,7 +442,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                             }}
                           >
                             <EditIcon />
-                            <span>修改</span>
+                            <span>{t('account.modify')}</span>
                           </button>
                           <button
                             className={styles.recentActionUse}
@@ -450,7 +453,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                             }}
                           >
                             <LoginIcon />
-                            <span>使用</span>
+                            <span>{t('account.use')}</span>
                           </button>
                         </div>
                       )}
@@ -458,7 +461,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                   </div>
                 ))}
               </div>
-              <p className={styles.recentHint}>悬停查看操作选项</p>
+              <p className={styles.recentHint}>{t('account.hoverHint')}</p>
               
               {/* 未登录状态的添加账户按钮 */}
               {!showAddMenu ? (
@@ -467,7 +470,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                   onClick={() => setShowAddMenu(true)}
                 >
                   <PlusIcon />
-                  <span>添加账户</span>
+                  <span>{t('account.add')}</span>
                 </button>
               ) : (
                 <div className={styles.addAccountMenu}>
@@ -478,12 +481,12 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                   </button>
                   <button onClick={() => { setShowAddMenu(false); setMethod('offline'); }}>
                     <UserIcon />
-                    <span>离线模式</span>
+                    <span>{t('account.offline')}</span>
                     <ChevronRightIcon />
                   </button>
                   <button onClick={() => { setShowAddMenu(false); setMethod('thirdparty'); }}>
                     <ServerIcon />
-                    <span>第三方</span>
+                    <span>{t('account.thirdPartyShort')}</span>
                     <ChevronRightIcon />
                   </button>
                 </div>
@@ -500,32 +503,32 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
               <MicrosoftIcon />
             </div>
             <div>
-              <h3>Microsoft 账户登录</h3>
-              <p>将在系统浏览器中打开微软官方授权页面</p>
+              <h3>{t('account.microsoftLogin')}</h3>
+              <p>{t('account.microsoftLoginHint')}</p>
             </div>
           </div>
 
           <div className={styles.infoBox}>
-            <h4>登录流程</h4>
+            <h4>{t('account.loginFlow')}</h4>
             <ol>
-              <li>点击下方按钮后，将打开系统默认浏览器</li>
-              <li>在微软官方页面输入账号密码</li>
-              <li>授权 FlowLaunch 访问你的游戏信息</li>
-              <li>完成后自动返回启动器</li>
+              <li>{t('account.step1')}</li>
+              <li>{t('account.step2')}</li>
+              <li>{t('account.step3')}</li>
+              <li>{t('account.step4')}</li>
             </ol>
           </div>
 
           <div className={styles.notice}>
             <ShieldCheckIcon />
-            <p>FlowLaunch 不会获取或保存你的微软密码。授权令牌由系统安全存储。</p>
+            <p>{t('account.msPrivacy')}</p>
           </div>
 
           <div className={styles.actions}>
             <Button onClick={handleMicrosoftLogin}>
-              通过微软登录（演示）
+              {t('account.msDemo')}
             </Button>
             <Button variant="ghost" onClick={resetView}>
-              返回
+              {t('common.back')}
             </Button>
           </div>
         </div>
@@ -538,38 +541,38 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
               <UserIcon />
             </div>
             <div>
-              <h3>离线模式</h3>
-              <p>输入一个游戏内显示的用户名</p>
+              <h3>{t('account.offline')}</h3>
+              <p>{t('account.offlineHint')}</p>
             </div>
           </div>
 
           <Input
-            label="用户名"
-            placeholder="请输入用户名"
+            label={t('account.username')}
+            placeholder={t('account.usernamePlaceholder')}
             value={offlineName}
             onChange={(e) => setOfflineName(e.target.value)}
-            hint="3-16个字符，仅支持字母、数字和下划线"
+            hint={t('account.offlineUsernameHint')}
           />
 
           <div className={`${styles.notice} ${styles.warning}`}>
             <AlertIcon />
             <div>
-              <h4>离线模式限制</h4>
+              <h4>{t('account.offlineLimits')}</h4>
               <ul>
-                <li>只能用于单人游戏或支持离线模式的服务器</li>
-                <li>无法加入需要正版验证的服务器</li>
-                <li>皮肤需要手动设置或使用服务器端插件</li>
-                <li>不能替代正版游戏所有权验证</li>
+                <li>{t('account.offlineLimit1')}</li>
+                <li>{t('account.offlineLimit2')}</li>
+                <li>{t('account.offlineLimit3')}</li>
+                <li>{t('account.offlineLimit4')}</li>
               </ul>
             </div>
           </div>
 
           <div className={styles.actions}>
             <Button onClick={handleOfflineLogin} disabled={!offlineName.trim()}>
-              使用离线模式
+              {t('account.useOffline')}
             </Button>
             <Button variant="ghost" onClick={resetView}>
-              返回
+              {t('common.back')}
             </Button>
           </div>
         </div>
@@ -582,42 +585,42 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
               <ServerIcon />
             </div>
             <div>
-              <h3>第三方认证服务器</h3>
-              <p>使用 authlib-injector 或兼容认证服务</p>
+              <h3>{t('account.thirdPartyServer')}</h3>
+              <p>{t('account.thirdPartyHint')}</p>
             </div>
           </div>
 
           <Input
-            label="认证服务器地址"
+            label={t('account.authServer')}
             placeholder="https://example.com/api/yggdrasil"
             value={serverUrl}
             onChange={(e) => setServerUrl(e.target.value)}
-            hint="输入服务器提供的 Yggdrasil API 地址"
+            hint={t('account.authServerHint')}
           />
 
           <div className={styles.infoBox}>
-            <h4>什么是第三方认证？</h4>
-            <p>一些组织（如学校、社区）会搭建自己的认证服务器，提供类似正版的验证和皮肤功能。你需要从服务器管理员获取：</p>
+            <h4>{t('account.whatIsThirdParty')}</h4>
+            <p>{t('account.thirdPartyExplain')}</p>
             <ul>
-              <li>认证服务器 API 地址</li>
-              <li>已注册的账户和密码</li>
+              <li>{t('account.thirdPartyNeed1')}</li>
+              <li>{t('account.thirdPartyNeed2')}</li>
             </ul>
           </div>
 
           <div className={`${styles.notice} ${styles.warning}`}>
             <AlertIcon />
             <div>
-              <h4>安全提示</h4>
-              <p>仅使用你信任的认证服务器。恶意服务器可能窃取账户信息。官方 Minecraft 不提供第三方认证支持。</p>
+              <h4>{t('account.securityTip')}</h4>
+              <p>{t('account.securityWarning')}</p>
             </div>
           </div>
 
           <div className={styles.actions}>
             <Button onClick={handleThirdPartyLogin} disabled={!serverUrl.trim()}>
-              连接认证服务器（演示）
+              {t('account.connectThirdParty')}
             </Button>
             <Button variant="ghost" onClick={resetView}>
-              返回
+              {t('common.back')}
             </Button>
           </div>
         </div>

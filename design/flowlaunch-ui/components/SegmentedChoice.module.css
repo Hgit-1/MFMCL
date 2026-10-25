@@ -1,0 +1,94 @@
+/* 分段选择控件：2–3 档。 */
+
+.wrap {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 9px;
+}
+
+/*
+ * 轨道 + 等宽分段。用 grid 而不是 flex 是为了让每段严格等宽：
+ * 中文「跟随全局」比「关 / 开」长得多，flex 会让各段宽度不齐，
+ * 中间档跑偏就不再位于几何中心，位置暗示失效。
+ *
+ * 单段宽度固定 62px，整体宽度由段数算出来：三档 190px、两档 128px，
+ * 这样 2 档和 3 档控件并排时每段大小一致，视觉重量不会跳。
+ */
+.group {
+  display: grid;
+  grid-template-columns: repeat(var(--seg-count), minmax(0, 1fr));
+  width: calc(var(--seg-count) * 62px + 4px);
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-bg-secondary);
+}
+
+.segment {
+  min-height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.16s, color 0.16s;
+}
+
+.segment:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.segment:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary-500) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.segment:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/*
+ * 选中档用色调底 + 主色文字。注意这里不能只靠底色区分：
+ * 轨道底色是 --color-bg-secondary，色调底与它色差很小（这正是内存模式那处
+ * 分段控件曾经"看不出选中"的原因），所以选中档同时加粗并提高文字对比。
+ */
+.active,
+.active:hover:not(:disabled) {
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+  font-weight: 600;
+}
+
+/* 继承档用中性色，避免看起来像"已启用某个功能"——它表示"不覆盖"。 */
+.neutral.active,
+.neutral.active:hover:not(:disabled) {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+
+.caption {
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* 窄屏：控件换到下一行，不再与说明文字抢宽度。 */
+@media (max-width: 560px) {
+  .wrap {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .group {
+    width: 100%;
+  }
+}

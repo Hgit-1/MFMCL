@@ -51,22 +51,60 @@ pub struct JavaRuntimeInfo {
 #[serde(rename_all = "camelCase")]
 pub struct SystemMemoryInfo {
     pub total_mb: u32,
+    /// 当前已被系统与其它进程占用的内存（MB）。
+    ///
+    /// `None` 表示这台机器或这个平台读不到——界面据此只在能拿到时才画
+    /// 「已使用」那一段，而不是画一条假的 0。
+    #[serde(default)]
+    pub used_mb: Option<u32>,
+    /// 当前可用内存（MB）。Linux/macOS 是真实的 available，Windows 退化为 free。
+    #[serde(default)]
+    pub available_mb: Option<u32>,
     pub recommended_mb: u32,
     pub maximum_game_mb: u32,
+}
+
+fn to_mb(bytes: u64) -> u32 {
+    (bytes / (1024 * 1024)).min(u32::MAX as u64) as u32
 }
 
 pub fn system_memory_info() -> SystemMemoryInfo {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
+
     let physical_bytes = system.total_memory();
     // sysinfo reports host RAM on some Linux container setups; respect the container's limit too.
-    let total_bytes = cgroup_memory_limit_bytes()
-        .filter(|limit| *limit > 0 && *limit < u64::MAX / 2)
-        .map_or(physical_bytes, |limit| physical_bytes.min(limit));
-    let total_mb = (total_bytes / (1024 * 1024)).min(u32::MAX as u64) as u32;
-    let (total_mb, maximum_game_mb, recommended_mb) = recommended_memory_for_total(total_mb);
+    let limit_bytes = cgroup_memory_limit_bytes().filter(|limit| *limit > 0 && *limit < u64::MAX / 2);
+    let total_bytes = limit_bytes
+        .map_or(physical_bytes, |limit| physical_bytes.min(limit))
+        .max(1);
+    let raw_total_mb = to_mb(total_bytes);
+
+    // sysinfo 的 used/available 读的是宿主机 /proc/meminfo。容器里总量已被 cgroup
+    // 压小，但 used 仍是整机数字，直接画会得到「已用 > 总量」。所以：
+    //   有 cgroup 限制（容器）→ 用 cgroup 的 memory.current，它才是容器真实用量；
+    //   否则 → 用 sysinfo 的 used，语义与界面其它地方一致（不含页缓存）。
+    // 注意不能无条件读 memory.current：普通 systemd 机器的根 cgroup 也有这个文件，
+    // 它把页缓存算进用量，会显示成「59/61 GB 已用」这种与 free 矛盾的数字。
+    let host_used = system.used_memory();
+    let host_available = system.available_memory();
+    let ratio = match limit_bytes {
+        Some(limit) if physical_bytes > 0 => limit.min(physical_bytes) as f64 / physical_bytes as f64,
+        _ => 1.0,
+    };
+
+    let used_bytes = match limit_bytes {
+        Some(_) => cgroup_memory_current_bytes().map(|bytes| bytes.min(total_bytes)),
+        None => (host_used > 0).then(|| host_used.min(total_bytes)),
+    };
+    let available_bytes = (host_available > 0)
+        .then(|| ((host_available as f64 * ratio) as u64).min(total_bytes));
+
+    let (total_mb, maximum_game_mb, recommended_mb) = recommended_memory_for_total(raw_total_mb);
     SystemMemoryInfo {
         total_mb,
+        used_mb: used_bytes.map(to_mb),
+        available_mb: available_bytes.map(to_mb),
         recommended_mb,
         maximum_game_mb,
     }
@@ -80,6 +118,21 @@ fn cgroup_memory_limit_bytes() -> Option<u64> {
         if let Ok(value) = std::fs::read_to_string(path) {
             if let Ok(limit) = value.trim().parse::<u64>() {
                 return Some(limit);
+            }
+        }
+    }
+    None
+}
+
+/// 容器当前已用内存。只在 cgroup v2 / v1 的用量文件可读时返回。
+fn cgroup_memory_current_bytes() -> Option<u64> {
+    for path in [
+        "/sys/fs/cgroup/memory.current",
+        "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+    ] {
+        if let Ok(value) = std::fs::read_to_string(path) {
+            if let Ok(used) = value.trim().parse::<u64>() {
+                return Some(used);
             }
         }
     }
@@ -102,6 +155,20 @@ mod memory_tests {
     fn memory_recommendation_leaves_system_headroom() {
         assert_eq!(recommended_memory_for_total(8192), (8192, 6554, 3277));
         assert_eq!(recommended_memory_for_total(1024), (1024, 512, 512));
+    }
+
+    #[test]
+    fn reported_usage_never_exceeds_total() {
+        // used / available 都是 Option：平台读不到时不panic、不返回 0，
+        // 让界面自己决定不画那一段。
+        let info = system_memory_info();
+        assert!(info.total_mb > 0);
+        if let Some(used) = info.used_mb {
+            assert!(used <= info.total_mb, "used {used} > total {}", info.total_mb);
+        }
+        if let Some(available) = info.available_mb {
+            assert!(available <= info.total_mb, "available {available} > total {}", info.total_mb);
+        }
     }
 }
 

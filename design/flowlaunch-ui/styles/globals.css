@@ -1,8 +1,31 @@
 :root {
   /* 色彩系统 - 浅色主题 */
-  --color-primary-500: #2563EB;
-  --color-primary-600: #1D4ED8;
-  --color-primary-700: #1E40AF;
+  /* 强调色默认「深海蓝」预设，悬停/按下由 utils/accent.ts 从同一色值派生 */
+  --color-primary-500: #53B4F6;
+  --color-primary-600: #4494CA;
+  --color-primary-700: #3A7EAC;
+  /* 主色纯色填充（按钮/激活项的背景）：直接用强调色原值，不再压暗。
+     预设色本身偏亮，所以把对比度交给文字：近黑墨色在五套预设上都有
+     5.9–9.2:1，按钮呈现的就是用户挑选的那个颜色。
+     仅当自定义强调色过深（墨色达不到 4.5:1）时，才在 OKLab 里只提亮
+     L、锁住色相与彩度，直到墨色文字达标。 */
+  --color-primary-solid: #53B4F6;
+  --color-primary-solid-hover: #49AAEC;
+  --color-primary-solid-active: #3EA1E2;
+  /* 选中行色调（导航项等）：强调色与抬升面按 12% 混合，
+     比整块实色填充更轻，长列表里不会抢走注意力。 */
+  --color-primary-tonal-light: #EAF6FE;
+  --color-primary-tonal-dark: #253A4E;
+  --color-primary-tonal-text-light: #326C94;
+  --color-primary-tonal-text-dark: #53B4F6;
+  --color-primary-tonal: var(--color-primary-tonal-light);
+  --color-primary-tonal-text: var(--color-primary-tonal-text-light);
+  /* 主色填充上的文字色：近黑墨色，配合上面的实色填充保证 ≥4.5:1（默认预设约 8.5:1） */
+  --color-on-primary: #0A0E14;
+  /* 强调色作为文字/图标时的颜色：浅色主题下压暗，深色主题下提亮，保证 ≥4.5:1 */
+  --color-primary-text-light: #3675A0;
+  --color-primary-text-dark: #53B4F6;
+  --color-primary-text: var(--color-primary-text-light);
   
   --color-secondary-500: #7C3AED;
   --color-secondary-600: #6D28D9;
@@ -15,6 +38,13 @@
   
   --color-danger-500: #EF4444;
   --color-danger-600: #DC2626;
+  /* 危险操作实色填充：与主按钮同一套做法——原色填充、墨色文字（≈5.1:1）。
+     旧的 #EF4444 + 白字只有 3.76:1，未达 AA。 */
+  --color-danger-solid: #EF4444;
+  --color-danger-solid-hover: #EB4E49;
+  --color-danger-solid-active: #E44743;
+  /* 危险色作为文字时的颜色：压暗到白底上 ≥5:1 */
+  --color-danger-text: #C92A2A;
   
   --color-neutral-50: #F9FAFB;
   --color-neutral-100: #F3F4F6;
@@ -77,9 +107,27 @@
 
 /* 深色主题 */
 [data-theme="dark"] {
-  --color-primary-500: #3B82F6;
-  --color-primary-600: #2563EB;
-  
+  /* 深海蓝在深色底上本就够亮，沿用同一强调色，避免切主题时变色 */
+  --color-primary-500: #53B4F6;
+  --color-primary-600: #4494CA;
+  --color-primary-700: #3A7EAC;
+  /* 实色填充与文字色在两种主题下保持同一组值，切换主题时按钮不会变色 */
+  --color-primary-solid: #53B4F6;
+  --color-primary-solid-hover: #49AAEC;
+  --color-primary-solid-active: #3EA1E2;
+  /* 深色主题下色调底更深、文字更亮；--color-primary-tonal 指向深色一组 */
+  --color-primary-tonal-light: #EAF6FE;
+  --color-primary-tonal-dark: #253A4E;
+  --color-primary-tonal-text-light: #326C94;
+  --color-primary-tonal-text-dark: #53B4F6;
+  --color-primary-tonal: var(--color-primary-tonal-dark);
+  --color-primary-tonal-text: var(--color-primary-tonal-text-dark);
+  --color-on-primary: #0A0E14;
+  /* 深色底上提到原始亮度即可读 */
+  --color-primary-text-light: #3675A0;
+  --color-primary-text-dark: #53B4F6;
+  --color-primary-text: var(--color-primary-text-dark);
+
   --color-neutral-950: #0A0E14;
   --color-neutral-900: #111827;
   --color-neutral-800: #1F2937;
@@ -171,6 +219,6 @@ button:focus-visible {
 
 /* 选中文本 */
 ::selection {
-  background: var(--color-primary-500);
-  color: white;
+  background: var(--color-primary-solid);
+  color: var(--color-on-primary);
 }

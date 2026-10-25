@@ -1,11 +1,39 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Box, Puzzle, Package, Image as ImageIcon, Map } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Check, ChevronDown } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { AccountModal } from '../components/AccountModal';
-import { SettingsPanel, type JavaRuntime } from '../components/SettingsPanel';
+import { DefaultUserAvatar } from '../components/DefaultUserAvatar';
+import { SettingsPanel } from '../components/SettingsPanel';
+import { InstanceSettings } from '../components/InstanceSettings';
+import { StoreWorkspace, STORE_CATEGORIES } from '../components/StoreWorkspace';
+import { PluginWorkspace } from '../components/PluginWorkspace';
+import { LOCALES, useI18n } from '../utils/i18n';
+import type { MessageKey } from '../utils/i18n/messages/zh-CN';
+import { readPrefs, type LauncherPrefs } from '../utils/launcherPrefs';
+import { allPlugins, loadPluginStore, pluginNeedsAttention, savePluginStore, type PluginStore } from '../utils/plugins';
+import {
+  EMPTY_OVERRIDES,
+  loadInstanceOverrides,
+  saveInstanceOverrides,
+  type InstanceOverrides,
+  type OverrideMap,
+} from '../utils/instanceOverrides';
+import { BlockIcon } from '../components/BlockIcon';
+import { VANILLA_BLOCK } from '../utils/store/blocks';
+import { Image as ImageIcon, Map, Package, Puzzle } from 'lucide-react';
+import {
+  DEFAULT_INSTANCE_JAVA,
+  loadInstanceJavaSettings,
+  loadJavaList,
+  saveInstanceJavaSettings,
+  type InstanceJavaSetting,
+  type JavaRuntime,
+} from '../utils/java';
 import type { GameInstance, Account, AppContext, DownloadTask } from '../types';
+import type { StoreCategory } from '../utils/store/types';
+import { CATEGORY_KEYS } from '../utils/store/types';
 import styles from './App.module.css';
 import '../styles/globals.css';
 
@@ -16,21 +44,28 @@ const SettingsIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fill=
 const LibraryIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="16" height="14" rx="2"/><path d="M2 7h16"/></svg>;
 const ShopIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6l3-3h8l3 3v11a2 2 0 01-2 2H5a2 2 0 01-2-2V6z"/><path d="M3 6h14v2a3 3 0 01-6 0 3 3 0 01-6 0V6"/></svg>;
 const DownloadIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 3v10m-4-4l4 4 4-4M3 17h14"/></svg>;
-const PlayerHeadIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true" shapeRendering="crispEdges">
-    <path d="M4 3h12v2h2v10h-2v2H4v-2H2V5h2V3z" fill="#9b633f" />
-    <path d="M4 3h12v3h2v3h-4V7H8v2H4v4H2V5h2V3z" fill="#4a2b24" />
-    <path d="M6 9h3v2H6V9zm5 0h3v2h-3V9z" fill="#222b3a" />
-    <path d="M8 14h4v1H8v-1z" fill="#7a3f32" />
+/*
+ * 插件图标：一枚插座。
+ *
+ * 插件在中文语境里也常被读成「扩展/接口」，插座比拼图块更直白地传达「插上去
+ * 就多一个能力」，而且与商店用的盒子、库用的矩形在轮廓上区分得开——侧栏图标
+ * 只有 20px，靠轮廓差异认类比靠细节更重要。
+ */
+const PluginsIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M7 2v4M13 2v4" />
+    <path d="M5 6h10v3a5 5 0 01-5 5 5 5 0 01-5-5V6z" />
+    <path d="M10 14v4" />
   </svg>
 );
 function SidebarAccountAvatar({ account }: { account?: Account }) {
-  if (!account?.avatar) return <PlayerHeadIcon />;
+  const { t } = useI18n();
+  if (!account?.avatar) return <DefaultUserAvatar className={styles.defaultUserAvatar} />;
   return (
     <img
       className={styles.sidebarAvatar}
       src={account.avatar}
-      alt={`${account.username} 的 Minecraft 头颅`}
+      alt={t('account.avatarAlt', { values: { name: account.username } })}
     />
   );
 }
@@ -38,256 +73,51 @@ function SidebarAccountAvatar({ account }: { account?: Account }) {
 const SunIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="10" cy="10" r="4"/><path d="M10 2v2m0 12v2M2 10h2m12 0h2m-2.8-5.2l1.4-1.4m-11.2 0L4 4.8m11.2 11.2l1.4 1.4m-11.2 0L4 15.2"/></svg>;
 const MoonIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"/></svg>;
 
-const ChevronDownIcon = () => <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 7.5l5 5 5-5" /></svg>;
-const SearchIcon = () => <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="8.5" cy="8.5" r="5.5" /><path d="M13 13l4 4" /></svg>;
-const SlidersIcon = () => <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 5h12M4 10h12M4 15h12" /><circle cx="8" cy="5" r="1.5" fill="currentColor" /><circle cx="13" cy="10" r="1.5" fill="currentColor" /><circle cx="6" cy="15" r="1.5" fill="currentColor" /></svg>;
+/**
+ * 退出登录图标。
+ *
+ * 用业界通行的「门 + 右向箭头」造型（Material Symbols 的 logout、GitHub 与
+ * VS Code 用的都是这一种），而不是「人 + 减号」：后者容易被读成「删除账户」。
+ * 描边取 1.9、圆头圆角，与侧栏其它 lucide 图标（20px / strokeWidth 2）的
+ * 视觉重量对齐。
+ */
+const SignOutIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <path d="M16 17l5-5-5-5" />
+    <path d="M21 12H9" />
+  </svg>
+);
 
-type StoreCategory = 'vanilla' | 'mod' | 'modpack' | 'resourcepack' | 'world';
-type VersionKind = 'release' | 'snapshot' | 'old' | 'special';
+const TASK_STATUS_KEYS: Record<DownloadTask['status'], MessageKey> = {
+  queued: 'app.taskQueued',
+  downloading: 'app.taskDownloading',
+  verifying: 'app.taskVerifying',
+  installing: 'app.taskInstalling',
+  completed: 'app.taskCompleted',
+  failed: 'app.taskFailed',
+  paused: 'app.taskPaused',
+  cancelled: 'app.taskCancelled',
+};
 
-interface StoreItem {
-  id: string;
-  name: string;
-  author: string;
-  description: string;
-  downloads: string;
-  updated: string;
-  source: 'Modrinth' | 'CurseForge';
-  category: StoreCategory;
-  icon: string;
-}
+/** 仍在进行中的任务状态。已完成/失败/取消的任务不再计入侧栏徽章。 */
+const ACTIVE_TASK_STATUSES: DownloadTask['status'][] = ['queued', 'downloading', 'verifying', 'installing'];
 
-const storeCategories: { id: StoreCategory; label: string; icon: React.ReactNode }[] = [
-  { id: 'vanilla', label: '原版游戏', icon: <Box size={18} strokeWidth={1.8} /> },
-  { id: 'mod', label: 'Mod', icon: <Puzzle size={18} strokeWidth={1.8} /> },
-  { id: 'modpack', label: '整合包', icon: <Package size={18} strokeWidth={1.8} /> },
-  { id: 'resourcepack', label: '资源包', icon: <ImageIcon size={18} strokeWidth={1.8} /> },
-  { id: 'world', label: '地图', icon: <Map size={18} strokeWidth={1.8} /> },
-];
+const CATEGORY_ICONS: Record<Exclude<StoreCategory, 'vanilla'>, React.ReactNode> = {
+  mod: <Puzzle size={18} strokeWidth={1.8} />,
+  modpack: <Package size={18} strokeWidth={1.8} />,
+  resourcepack: <ImageIcon size={18} strokeWidth={1.8} />,
+  world: <Map size={18} strokeWidth={1.8} />,
+};
 
-const vanillaVersions: { version: string; date: string; kind: VersionKind; label: string; java: string }[] = [
-  { version: '1.21.4', date: '2024-12-03', kind: 'release', label: '正式版', java: 'Java 21' },
-  { version: '1.21.3', date: '2024-10-23', kind: 'release', label: '正式版', java: 'Java 21' },
-  { version: '1.21.1', date: '2024-08-08', kind: 'release', label: '正式版', java: 'Java 21' },
-  { version: '1.21', date: '2024-06-13', kind: 'release', label: '正式版', java: 'Java 21' },
-  { version: '1.20.6', date: '2024-04-29', kind: 'release', label: '正式版', java: 'Java 21' },
-  { version: '1.20.4', date: '2023-12-07', kind: 'release', label: '正式版', java: 'Java 17' },
-  { version: '24w46a', date: '2024-11-14', kind: 'snapshot', label: '快照版', java: 'Java 21' },
-  { version: '23w51a', date: '2023-12-18', kind: 'snapshot', label: '快照版', java: 'Java 17' },
-  { version: 'b1.7.3', date: '2011-07-08', kind: 'old', label: '远古版', java: 'Java 8' },
-  { version: 'Alpha 1.2.6', date: '2010-07-03', kind: 'old', label: '远古版', java: 'Java 8' },
-  { version: '20w14infinite', date: '2020-04-01', kind: 'special', label: '彩蛋版', java: 'Java 8' },
-];
+// 只用来排序/遍历分类，标签由 t(CATEGORY_KEYS[id]) 提供，不在这里存文案。
+const storeCategories = STORE_CATEGORIES;
 
-const storeItems: StoreItem[] = [
-  { id: 'sodium', name: 'Sodium', author: 'JellySquid', description: '提升游戏帧率和渲染性能的 Fabric 模组。', downloads: '2.8 亿', updated: '2 天前', source: 'Modrinth', category: 'mod', icon: '⚡' },
-  { id: 'rei', name: "Roughly Enough Items", author: 'mezz', description: '在游戏中查看物品配方和用途。', downloads: '1.1 亿', updated: '5 天前', source: 'Modrinth', category: 'mod', icon: '📖' },
-  { id: 'jei', name: "Just Enough Items", author: 'mezz', description: 'Minecraft 物品和配方查看工具。', downloads: '4.9 亿', updated: '1 周前', source: 'CurseForge', category: 'mod', icon: '🔍' },
-  { id: 'lithium', name: 'Lithium', author: 'CaffeineMC', description: '优化游戏逻辑，不改变原版玩法。', downloads: '1.6 亿', updated: '3 天前', source: 'Modrinth', category: 'mod', icon: '🚀' },
-  { id: 'fabulously-optimized', name: 'Fabulously Optimized', author: 'Fabulously Optimized', description: '专注性能和易用性的 Fabric 整合包。', downloads: '2,400 万', updated: '4 天前', source: 'Modrinth', category: 'modpack', icon: '✨' },
-  { id: 'create-optimized', name: 'Create: Above and Beyond', author: 'simibubi', description: '围绕机械动力展开的完整冒险体验。', downloads: '860 万', updated: '2 周前', source: 'CurseForge', category: 'modpack', icon: '⚙️' },
-  { id: 'stay-true', name: 'Stay True', author: 'ooblec', description: '保留原版风格的高质量视觉升级资源包。', downloads: '3,600 万', updated: '1 周前', source: 'CurseForge', category: 'resourcepack', icon: '🌿' },
-  { id: 'faithful-32', name: 'Faithful 32x', author: 'Faithful Team', description: '经典的 32x 原版风格资源包。', downloads: '8,900 万', updated: '6 天前', source: 'CurseForge', category: 'resourcepack', icon: '🧱' },
-  { id: 'skyblock', name: 'SkyBlock 生存岛', author: 'TheBusyBiscuit', description: '从一座空岛开始的经典生存地图。', downloads: '1,200 万', updated: '3 周前', source: 'CurseForge', category: 'world', icon: '☁️' },
-  { id: 'city-project', name: '现代城市计划', author: 'BlockWorks', description: '适合建筑和多人游玩的现代城市地图。', downloads: '420 万', updated: '1 个月前', source: 'Modrinth', category: 'world', icon: '🏙️' },
-];
-
-interface StoreWorkspaceProps {
-  category: StoreCategory;
-  instances: GameInstance[];
-  selectedInstance?: GameInstance;
-  downloadTasks: DownloadTask[];
-  onSelectInstance: (instanceId: string) => void;
-  onCategoryChange: (category: StoreCategory) => void;
-  onQueueDownload: (name: string, type: DownloadTask['type'], targetInstance?: string) => void;
-}
-
-function StoreWorkspace({ category, instances, selectedInstance, downloadTasks, onSelectInstance, onCategoryChange, onQueueDownload }: StoreWorkspaceProps) {
-  const [query, setQuery] = useState('');
-  const [versionKinds, setVersionKinds] = useState<VersionKind[]>(['release']);
-  const [sourceFilters, setSourceFilters] = useState<('Modrinth' | 'CurseForge')[]>(['Modrinth', 'CurseForge']);
-  const [targetInstanceId, setTargetInstanceId] = useState(selectedInstance?.id ?? '');
-  const [versionSort, setVersionSort] = useState<'newest' | 'oldest'>('newest');
-  const [submittedQuery, setSubmittedQuery] = useState('');
-
-  useEffect(() => {
-    setTargetInstanceId(selectedInstance?.id ?? '');
-  }, [selectedInstance?.id]);
-
-  const visibleVersions = useMemo(() => {
-    const versions = vanillaVersions.filter(item => versionKinds.includes(item.kind));
-    return versions.sort((a, b) => versionSort === 'newest' ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date));
-  }, [versionKinds, versionSort]);
-  const visibleItems = useMemo(() => storeItems.filter(item => {
-    if (item.category !== category || !sourceFilters.includes(item.source)) return false;
-    const text = `${item.name} ${item.author} ${item.description}`.toLowerCase();
-    return !submittedQuery.trim() || text.includes(submittedQuery.trim().toLowerCase());
-  }), [category, submittedQuery, sourceFilters]);
-
-  const toggleVersionKind = (kind: VersionKind) => {
-    setVersionKinds(current => current.includes(kind) ? current.filter(item => item !== kind) : [...current, kind]);
-  };
-
-  const toggleSource = (source: 'Modrinth' | 'CurseForge') => {
-    setSourceFilters(current => current.includes(source) ? current.filter(item => item !== source) : [...current, source]);
-  };
-
-  const resetFilters = () => {
-    setQuery('');
-    setSubmittedQuery('');
-    setSourceFilters(['Modrinth', 'CurseForge']);
-    setVersionKinds(['release']);
-    setVersionSort('newest');
-  };
-
-  const isQueued = (name: string) => downloadTasks.some(task => task.name === name && task.status !== 'cancelled' && task.status !== 'failed');
-
-  return (
-    <div className={styles.store}>
-      <header className={styles.mainHeader}>
-        <div>
-          <h1>内容下载</h1>
-          <p className={styles.storeHeaderHint}>选择分类、设置条件，然后安装到当前实例</p>
-        </div>
-      </header>
-
-      <div className={styles.storeWorkspace}>
-        <aside className={styles.storeNav} aria-label="内容下载分类">
-          <div className={styles.storeNavTitle}>内容下载</div>
-          <label className={styles.storeCategoryField} htmlFor="store-category">
-            <span className={styles.storeCategoryIcon}>{storeCategories.find(item => item.id === category)?.icon}</span>
-            <select id="store-category" value={category} onChange={(event) => onCategoryChange(event.target.value as StoreCategory)}>
-              {storeCategories.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
-            </select>
-          </label>
-          <p className={styles.storeCategoryHint}>切换要下载的内容类型</p>
-          <div className={styles.storeNavDivider} />
-          <div className={styles.storeTargetBlock}>
-            <label htmlFor="store-target">当前实例</label>
-            <select id="store-target" value={targetInstanceId} onChange={(event) => onSelectInstance(event.target.value)}>
-              <option value="">下载任务</option>
-              {instances.map(instance => <option key={instance.id} value={instance.id}>{instance.name}</option>)}
-            </select>
-          </div>
-        </aside>
-
-        <section className={styles.storePanel}>
-          <div className={styles.storeFilterCard}>
-            <div className={styles.storeFilterTitle}>
-              <h2>搜索{storeCategories.find(item => item.id === category)?.label}</h2>
-              <span>{category === 'vanilla' ? `${visibleVersions.length} 个版本` : `${visibleItems.length} 个结果`}</span>
-            </div>
-            <div className={styles.storeFilterGrid}>
-              {category !== 'vanilla' && (
-                <label className={`${styles.storeField} ${styles.storeFieldWide}`}>
-                  <span>名称</span>
-                  <div className={styles.storeFieldInput}>
-                    <SearchIcon />
-                    <input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && setSubmittedQuery(query)} placeholder={`输入${storeCategories.find(item => item.id === category)?.label}名称`} />
-                  </div>
-                </label>
-              )}
-              {category === 'vanilla' ? (
-                <div className={`${styles.storeField} ${styles.storeFieldWide}`}>
-                  <span>版本类型</span>
-                  <div className={styles.storeCheckGroup}>
-                    {([['release', '普通版'], ['snapshot', '快照版'], ['old', '远古版'], ['special', '彩蛋版']] as [VersionKind, string][]).map(([kind, label]) => (
-                      <label key={kind} className={styles.checkOption}>
-                        <input type="checkbox" checked={versionKinds.includes(kind)} onChange={() => toggleVersionKind(kind)} />
-                        <span>{label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className={styles.storeField}>
-                  <span>来源</span>
-                  <div className={styles.storeCheckGroup}>
-                    {(['Modrinth', 'CurseForge'] as const).map(source => (
-                      <label key={source} className={styles.checkOption}>
-                        <input type="checkbox" checked={sourceFilters.includes(source)} onChange={() => toggleSource(source)} />
-                        <span>{source}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {category === 'vanilla' ? (
-                <label className={styles.storeField}>
-                  <span>排序</span>
-                  <select value={versionSort} onChange={(event) => setVersionSort(event.target.value as 'newest' | 'oldest')}>
-                    <option value="newest">从新到旧</option>
-                    <option value="oldest">从旧到新</option>
-                  </select>
-                </label>
-              ) : (
-                <label className={styles.storeField}>
-                  <span>游戏版本</span>
-                  <select defaultValue="all">
-                    <option value="all">全部版本</option>
-                    <option value="1.21.4">1.21.4</option>
-                    <option value="1.20.4">1.20.4</option>
-                    <option value="1.20.1">1.20.1</option>
-                    <option value="1.19.2">1.19.2</option>
-                  </select>
-                </label>
-              )}
-            </div>
-            <div className={styles.storeFilterActions}>
-              <Button onClick={() => setSubmittedQuery(query)} icon={<SearchIcon />}>搜索</Button>
-              <Button variant="ghost" onClick={resetFilters}>重置条件</Button>
-            </div>
-          </div>
-
-          <div className={styles.storeResultsCard}>
-            <div className={styles.storeResultsHeader}>
-              <h2>{category === 'vanilla' ? '版本列表' : '搜索结果'}</h2>
-              <span>{targetInstanceId ? '将安装到已选实例' : '将加入下载任务'}</span>
-            </div>
-            {category === 'vanilla' ? (
-              <div className={styles.versionList}>
-                {visibleVersions.length === 0 ? <div className={styles.storeEmpty}>至少选择一种版本类型</div> : visibleVersions.map(item => (
-                  <div key={`${item.kind}-${item.version}`} className={styles.versionRow}>
-                    <div className={styles.versionMark}>◈</div>
-                    <div className={styles.versionMain}>
-                      <strong>Minecraft {item.version}</strong>
-                      <span>{item.label} · {item.date} · {item.java}</span>
-                    </div>
-                    <Button size="sm" onClick={() => onQueueDownload(`Minecraft ${item.version}`, 'game', targetInstanceId || undefined)} disabled={isQueued(`Minecraft ${item.version}`)}>
-                      {isQueued(`Minecraft ${item.version}`) ? '已加入' : '安装'}
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className={styles.contentList}>
-                {visibleItems.length === 0 ? <div className={styles.storeEmpty}>没有找到匹配内容</div> : visibleItems.map(item => {
-                  const taskType: DownloadTask['type'] = category === 'mod' ? 'mod' : category === 'modpack' ? 'modpack' : 'resource';
-                  return (
-                    <div key={item.id} className={styles.contentRow}>
-                      <div className={styles.contentIcon}>{item.icon}</div>
-                      <div className={styles.contentMain}>
-                        <div className={styles.contentTitleLine}><strong>{item.name}</strong><span className={styles.sourceBadge}>{item.source}</span></div>
-                        <p>{item.description}</p>
-                        <span className={styles.contentMeta}>{item.author} · {item.downloads} 次下载 · 更新于 {item.updated}</span>
-                      </div>
-                      <Button size="sm" onClick={() => onQueueDownload(item.name, taskType, targetInstanceId || undefined)} disabled={isQueued(item.name)}>
-                        {isQueued(item.name) ? '已加入' : '安装'}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </section>
-      </div>
-    </div>
-  );
-}
 
 function App() {
   const { theme, setTheme, resolvedTheme } = useTheme();
+  const { t, language } = useI18n();
+  const locale = LOCALES[language];
   const [context, setContext] = useState<AppContext>('first-run');
   const [instances, setInstances] = useState<GameInstance[]>([]);
   const [selectedInstance, setSelectedInstance] = useState<GameInstance | undefined>();
@@ -320,18 +150,49 @@ function App() {
   ]);
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [downloadTasks, setDownloadTasks] = useState<DownloadTask[]>([]);
+  /**
+   * 侧栏徽章的数字。
+   *
+   * 统计的是「仍在进行」的任务（排队/下载/校验/安装），而不是只看 downloading：
+   * 点击「安装」时任务先进入 queued，若只数 downloading，徽章在排队阶段完全
+   * 不出现，用户会以为没生效。
+   */
+  const activeTaskCount = downloadTasks.filter(task => ACTIVE_TASK_STATUSES.includes(task.status)).length;
+  const downloadsLabel = activeTaskCount > 0
+    ? t('app.downloadsActive', { values: { count: activeTaskCount } })
+    : t('app.downloads');
   const [showSettings, setShowSettings] = useState(false);
-  const [javaRuntimes, setJavaRuntimes] = useState<JavaRuntime[]>(() => {
-    try { return JSON.parse(localStorage.getItem('flowlaunch-java-runtimes') || '[]'); } catch { return []; }
-  });
+  const [javaRuntimes, setJavaRuntimes] = useState<JavaRuntime[]>(loadJavaList);
   const [globalJavaPath, setGlobalJavaPath] = useState(() => {
     try { return JSON.parse(localStorage.getItem('flowlaunch-settings') || '{}').javaPath || ''; } catch { return ''; }
   });
-  const [instanceJavaPaths, setInstanceJavaPaths] = useState<Record<string, string>>(() => {
-    try { return JSON.parse(localStorage.getItem('flowlaunch-instance-java') || '{}'); } catch { return {}; }
-  });
+  const [instanceJavaSettings, setInstanceJavaSettings] = useState<Record<string, InstanceJavaSetting>>(loadInstanceJavaSettings);
+  /**
+   * 全局设置的只读快照。
+   *
+   * 管理页需要显示「跟随全局时实际是什么值」，但全局设置在 SettingsPanel 里
+   * 保存。这里存一份，在设置面板保存后同步，避免管理页读到一个陈旧的值。
+   */
+  const [globalPrefs, setGlobalPrefs] = useState<LauncherPrefs>(() => readPrefs());
+  const [instanceOverrides, setInstanceOverrides] = useState<OverrideMap>(loadInstanceOverrides);
+  const [pluginStore, setPluginStore] = useState<PluginStore>(loadPluginStore);
+  /** 改过但还没重启的插件（见 PluginWorkspace 的同名 prop）。 */
+  const [pendingPluginRestart, setPendingPluginRestart] = useState<string[]>([]);
+  /**
+   * 侧栏徽章只统计「需要注意」的插件。
+   *
+   * 用总数当徽章会让它永远非零（内置插件本来就装着），徽章就失去提醒意义。
+   * 判定标准与页面里的「需要注意」筛选共用 pluginNeedsAttention，避免徽章说
+   * 1、点进去却列出 3 个对不上。
+   */
+  const attentionPluginCount = allPlugins(pluginStore)
+    .filter(plugin => pluginNeedsAttention(plugin, pendingPluginRestart)).length;
   const [showFirstRun, setShowFirstRun] = useState(true);
   const [storeCategory, setStoreCategory] = useState<StoreCategory>('vanilla');
+  const [storeMenuOpen, setStoreMenuOpen] = useState(false);
+  const [storeMenuPos, setStoreMenuPos] = useState({ top: 0, left: 0, maxHeight: 320 });
+  const storeMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const storeMenuRef = useRef<HTMLDivElement>(null);
 
   // 模拟数据
   useEffect(() => {
@@ -355,7 +216,9 @@ function App() {
         },
         {
           id: '2',
-          name: '我的模组整合',
+          // 演示实例在首次运行时就落库了，名字按当时的语言生成一次；真实实例
+          // 由用户创建，不经过这里。
+          name: t('app.demoModpack'),
           version: '1.20.1',
           loader: 'fabric',
           loaderVersion: '0.15.3',
@@ -399,15 +262,88 @@ function App() {
     setSelectedInstance(instance);
   };
 
-  const persistInstanceJava = (instanceId: string, path: string) => {
-    const next = { ...instanceJavaPaths };
-    if (path) next[instanceId] = path; else delete next[instanceId];
-    setInstanceJavaPaths(next);
-    localStorage.setItem('flowlaunch-instance-java', JSON.stringify(next));
+  const toggleStoreMenu = () => {
+    if (storeMenuOpen) {
+      setStoreMenuOpen(false);
+      return;
+    }
+    const rect = storeMenuButtonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = 236;
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    const top = Math.min(rect.bottom + 8, window.innerHeight - 80);
+    setStoreMenuPos({ top, left, maxHeight: Math.max(180, window.innerHeight - top - 16) });
+    setStoreMenuOpen(true);
+  };
+
+  const chooseStoreCategory = (category: StoreCategory) => {
+    setStoreCategory(category);
+    setContext('store');
+    setStoreMenuOpen(false);
+  };
+
+  useEffect(() => {
+    if (!storeMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!storeMenuRef.current?.contains(target) && !storeMenuButtonRef.current?.contains(target)) setStoreMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setStoreMenuOpen(false);
+    };
+    const closeOnViewportChange = () => setStoreMenuOpen(false);
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', closeOnViewportChange);
+    window.addEventListener('scroll', closeOnViewportChange, true);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', closeOnViewportChange);
+      window.removeEventListener('scroll', closeOnViewportChange, true);
+    };
+  }, [storeMenuOpen]);
+
+  const persistInstanceJava = (instanceId: string, setting: InstanceJavaSetting) => {
+    const next = { ...instanceJavaSettings, [instanceId]: setting };
+    setInstanceJavaSettings(next);
+    saveInstanceJavaSettings(next);
+  };
+
+  /**
+   * 保存一个实例的覆盖设置。
+   *
+   * 每次点击都立即落盘，不跟全局设置共用「保存/关闭」流程：管理页里改动一项
+   * 就是一次明确的选择，再要求用户按保存容易漏掉。空对象直接删掉该实例的
+   * 记录，避免 localStorage 里堆满空条目。
+   */
+  /**
+   * 插件状态立即落盘。
+   *
+   * 与实例覆盖同理：开关一个插件是一次明确的选择，再要求按保存容易漏掉；
+   * 而且插件与全局设置无关，没有「取消」的语义。
+   */
+  const persistPlugins = (next: PluginStore) => {
+    setPluginStore(next);
+    savePluginStore(next);
+  };
+
+  const persistOverrides = (instanceId: string, next: InstanceOverrides) => {
+    const map = { ...instanceOverrides };
+    if (Object.keys(next).length === 0) delete map[instanceId];
+    else map[instanceId] = next;
+    setInstanceOverrides(map);
+    saveInstanceOverrides(map);
+  };
+
+  const cancelTask = (taskId: string) => {
+    setDownloadTasks(current => current.map(task => (
+      task.id === taskId ? { ...task, status: 'cancelled' as const } : task
+    )));
   };
 
   const launchInstance = (instance: GameInstance) => {
-    alert(`启动: ${instance.name}`);
+    alert(t('app.launchAlert', { values: { name: instance.name } }));
   };
 
   const handleLogin = (account: Account | undefined) => {
@@ -419,6 +355,20 @@ function App() {
         return [account, ...filtered].slice(0, 5);
       });
     }
+  };
+
+  /**
+   * 退出登录。
+   *
+   * 只清掉当前账户，保留最近账户列表——和多数启动器一致：退出后那台机器上用过
+   * 的账户仍可在账户弹窗里一键切回，不必重新走登录流程。已安装的游戏、模组和
+   * 存档与账户无关，不受影响。
+   */
+  const signOut = () => {
+    if (!currentAccount) return;
+    const name = currentAccount.username;
+    if (!window.confirm(t('app.signOutConfirm', { values: { name } }))) return;
+    setCurrentAccount(undefined);
   };
 
   const toggleTheme = () => {
@@ -433,31 +383,31 @@ function App() {
         <div className={styles.firstRun}>
           <div className={styles.firstRunContent}>
             <div className={styles.logo}>
-              <div className={styles.logoIcon}>FL</div>
+              <div className={styles.logoIcon}>MFL</div>
             </div>
-            <h1 className={styles.firstRunTitle}>欢迎使用 FlowLaunch</h1>
+            <h1 className={styles.firstRunTitle}>{t('app.firstRunTitle')}</h1>
             <p className={styles.firstRunDescription}>
-              一个流畅、智能的 Minecraft 启动器
+              {t('app.firstRunTagline')}
               <br />
-              自动管理 Java、模组和资源，让你专注于游戏
+              {t('app.firstRunSubtagline')}
             </p>
             <div className={styles.firstRunActions}>
               <Button size="lg" onClick={completeFirstRun} icon={<PlayIcon />}>
-                开始使用
+                {t('app.getStarted')}
               </Button>
             </div>
             <div className={styles.firstRunFeatures}>
               <div className={styles.feature}>
                 <ShopIcon />
-                <span>一键安装原版与整合包</span>
+                <span>{t('app.featureInstall')}</span>
               </div>
               <div className={styles.feature}>
                 <SettingsIcon />
-                <span>自动配置 Java 环境</span>
+                <span>{t('app.featureJava')}</span>
               </div>
               <div className={styles.feature}>
                 <LibraryIcon />
-                <span>多实例独立管理</span>
+                <span>{t('app.featureInstances')}</span>
               </div>
             </div>
           </div>
@@ -473,8 +423,8 @@ function App() {
       <aside className={styles.sidebar}>
         <div className={styles.sidebarHeader}>
           <div className={styles.logo}>
-            <div className={styles.logoIconSmall}>FL</div>
-            <span className={styles.logoText}>FlowLaunch</span>
+            <div className={styles.logoIconSmall}>MFL</div>
+            <span className={styles.logoText}>MFMC Launcher</span>
           </div>
         </div>
 
@@ -482,62 +432,136 @@ function App() {
           <button
             className={`${styles.navItem} ${context === 'home' ? styles.active : ''}`}
             onClick={() => setContext('home')}
-            aria-label="游戏库"
-            title="游戏库"
+            aria-label={t('app.library')}
+            title={t('app.library')}
           >
             <LibraryIcon />
-            <span>游戏库</span>
+            <span>{t('app.library')}</span>
             {instances.length > 0 && (
               <span className={styles.badge}>{instances.length}</span>
             )}
           </button>
-          <button
-            className={`${styles.navItem} ${context === 'store' ? styles.active : ''}`}
-            onClick={() => { setContext('store'); setStoreCategory('vanilla'); }}
-            aria-label="内容商店"
-            title="内容商店"
-          >
-            <ShopIcon />
-            <span>内容商店</span>
-          </button>
+          <div className={styles.storeMenuWrap}>
+            <button
+              ref={storeMenuButtonRef}
+              className={`${styles.navItem} ${context === 'store' ? styles.active : ''} ${storeMenuOpen ? styles.menuOpen : ''}`}
+              onClick={toggleStoreMenu}
+              aria-label={t('app.store')}
+              aria-haspopup="menu"
+              aria-expanded={storeMenuOpen}
+              title={t('app.store')}
+            >
+              <ShopIcon />
+              <span>{t('app.store')}</span>
+              <ChevronDown className={styles.navChevron} size={14} aria-hidden="true" />
+            </button>
+            {storeMenuOpen && (
+              <div
+                ref={storeMenuRef}
+                className={styles.storeMenu}
+                role="menu"
+                aria-label={t('app.chooseDownloadTypeLabel')}
+                style={{ top: storeMenuPos.top, left: storeMenuPos.left, maxHeight: storeMenuPos.maxHeight }}
+              >
+                <div className={styles.storeMenuHeader}>{t('app.chooseDownloadType')}</div>
+                {storeCategories.map(item => (
+                  <button
+                    key={item}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={storeCategory === item}
+                    className={storeCategory === item ? styles.storeMenuItemActive : ''}
+                    onClick={() => chooseStoreCategory(item)}
+                  >
+                    <span className={styles.storeMenuItemIcon}>
+                      {item === 'vanilla'
+                        ? <BlockIcon {...VANILLA_BLOCK} size={18} />
+                        : CATEGORY_ICONS[item]}
+                    </span>
+                    <span>{t(CATEGORY_KEYS[item])}</span>
+                    {storeCategory === item && <Check className={styles.storeMenuCheck} size={15} />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             className={`${styles.navItem} ${context === 'downloads' ? styles.active : ''}`}
             onClick={() => setContext('downloads')}
-            aria-label="下载任务"
-            title="下载任务"
+            aria-label={downloadsLabel}
+            title={downloadsLabel}
           >
             <DownloadIcon />
-            <span>下载任务</span>
-            {downloadTasks.filter(t => t.status === 'downloading').length > 0 && (
-              <span className={styles.badge}>
-                {downloadTasks.filter(t => t.status === 'downloading').length}
-              </span>
+            <span>{t('app.downloads')}</span>
+            {activeTaskCount > 0 && (
+              <span className={styles.badge}>{activeTaskCount > 99 ? '99+' : activeTaskCount}</span>
+            )}
+          </button>
+          <button
+            className={`${styles.navItem} ${context === 'plugins' ? styles.active : ''}`}
+            onClick={() => setContext('plugins')}
+            aria-label={t('app.plugins')}
+            title={t('app.plugins')}
+          >
+            <PluginsIcon />
+            <span>{t('app.plugins')}</span>
+            {/*
+              徽章只显示「已启用且需要注意」的插件数量，而不是总数：
+              侧栏徽章是提醒，不是计数器；全部插件数放在页面里就够了。
+            */}
+            {attentionPluginCount > 0 && (
+              <span className={styles.badge}>{attentionPluginCount}</span>
             )}
           </button>
         </nav>
 
         <div className={styles.sidebarFooter}>
-          <button className={styles.navItem} onClick={toggleTheme} aria-label="切换主题" title="切换主题">
+          <button className={styles.navItem} onClick={toggleTheme} aria-label={t('app.switchTheme')} title={t('app.switchTheme')}>
             {resolvedTheme === 'light' ? <MoonIcon /> : <SunIcon />}
-            <span>{resolvedTheme === 'light' ? '深色' : '浅色'}</span>
+            <span>{resolvedTheme === 'light' ? t('app.themeToDark') : t('app.themeToLight')}</span>
           </button>
           <button
             className={styles.navItem}
             onClick={() => setShowAccountModal(true)}
-            aria-label="账户管理"
-            title="账户管理"
+            aria-label={t('app.account')}
+            title={t('app.account')}
           >
             <SidebarAccountAvatar account={currentAccount} />
-            <span>{currentAccount ? currentAccount.username : '登录'}</span>
+            <span>{currentAccount ? currentAccount.username : t('app.login')}</span>
+            {/*
+              已登录时在名字右侧放一个「退出登录」按钮。用 <span role="button"> 而
+              不是嵌套 <button>：HTML 不允许 button 套 button，浏览器会把内层元素
+              拆到外面，点击区域和键盘焦点都会错位。这里用 role + tabIndex 保留
+              键盘可达性，并在 onClick 里阻止冒泡，避免点退出时又打开账户弹窗。
+            */}
+            {currentAccount && (
+              <span
+                role="button"
+                tabIndex={0}
+                className={styles.signOut}
+                aria-label={t('app.signOut')}
+                title={t('app.signOut')}
+                onClick={event => { event.stopPropagation(); signOut(); }}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    signOut();
+                  }
+                }}
+              >
+                <SignOutIcon />
+              </span>
+            )}
           </button>
           <button
             className={styles.navItem}
             onClick={() => setShowSettings(true)}
-            aria-label="设置"
-            title="设置"
+            aria-label={t('app.settings')}
+            title={t('app.settings')}
           >
             <SettingsIcon />
-            <span>设置</span>
+            <span>{t('app.settings')}</span>
           </button>
         </div>
       </aside>
@@ -549,10 +573,10 @@ function App() {
           <div className={styles.emptyState}>
             <div className={styles.emptyStateContent}>
               <LibraryIcon />
-              <h2>还没有游戏</h2>
-              <p>开始安装你的第一个 Minecraft</p>
+              <h2>{t('app.emptyTitle')}</h2>
+              <p>{t('app.emptyHint')}</p>
               <Button icon={<PlusIcon />} onClick={createNewInstance}>
-                创建新游戏
+                {t('app.createGame')}
               </Button>
             </div>
           </div>
@@ -562,9 +586,9 @@ function App() {
         {context === 'home' && instances.length > 0 && (
           <div className={styles.home}>
             <header className={styles.mainHeader}>
-              <h1>游戏库</h1>
+              <h1>{t('app.library')}</h1>
               <Button icon={<PlusIcon />} onClick={createNewInstance}>
-                创建新游戏
+                {t('app.createGame')}
               </Button>
             </header>
 
@@ -588,18 +612,18 @@ function App() {
                         {instance.modCount > 0 && (
                           <>
                             <span>•</span>
-                            <span>{instance.modCount} 个模组</span>
+                            <span>{t('app.modCount', { count: instance.modCount })}</span>
                           </>
                         )}
                       </div>
                       {instance.lastPlayed && (
                         <div className={styles.lastPlayed}>
-                          上次游玩: {new Date(instance.lastPlayed).toLocaleString('zh-CN', {
+                          {t('app.lastPlayed', { values: { time: new Date(instance.lastPlayed).toLocaleString(locale, {
                             month: 'long',
                             day: 'numeric',
                             hour: '2-digit',
                             minute: '2-digit'
-                          })}
+                          }) } })}
                         </div>
                       )}
                     </div>
@@ -609,7 +633,7 @@ function App() {
                         icon={<PlayIcon />}
                         onClick={() => launchInstance(instance)}
                       >
-                        启动
+                        {t('app.launch')}
                       </Button>
                       <Button
                         variant="ghost"
@@ -618,7 +642,7 @@ function App() {
                           setContext('instance-detail');
                         }}
                       >
-                        管理
+                        {t('app.manage')}
                       </Button>
                     </div>
                   </div>
@@ -629,42 +653,20 @@ function App() {
         )}
 
         {context === 'instance-detail' && selectedInstance && (
-          <div className={styles.instanceDetail}>
-            <header className={styles.mainHeader}>
-              <div>
-                <button className={styles.detailBack} onClick={() => setContext('home')}>← 返回游戏库</button>
-                <span className={styles.detailEyebrow}>实例管理</span>
-                <h1>{selectedInstance.name}</h1>
-                <p>Minecraft {selectedInstance.version}{selectedInstance.loader && selectedInstance.loader !== 'vanilla' ? ` · ${selectedInstance.loader}` : ' · 原版'}</p>
-              </div>
-              <Button variant="ghost" onClick={() => { setShowSettings(true); }}>设置</Button>
-            </header>
-            <section className={styles.javaInstanceCard}>
-              <div className={styles.javaInstanceHeading}>
-                <span className={styles.javaInstanceIcon}>☕</span>
-                <div><h2>Java 运行环境</h2><p>为这个实例单独选择 Java，或跟随全局设置。</p></div>
-                <span className={styles.instanceOnlyBadge}>实例设置</span>
-              </div>
-              <label className={styles.javaInstanceField}>
-                <span>此实例使用</span>
-                <select aria-label={`${selectedInstance.name} 的 Java`} value={instanceJavaPaths[selectedInstance.id] ?? ''} onChange={event => persistInstanceJava(selectedInstance.id, event.target.value)}>
-                  <option value="">跟随全局设置{globalJavaPath ? ' · 全局指定' : ' · 按版本自动匹配'}</option>
-                  {globalJavaPath && !javaRuntimes.some(runtime => runtime.path === globalJavaPath) && <option value={globalJavaPath}>全局 Java · {globalJavaPath}</option>}
-                  {javaRuntimes.map(runtime => <option key={runtime.path} value={runtime.path}>Java {runtime.majorVersion} · {runtime.path}</option>)}
-                </select>
-              </label>
-              <div className={styles.javaInstanceStatus}>
-                <span className={styles.statusDot} />
-                <div><strong>{instanceJavaPaths[selectedInstance.id] ? '正在使用实例专属 Java' : globalJavaPath ? '正在继承全局 Java 设置' : `将按 Minecraft ${selectedInstance.version} 自动选择兼容版本`}</strong>
-                  <small>{instanceJavaPaths[selectedInstance.id] || globalJavaPath || `预计使用 Java ${selectedInstance.javaVersion}`}</small>
-                </div>
-              </div>
-              <div className={styles.javaInstanceActions}>
-                <span>优先使用兼容 Minecraft {selectedInstance.version} 的 Java 版本。</span>
-                <Button variant="ghost" size="sm" onClick={() => setShowSettings(true)}>管理 Java 列表</Button>
-              </div>
-            </section>
-          </div>
+          <InstanceSettings
+            instance={selectedInstance}
+            global={globalPrefs}
+            overrides={instanceOverrides[selectedInstance.id] ?? EMPTY_OVERRIDES}
+            onChange={next => persistOverrides(selectedInstance.id, next)}
+            onBack={() => setContext('home')}
+            onLaunch={() => launchInstance(selectedInstance)}
+            onOpenGlobal={() => setShowSettings(true)}
+            javaRuntimes={javaRuntimes}
+            javaSetting={instanceJavaSettings[selectedInstance.id] ?? { ...DEFAULT_INSTANCE_JAVA }}
+            globalJavaPath={globalJavaPath}
+            onJavaSettingChange={setting => persistInstanceJava(selectedInstance.id, setting)}
+            onManageJava={() => setShowSettings(true)}
+          />
         )}
 
         {context === 'store' && (
@@ -674,8 +676,16 @@ function App() {
             selectedInstance={selectedInstance}
             downloadTasks={downloadTasks}
             onSelectInstance={selectStoreInstance}
-            onCategoryChange={setStoreCategory}
             onQueueDownload={queueStoreDownload}
+          />
+        )}
+
+        {context === 'plugins' && (
+          <PluginWorkspace
+            store={pluginStore}
+            onChange={persistPlugins}
+            pendingRestart={pendingPluginRestart}
+            onPendingRestartChange={setPendingPluginRestart}
           />
         )}
 
@@ -683,14 +693,14 @@ function App() {
         {context === 'downloads' && (
           <div className={styles.downloads}>
             <header className={styles.mainHeader}>
-              <h1>下载任务</h1>
+              <h1>{t('app.downloads')}</h1>
             </header>
             {downloadTasks.length === 0 ? (
               <div className={styles.emptyState}>
                 <div className={styles.emptyStateContent}>
                   <DownloadIcon />
-                  <h2>暂无下载任务</h2>
-                  <p>游戏和模组的下载进度会显示在这里</p>
+                  <h2>{t('app.noDownloadTasks')}</h2>
+                  <p>{t('app.noDownloadTasksHint')}</p>
                 </div>
               </div>
             ) : (
@@ -709,8 +719,17 @@ function App() {
                           </div>
                           <span>{task.progress}%</span>
                         </div>
+                        {/* 状态文字：让侧栏徽章的数字在列表里有对应物。 */}
+                        <span className={styles.taskStatus}>{t(TASK_STATUS_KEYS[task.status])}</span>
                       </div>
-                      <Button variant="ghost" size="sm">取消</Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => cancelTask(task.id)}
+                        disabled={!ACTIVE_TASK_STATUSES.includes(task.status)}
+                      >
+                        {t('app.cancel')}
+                      </Button>
                     </div>
                   </Card>
                 ))}
@@ -731,7 +750,7 @@ function App() {
       {showSettings && <SettingsPanel
         theme={theme}
         onThemeChange={setTheme}
-        onClose={() => setShowSettings(false)}
+        onClose={() => { setShowSettings(false); setGlobalPrefs(readPrefs()); }}
         instance={context === 'instance-detail' ? selectedInstance : undefined}
         initialTab={context === 'instance-detail' ? 'java' : undefined}
         onJavaRuntimesChange={setJavaRuntimes}

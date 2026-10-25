@@ -1,0 +1,745 @@
+.page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-bg-primary);
+}
+
+/* --- 页头 ---------------------------------------------------------------- */
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  flex-wrap: wrap;
+  padding: clamp(14px, 2vw, 24px);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+}
+
+.headerCopy {
+  min-width: 0;
+}
+
+.headerCopy h1 {
+  color: var(--color-text-primary);
+  font-size: clamp(20px, 2.4vw, 24px);
+  font-weight: 600;
+}
+
+.headerCopy p {
+  margin-top: 6px;
+  max-width: 62ch;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.counts {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.counts b {
+  color: var(--color-primary-text);
+  font-weight: 650;
+}
+
+/* --- 工具条 -------------------------------------------------------------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px clamp(14px, 2vw, 24px);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-primary);
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 220px;
+  max-width: 320px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+}
+
+.search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 11px;
+}
+
+.search:focus-within {
+  border-color: var(--color-primary-500);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary-500) 14%, transparent);
+}
+
+.filters {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-bg-secondary);
+}
+
+.filter {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .16s, color .16s;
+}
+
+.filter:hover {
+  color: var(--color-text-primary);
+}
+
+/* 选中档位同时加粗 + 抬升底色：轨道底色与主题色调底太接近，只换底色看不出来。 */
+.filterActive,
+.filterActive:hover {
+  background: var(--color-bg-elevated);
+  color: var(--color-primary-tonal-text);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+
+.install {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  min-height: 34px;
+  padding: 0 13px;
+  margin-left: auto;
+  border: 1px solid var(--color-primary-solid);
+  border-radius: 9px;
+  background: var(--color-primary-solid);
+  color: var(--color-on-primary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.install:hover {
+  border-color: var(--color-primary-solid-hover);
+  background: var(--color-primary-solid-hover);
+}
+
+/* --- 列表 ---------------------------------------------------------------- */
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: clamp(12px, 2vw, 20px) clamp(14px, 2vw, 24px) 32px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-secondary) 40%, transparent) transparent;
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-warning-500) 34%, var(--color-border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-warning-500) 7%, var(--color-bg-elevated));
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.notice svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--color-warning-600);
+}
+
+/* 列表底部的常驻说明：与卡片保持间距，但不占满整行宽度。 */
+.noticeFooter {
+  margin: 16px 0 0;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+/* --- 插件卡片 ------------------------------------------------------------ */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: 13px;
+  background: var(--color-bg-elevated);
+  transition: border-color .16s, box-shadow .16s;
+}
+
+.card:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 32%, var(--color-border));
+}
+
+/* 已停用：整体降饱和，但保持可读——用户仍然要能读清自己关掉了什么。 */
+.cardOff {
+  background: var(--color-bg-secondary);
+}
+
+.cardOff .name,
+.cardOff .description {
+  color: var(--color-text-secondary);
+}
+
+.cardHead {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 14px 14px 0;
+}
+
+.glyph {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 11px;
+  color: #fff;
+}
+
+.glyphOff {
+  filter: grayscale(.65);
+  opacity: .72;
+}
+
+.headCopy {
+  flex: 1;
+  min-width: 0;
+}
+
+.nameLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.name {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 99px;
+  color: var(--color-text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tagThird {
+  border-color: color-mix(in srgb, var(--color-primary-500) 38%, var(--color-border));
+  color: var(--color-primary-text);
+}
+
+.tagError {
+  border-color: color-mix(in srgb, var(--color-danger-500) 44%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger-500) 8%, transparent);
+  color: var(--color-danger-600);
+}
+
+.tagWarn {
+  border-color: color-mix(in srgb, var(--color-warning-500) 44%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning-500) 8%, transparent);
+  color: var(--color-warning-600);
+}
+
+.meta {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.description {
+  padding: 10px 14px 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* 权限与扩展点的摘要行：只列数量，详情在展开区。 */
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  padding: 9px 14px 0;
+  color: var(--color-text-disabled);
+  font-size: 10px;
+}
+
+.summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.summary svg {
+  color: var(--color-text-secondary);
+}
+
+/* 插件自带的状态说明（例如规则库每天更新）：独立一行，中文案前缀图标。 */
+.statusLine {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 8px 14px 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.statusLine svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--color-warning-600);
+}
+
+.statusLineError,
+.statusLineError svg {
+  color: var(--color-danger-600);
+}
+
+/* --- 开关 ---------------------------------------------------------------- */
+
+.cardFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.stateOn {
+  color: var(--color-primary-text);
+  font-weight: 600;
+}
+
+.stateDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-disabled);
+}
+
+.stateOn .stateDot {
+  background: var(--color-primary-500);
+}
+
+.footActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: none;
+  padding: 3px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--color-border);
+  cursor: pointer;
+  transition: background .18s;
+}
+
+.switch i {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px #0003;
+  transition: transform .18s;
+}
+
+.switchOn {
+  background: var(--color-primary-500);
+}
+
+.switchOn i {
+  transform: translateX(16px);
+}
+
+.switch:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.ghostButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.ghostButton:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 42%, var(--color-border));
+  color: var(--color-text-primary);
+}
+
+.ghostButton svg {
+  transition: transform .16s;
+}
+
+.ghostButtonOpen svg {
+  transform: rotate(180deg);
+}
+
+.dangerButton:hover {
+  border-color: color-mix(in srgb, var(--color-danger-500) 46%, var(--color-border));
+  color: var(--color-danger-600);
+}
+
+/* --- 展开的详情 ---------------------------------------------------------- */
+
+.details {
+  padding: 4px 14px 14px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-bg-secondary) 60%, transparent);
+}
+
+.block {
+  padding: 11px 0 0;
+}
+
+.blockTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-bottom: 6px;
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.blockTitle small {
+  color: var(--color-text-disabled);
+  font-size: 9px;
+  font-weight: 400;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 99px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.chipStrong {
+  border-color: color-mix(in srgb, var(--color-primary-500) 36%, var(--color-border));
+  color: var(--color-primary-text);
+}
+
+.permissionRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.permissionRow + .permissionRow {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+
+.permissionRow svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--color-primary-text);
+}
+
+.permissionRow div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.permissionRow strong {
+  color: var(--color-text-primary);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.permissionRow span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* --- 插件选项 ------------------------------------------------------------ */
+
+.option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+}
+
+.option + .option {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+
+.optionCopy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.optionCopy strong {
+  color: var(--color-text-primary);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.optionCopy span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.option input[type="number"] {
+  width: 74px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
+  outline: none;
+}
+
+.option input[type="number"]:focus-visible {
+  border-color: var(--color-primary-500);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary-500) 14%, transparent);
+}
+
+/* --- 空状态 -------------------------------------------------------------- */
+
+.empty {
+  display: grid;
+  place-items: center;
+  padding: 60px 20px;
+  text-align: center;
+}
+
+.empty > svg {
+  margin-bottom: 12px;
+  color: var(--color-text-disabled);
+}
+
+.empty h2 {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.empty p {
+  margin-top: 5px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+/* --- 安装弹窗 ------------------------------------------------------------ */
+
+.installHint {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.manifest {
+  width: 100%;
+  min-height: 220px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  outline: none;
+  resize: vertical;
+}
+
+.manifest:focus-visible {
+  border-color: var(--color-primary-500);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary-500) 14%, transparent);
+}
+
+.error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+  color: var(--color-danger-600);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.error svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.modalActions {
+  display: flex;
+  gap: 8px;
+}
+
+.modalButton {
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.modalButton:hover {
+  color: var(--color-text-primary);
+}
+
+.modalPrimary {
+  border-color: var(--color-primary-solid);
+  background: var(--color-primary-solid);
+  color: var(--color-on-primary);
+  font-weight: 600;
+}
+
+.modalPrimary:hover {
+  border-color: var(--color-primary-solid-hover);
+  background: var(--color-primary-solid-hover);
+  color: var(--color-on-primary);
+}
+
+@media (max-width: 620px) {
+  .header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .toolbar {
+    gap: 8px;
+  }
+
+  .search {
+    max-width: none;
+    flex-basis: 100%;
+  }
+
+  .install {
+    margin-left: 0;
+    flex: 1;
+    justify-content: center;
+  }
+
+  .cardHead {
+    padding: 12px 12px 0;
+  }
+
+  .description,
+  .summary {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .cardFoot {
+    padding: 9px 12px;
+  }
+
+  .details {
+    padding: 4px 12px 12px;
+  }
+}
