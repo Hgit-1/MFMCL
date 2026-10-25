@@ -1,0 +1,428 @@
+/* ────────────────────────────────────────────────────────────────────────────
+   Motion layer
+   One coherent motion language on top of the aurora glass surfaces:
+   · a single easing/duration scale, borrowed from Material 3 + iOS springs
+   · entrances animate opacity + transform only, and never fill forward, so
+     hover/press transforms keep working after the entrance finishes
+   · every ambient loop is decorative and fully removed by reduced-motion
+   ──────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --motion-quick: 180ms;
+  --motion-base: 260ms;
+  --motion-slow: 420ms;
+  --motion-ambient: 24s;
+  --ease-out-expo: cubic-bezier(.16, 1, .3, 1);
+  --ease-in-out-soft: cubic-bezier(.4, 0, .2, 1);
+  --ease-overshoot: cubic-bezier(.34, 1.42, .64, 1);
+  --ease-exit: cubic-bezier(.4, 0, 1, 1);
+  /* Entrance offsets are small on purpose: motion should read as depth, not travel. */
+  --rise: 10px;
+}
+
+/* ── Ambient canvas ────────────────────────────────────────────────────────
+   A very slow drift on the aurora wash keeps the shell from feeling static.
+   It is scaled up slightly so the edges never reveal themselves.            */
+.app-shell::before {
+  transform: scale(1.08);
+  animation: aurora-drift var(--motion-ambient) var(--ease-in-out-soft) infinite alternate;
+  will-change: transform;
+}
+.app-shell::after {
+  --sheen: .55;
+  animation: aurora-sheen 2.4s var(--ease-in-out-soft) both;
+}
+@keyframes aurora-drift {
+  from { transform: scale(1.08) translate3d(-1.2%, -1%, 0); }
+  to   { transform: scale(1.16) translate3d(1.6%, 1.4%, 0); }
+}
+@keyframes aurora-sheen {
+  from { opacity: 0; }
+  to   { opacity: var(--sheen); }
+}
+:root[data-theme='light'] .app-shell::after { --sheen: .35; }
+@media (prefers-color-scheme: light) {
+  :root[data-theme='system'] .app-shell::after { --sheen: .35; }
+}
+
+/* ── Page transitions ──────────────────────────────────────────────────────
+   The page container cross-fades while its direct children rise in sequence.
+   `backwards` (not `both`) means the animation releases its transform when
+   it ends, so hover lifts and press scales still own those properties.      */
+.page-enter { animation: page-fade var(--motion-base) var(--ease-in-out-soft) backwards; }
+.page-enter > * { animation: rise-in var(--motion-slow) var(--ease-out-expo) backwards; }
+/* The heading animates internally (eyebrow → title → copy), so its container stays still. */
+.page-enter > .page-heading { animation: none; }
+.page-enter > *:nth-child(1) { animation-delay: 20ms; }
+.page-enter > *:nth-child(2) { animation-delay: 60ms; }
+.page-enter > *:nth-child(3) { animation-delay: 100ms; }
+.page-enter > *:nth-child(4) { animation-delay: 140ms; }
+.page-enter > *:nth-child(5) { animation-delay: 175ms; }
+.page-enter > *:nth-child(6) { animation-delay: 205ms; }
+.page-enter > *:nth-child(n + 7) { animation-delay: 230ms; }
+/* The hero is the visual anchor, so it gets a touch more travel. */
+.page-enter > .hero-card { --rise: 16px; }
+@keyframes page-fade { from { opacity: 0; } }
+@keyframes rise-in {
+  from { opacity: 0; transform: translate3d(0, var(--rise, 10px), 0); }
+}
+
+.page-heading .eyebrow { animation: rise-in 380ms var(--ease-out-expo) backwards; }
+.page-heading h1 { animation: rise-in 460ms var(--ease-out-expo) 40ms backwards; }
+.page-heading p { animation: rise-in 460ms var(--ease-out-expo) 90ms backwards; }
+.page-heading > :last-child:not(div) { animation: rise-in 420ms var(--ease-out-expo) 60ms backwards; }
+
+/* ── Sidebar navigation ────────────────────────────────────────────────────
+   The active route is marked by a bar that grows into place instead of a
+   hard-edged inset shadow.                                                  */
+.nav-item {
+  position: relative;
+  transition: background var(--motion-quick) var(--ease-out-expo), color var(--motion-quick) var(--ease-out-expo), transform var(--motion-quick) var(--ease-overshoot);
+}
+.nav-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: height var(--motion-base) var(--ease-overshoot), opacity var(--motion-quick) var(--ease-out-expo);
+}
+.nav-item.active { box-shadow: none; }
+.nav-item.active::before { height: 21px; opacity: 1; }
+@media (max-width: 900px) {
+  /* Collapsed rail: the indicator keeps its left anchor instead of the old bottom inset. */
+  .nav-item.active { box-shadow: none; }
+  .nav-item.active::before { height: 18px; }
+}
+@media (max-width: 680px) {
+  .sidebar .nav-item.active { box-shadow: none; }
+  .sidebar .nav-item.active::before { height: 22px; }
+}
+.nav-item svg { transition: transform var(--motion-quick) var(--ease-overshoot); }
+.nav-item:hover svg { transform: translateX(1px) scale(1.06); }
+.nav-item.active svg { transform: none; }
+.nav-muted::before { background: var(--line-strong); }
+.nav-muted:hover svg { transform: rotate(90deg); }
+
+.brand-mark { flex: 0 0 auto; transition: transform var(--motion-slow) var(--ease-overshoot), box-shadow var(--motion-base) var(--ease-out-expo); }
+.brand-row:hover .brand-mark { transform: rotate(0deg) scale(1.06); }
+.sidebar-help-card .help-chevron { transition: transform var(--motion-base) var(--ease-overshoot); }
+.sidebar-help-card:hover .help-chevron { transform: translateX(3px); }
+.sidebar-help-card .help-orbit { transition: transform var(--motion-base) var(--ease-overshoot), background var(--motion-quick) var(--ease-out-expo); }
+.sidebar-help-card:hover .help-orbit { transform: scale(1.08) rotate(-6deg); }
+
+/* ── Topbar ────────────────────────────────────────────────────────────────*/
+.topbar { animation: topbar-in 380ms var(--ease-out-expo) backwards; }
+@keyframes topbar-in {
+  from { opacity: 0; transform: translate3d(0, -8px, 0); }
+}
+.status-pill, .topbar-icon, .search-trigger { transition: background var(--motion-quick) var(--ease-out-expo), color var(--motion-quick) var(--ease-out-expo), border-color var(--motion-quick) var(--ease-out-expo), transform var(--motion-quick) var(--ease-overshoot); }
+.status-pill:hover, .topbar-icon:hover { transform: translateY(-1px); }
+.status-pill:active, .topbar-icon:active { transform: scale(.97); }
+.status-dot, .footer-status-dot { animation: status-pulse 2.6s var(--ease-in-out-soft) infinite; }
+@keyframes status-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(141, 207, 155, .1); }
+  50% { box-shadow: 0 0 0 5px rgba(141, 207, 155, .04); }
+}
+.search-trigger:hover kbd { color: var(--muted); }
+.search-trigger:focus-visible { border-color: var(--accent-border); }
+
+/* ── Hero ──────────────────────────────────────────────────────────────────
+   Pointer-driven parallax (set as CSS vars from React) plus two slow loops:
+   the glows breathe and a soft light sweep passes across the landscape.     */
+.hero-card {
+  --tilt-x: 0px;
+  --tilt-y: 0px;
+  transition: box-shadow var(--motion-slow) var(--ease-out-expo), border-color var(--motion-base) var(--ease-out-expo);
+}
+.hero-card:hover { box-shadow: var(--shadow-lift); border-color: rgba(191, 224, 187, .2); }
+.hero-landscape,
+.hero-glow { transition: transform 700ms var(--ease-out-expo); }
+.hero-landscape { transform: translate3d(calc(var(--tilt-x) * -.4), calc(var(--tilt-y) * -.4), 0); }
+.hero-glow-one { transform: translate3d(var(--tilt-x), var(--tilt-y), 0); animation: glow-breathe 9s var(--ease-in-out-soft) infinite alternate; }
+.hero-glow-two { transform: translate3d(calc(var(--tilt-x) * -.7), calc(var(--tilt-y) * -.7), 0); animation: glow-breathe 11s var(--ease-in-out-soft) 1.2s infinite alternate-reverse; }
+.hero-landscape .moon-shape { animation: moon-float 7s var(--ease-in-out-soft) infinite alternate; }
+.hero-card::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  top: -40%;
+  bottom: -40%;
+  left: -30%;
+  width: 34%;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(100deg, transparent, rgba(214, 240, 200, .1), transparent);
+  transform: translateX(0) rotate(8deg);
+  animation: hero-sweep 12s var(--ease-in-out-soft) 2.4s infinite;
+}
+@keyframes glow-breathe {
+  from { opacity: .72; }
+  to { opacity: 1; }
+}
+@keyframes moon-float {
+  from { transform: translateY(0); }
+  to { transform: translateY(-6px); }
+}
+@keyframes hero-sweep {
+  0%, 62% { opacity: 0; transform: translateX(0) rotate(8deg); }
+  72% { opacity: 1; }
+  92%, 100% { opacity: 0; transform: translateX(420%) rotate(8deg); }
+}
+.hero-badge, .hero-description, .hero-actions { animation: rise-in 520ms var(--ease-out-expo) backwards; }
+.hero-badge { animation-delay: 120ms; }
+.hero-description { animation-delay: 270ms; }
+.hero-actions { animation-delay: 320ms; }
+.hero-title-block { animation: rise-in 600ms var(--ease-out-expo) 190ms backwards; }
+.hero-title-block .hero-kicker, .hero-title-block h2 { animation: none; }
+.hero-note { animation: rise-in 520ms var(--ease-out-expo) 420ms backwards; }
+.badge-dot { animation: badge-blink 3.2s var(--ease-in-out-soft) infinite; }
+@keyframes badge-blink {
+  0%, 100% { opacity: .55; box-shadow: 0 0 8px rgba(170, 214, 143, .35); }
+  50% { opacity: 1; box-shadow: 0 0 14px rgba(170, 214, 143, .9); }
+}
+.hero-title-block h2 em {
+  --shine: rgba(255, 255, 255, .95);
+  background: linear-gradient(100deg, currentColor 42%, var(--shine) 50%, currentColor 58%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: title-shine 9s var(--ease-in-out-soft) 1.5s infinite;
+}
+/* Light surfaces need full contrast at every frame, so the highlight is dropped there. */
+:root[data-theme='light'] .hero-title-block h2 em { background: none; -webkit-text-fill-color: currentColor; animation: none; }
+@media (prefers-color-scheme: light) {
+  :root[data-theme='system'] .hero-title-block h2 em { background: none; -webkit-text-fill-color: currentColor; animation: none; }
+}
+@keyframes title-shine {
+  0%, 72% { background-position: 130% 0; }
+  100% { background-position: -30% 0; }
+}
+
+/* ── Buttons and interactive surfaces ─────────────────────────────────────*/
+.button-primary, .button-secondary { position: relative; overflow: hidden; }
+.button-primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, .34) 50%, transparent 65%);
+  transform: translateX(-120%);
+}
+.button-primary:hover:not(:disabled)::after { animation: button-sheen 720ms var(--ease-out-expo); }
+@keyframes button-sheen {
+  0% { opacity: 1; transform: translateX(-120%); }
+  100% { opacity: 0; transform: translateX(120%); }
+}
+.button-primary:disabled::after, .button-secondary:disabled::after { display: none; }
+.icon-button { transition: background var(--motion-quick) var(--ease-out-expo), color var(--motion-quick) var(--ease-out-expo), transform var(--motion-quick) var(--ease-overshoot); }
+.icon-button:hover { transform: scale(1.06); }
+.icon-button:active { transform: scale(.94); }
+/* Text links and quiet buttons share the button press rhythm so nothing feels dead. */
+.text-link:active, .panel-footer-link:active, .button-quiet:active, .account-add-button:active, .account-picker-add:active { transform: scale(.98); }
+
+.quick-card, .instance-card, .theme-option, .source-choice, .account-picker-item, .version-chip, .task-card, .mod-update-row, .catalog-list li {
+  transition: transform var(--motion-base) var(--ease-overshoot), border-color var(--motion-base) var(--ease-out-expo), background var(--motion-base) var(--ease-out-expo), box-shadow var(--motion-base) var(--ease-out-expo);
+}
+.quick-card:hover { transform: translateY(-3px); }
+.quick-card:active { transform: translateY(-1px) scale(.995); }
+.quick-card .quick-icon { transition: transform var(--motion-base) var(--ease-overshoot); }
+.quick-card:hover .quick-icon { transform: scale(1.08) rotate(-3deg); }
+.instance-card:hover { transform: translateY(-3px); }
+.version-chip:hover { transform: translateY(-1px); }
+/* Selection feedback: the chosen surface lifts a hair and tints its border. */
+.theme-option.selected, .source-choice.selected { transform: translateY(-1px); }
+.account-picker-item.selected { transform: translateY(-1px); }
+.version-chip:active, .task-card:active, .theme-option:active, .source-choice:active { transform: scale(.995); }
+.catalog-list li:hover, .mod-update-row:hover { border-color: var(--line-strong); background: var(--surface-3); }
+
+/* Staggered entrances for repeated collections. */
+.quick-grid > *,
+.instance-grid > *,
+.version-list > *,
+.task-list > *,
+.guide-steps > *,
+.catalog-list > *,
+.mod-update-list > *,
+.download-summary-grid > * {
+  animation: rise-in 460ms var(--ease-out-expo) backwards;
+}
+.quick-grid > *:nth-child(2), .instance-grid > *:nth-child(2), .version-list > *:nth-child(2), .task-list > *:nth-child(2), .guide-steps > *:nth-child(2) { animation-delay: 50ms; }
+.quick-grid > *:nth-child(3), .instance-grid > *:nth-child(3), .version-list > *:nth-child(3), .task-list > *:nth-child(3), .guide-steps > *:nth-child(3) { animation-delay: 95ms; }
+.quick-grid > *:nth-child(4), .instance-grid > *:nth-child(4), .version-list > *:nth-child(4), .task-list > *:nth-child(4), .guide-steps > *:nth-child(4) { animation-delay: 135ms; }
+.quick-grid > *:nth-child(5), .instance-grid > *:nth-child(5), .task-list > *:nth-child(5) { animation-delay: 170ms; }
+.instance-grid > *:nth-child(6), .task-list > *:nth-child(6) { animation-delay: 200ms; }
+.instance-grid > *:nth-child(n + 7), .task-list > *:nth-child(n + 7) { animation-delay: 225ms; }
+
+/* ── Progress and status feedback ─────────────────────────────────────────*/
+.task-progress-track i { transition: width 420ms var(--ease-out-expo); position: relative; }
+.task-progress-track i::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 32px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .7));
+  animation: progress-head 1.6s var(--ease-in-out-soft) infinite;
+}
+.task-progress-track i.indeterminate::after { display: none; }
+@keyframes progress-head {
+  0%, 100% { opacity: .18; }
+  50% { opacity: .62; }
+}
+.installation-history-row, .task-card { transition: background var(--motion-base) var(--ease-out-expo), border-color var(--motion-base) var(--ease-out-expo); }
+.installation-history-row:hover { background: var(--surface-2); }
+.instance-state.state-installing { animation: state-breathe 2.4s var(--ease-in-out-soft) infinite; }
+@keyframes state-breathe {
+  0%, 100% { opacity: .72; }
+  50% { opacity: 1; }
+}
+
+/* ── Empty-state art ──────────────────────────────────────────────────────*/
+.empty-cube { animation: cube-bob 4.6s var(--ease-in-out-soft) infinite alternate; }
+.empty-sun { animation: sun-breathe 5.4s var(--ease-in-out-soft) infinite alternate; }
+.empty-spark { animation: spark-twinkle 3.4s var(--ease-in-out-soft) infinite; }
+.spark-b { animation-delay: 1.1s; }
+.empty-hill { animation: rise-in 700ms var(--ease-out-expo) backwards; }
+.hill-b { animation-delay: 120ms; }
+.preview-sun { animation: sun-breathe 6s var(--ease-in-out-soft) infinite alternate; }
+@keyframes cube-bob {
+  from { transform: rotate(45deg) translate(-2px, 2px); }
+  to { transform: rotate(45deg) translate(2px, -4px); }
+}
+@keyframes sun-breathe {
+  from { opacity: .6; box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 22%, transparent); }
+  to { opacity: .92; box-shadow: 0 0 30px color-mix(in srgb, var(--accent) 42%, transparent); }
+}
+@keyframes spark-twinkle {
+  0%, 100% { opacity: .1; transform: scale(.7); }
+  50% { opacity: .9; transform: scale(1.25); }
+}
+.task-empty-icon, .account-avatar, .empty-art { animation: rise-in 520ms var(--ease-out-expo) 80ms backwards; }
+
+/* ── Dialogs and sheets ───────────────────────────────────────────────────*/
+.modal-backdrop { animation: backdrop-in var(--motion-base) var(--ease-out-expo) backwards; }
+.modal-card { animation: modal-spring 340ms var(--ease-overshoot) backwards; }
+.modal-backdrop.is-leaving { animation: backdrop-out 180ms var(--ease-exit) forwards; }
+.modal-backdrop.is-leaving .modal-card { animation: modal-out 180ms var(--ease-exit) forwards; }
+@keyframes backdrop-out {
+  to { opacity: 0; backdrop-filter: blur(0); }
+}
+@keyframes modal-out {
+  to { opacity: 0; transform: translate3d(0, 8px, 0) scale(.985); }
+}
+@keyframes backdrop-in {
+  from { opacity: 0; backdrop-filter: blur(0); }
+  to { opacity: 1; backdrop-filter: blur(8px); }
+}
+@keyframes modal-spring {
+  from { opacity: 0; transform: translate3d(0, 16px, 0) scale(.972); }
+}
+.native-dialog[open] { animation: modal-spring 340ms var(--ease-overshoot) backwards; }
+.native-dialog[open]::backdrop { animation: native-backdrop-in var(--motion-base) var(--ease-out-expo) backwards; }
+@keyframes native-backdrop-in { from { opacity: 0; } }
+.native-dialog.is-leaving { animation: modal-out 180ms var(--ease-exit) forwards; }
+.native-dialog.is-leaving::backdrop { animation: native-backdrop-out 180ms var(--ease-exit) forwards; }
+@keyframes native-backdrop-out { to { opacity: 0; } }
+
+/* ── Feedback details ─────────────────────────────────────────────────────*/
+.sidebar-scrim { animation: backdrop-in var(--motion-base) var(--ease-out-expo) backwards; }
+.single-game-log { animation: rise-in 420ms var(--ease-out-expo) backwards; }
+.hero-badge { transition: background var(--motion-base) var(--ease-out-expo), border-color var(--motion-base) var(--ease-out-expo), color var(--motion-base) var(--ease-out-expo); }
+.instance-state { transition: background var(--motion-base) var(--ease-out-expo), color var(--motion-base) var(--ease-out-expo); }
+.guide-steps li { transition: border-color var(--motion-base) var(--ease-out-expo), background var(--motion-base) var(--ease-out-expo), transform var(--motion-base) var(--ease-overshoot); }
+.guide-steps li.done { transform: none; }
+.guide-steps li:not(.done):hover { transform: translateX(2px); }
+.readiness-row { transition: background var(--motion-quick) var(--ease-out-expo); }
+.readiness-row:hover { background: var(--surface-2); }
+.toast-message { animation: toast-in 420ms var(--ease-overshoot) backwards; }
+.toast-message::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  background: linear-gradient(90deg, var(--accent), rgba(var(--accent-rgb), .25));
+  transform-origin: left center;
+  animation: toast-life 3600ms linear forwards;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translate3d(0, 18px, 0) scale(.97); }
+}
+@keyframes toast-life {
+  from { transform: scaleX(1); opacity: .8; }
+  to { transform: scaleX(0); opacity: .2; }
+}
+
+.theme-option.selected .theme-swatch { animation: check-pop 360ms var(--ease-overshoot) backwards; }
+.source-choice.selected .source-radio i { animation: check-pop 320ms var(--ease-overshoot) backwards; }
+.guide-steps li.done .guide-step-icon { animation: check-pop 400ms var(--ease-overshoot) backwards; }
+.version-check { animation: check-pop 400ms var(--ease-overshoot) backwards; }
+@keyframes check-pop {
+  from { opacity: 0; transform: scale(.55); }
+}
+.switch i, .toggle-track i { transition: transform var(--motion-base) var(--ease-overshoot), background var(--motion-base) var(--ease-out-expo); }
+.switch.checked i { animation: switch-nudge 320ms var(--ease-overshoot); }
+@keyframes switch-nudge {
+  50% { transform: translateX(15px) scale(1.08); }
+}
+.segmented-control button { transition: background var(--motion-base) var(--ease-out-expo), color var(--motion-quick) var(--ease-out-expo); }
+.library-tab { transition: color var(--motion-quick) var(--ease-out-expo); }
+.library-tab.active::after { animation: tab-underline 380ms var(--ease-out-expo) backwards; transform-origin: center; }
+@keyframes tab-underline { from { transform: scaleX(.2); opacity: 0; } }
+.text-link svg, .panel-footer-link svg, .button-quiet svg { transition: transform var(--motion-quick) var(--ease-overshoot); }
+.text-link:hover svg, .panel-footer-link:hover svg, .button-quiet:hover svg { transform: translateX(2px); }
+.privacy-note svg { transition: transform var(--motion-base) var(--ease-overshoot); }
+.privacy-note:hover svg { transform: rotate(-10deg) scale(1.06); }
+
+/* ── Theme change: circular reveal from the control you clicked ───────────
+   Only used when the browser supports same-document view transitions; React
+   renders synchronously inside the callback so the new theme is captured.  */
+::view-transition-old(root) { animation: none; }
+::view-transition-new(root) {
+  animation: theme-reveal 560ms var(--ease-out-expo);
+  clip-path: circle(0 at var(--vt-x, 50%) var(--vt-y, 0%));
+}
+@keyframes theme-reveal {
+  to { clip-path: circle(var(--vt-r, 120vmax) at var(--vt-x, 50%) var(--vt-y, 0%)); }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────────
+   Keep the layout identical, drop every non-essential movement.            */
+@media (prefers-reduced-motion: reduce) {
+  .app-shell::before,
+  .app-shell::after,
+  .hero-card::after,
+  .hero-glow-one,
+  .hero-glow-two,
+  .hero-landscape .moon-shape,
+  .badge-dot,
+  .status-dot,
+  .footer-status-dot,
+  .empty-cube,
+  .empty-sun,
+  .empty-spark,
+  .preview-sun,
+  .instance-state.state-installing,
+  .task-progress-track i::after,
+  .hero-title-block h2 em {
+    animation: none !important;
+  }
+  .hero-landscape,
+  .hero-glow-one,
+  .hero-glow-two { transform: none !important; }
+  .hero-title-block h2 em { background: none; -webkit-text-fill-color: currentColor; }
+  .toast-message::after { display: none; }
+  ::view-transition-new(root) { animation: none; clip-path: none; }
+}

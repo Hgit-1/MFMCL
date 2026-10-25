@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { ArrowRight, Check, LockKeyhole, ShieldCheck, Sparkles } from 'lucide-react'
 import { Dialog } from './Dialog'
+import { useModalClose } from './modal-close'
 import { microsoftLogin, skinLogin, skinSelectProfile } from '../api'
 import type { AccountRecord, SkinLoginResult } from '../types'
 
@@ -14,6 +15,7 @@ type AccountLoginDialogsProps = {
 }
 
 export function MicrosoftLoginDialog({ onClose, onAuthenticated }: AccountLoginDialogsProps) {
+  const close = useModalClose(onClose)
   const [clientId, setClientId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -42,12 +44,13 @@ export function MicrosoftLoginDialog({ onClose, onAuthenticated }: AccountLoginD
       <p className="input-hint account-login-hint">开发构建可填写你自己注册并获准调用 Minecraft 服务的公共客户端 ID。请勿使用他人的应用 ID。</p>
       {waitingForBrowser && <p className="account-login-progress" role="status">正在打开系统浏览器并等待授权回调…</p>}
       {error && <p className="management-error account-login-error" role="alert">{error}</p>}
-      <div className="dialog-actions"><button type="button" className="button-secondary" onClick={onClose} disabled={busy}>取消</button><button type="submit" className="button-primary" disabled={busy}>{busy ? '等待授权…' : '在浏览器中登录'}<ArrowRight size={14} /></button></div>
+      <div className="dialog-actions"><button type="button" className="button-secondary" onClick={close} disabled={busy}>取消</button><button type="submit" className="button-primary" disabled={busy}>{busy ? '等待授权…' : '在浏览器中登录'}<ArrowRight size={14} /></button></div>
     </form>
   </Dialog>
 }
 
 export function SkinLoginDialog({ onClose, onAuthenticated }: AccountLoginDialogsProps) {
+  const close = useModalClose(onClose)
   const [server, setServer] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -104,7 +107,7 @@ export function SkinLoginDialog({ onClose, onAuthenticated }: AccountLoginDialog
       <label className="form-label">密码<input disabled={busy} value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" required /></label>
       <label className="skin-trust-check"><input type="checkbox" disabled={busy} checked={trusted} onChange={(event) => setTrusted(event.target.checked)} required /><span>我已核对上述 HTTPS 地址，并信任此皮肤站接收我的登录凭据。</span></label>
       {error && <p className="management-error account-login-error" role="alert">{error}</p>}
-      <div className="dialog-actions"><button type="button" className="button-secondary" onClick={onClose} disabled={busy}>取消</button><button type="submit" className="button-primary" disabled={busy || !trusted}>{busy ? '正在安全连接…' : '登录并选择角色'}<LockKeyhole size={14} /></button></div>
+      <div className="dialog-actions"><button type="button" className="button-secondary" onClick={close} disabled={busy}>取消</button><button type="submit" className="button-primary" disabled={busy || !trusted}>{busy ? '正在安全连接…' : '登录并选择角色'}<LockKeyhole size={14} /></button></div>
     </form>}
   </Dialog>
 }

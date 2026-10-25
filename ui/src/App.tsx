@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { flushSync } from 'react-dom'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
@@ -40,6 +41,8 @@ import {
 } from 'lucide-react'
 import { beginLaunch, checkLauncherUpdate, createInstance, createOfflineAccount, getSystemMemory, installInstance, inspectJava, inspectJavaPath, isDesktopShell, listAccounts, listInstances, listVersions, loadSettings, MAX_MEMORY_MB, readSettings, removeAccount, saveSettings, selectAccount } from './api'
 import type { AccountRecord, DownloadEvent, DownloadSource, InstanceRecord, LauncherSettings, PageId, ThemeId, VersionItem } from './types'
+import { attachPointerParallax, useExitAnimation } from './motion'
+import { ModalCloseContext } from './components/modal-close'
 import { accessibleAccent } from './theme'
 import { BackupManager } from './components/BackupManager'
 import { UpdateCard } from './components/UpdateCard'
@@ -51,6 +54,7 @@ import { MicrosoftLoginDialog, SkinLoginDialog } from './components/AccountLogin
 import './components/account-login.css'
 import './components/management.css'
 import './App.css'
+import './motion.css'
 
 const initialSettings: LauncherSettings = {
   theme: 'moss',
@@ -75,6 +79,30 @@ const themeChoices: { id: ThemeId; label: string; color: string; note: string }[
   { id: 'lavender', label: '星辉紫', color: '#8b5cf6', note: '柔和克制' },
   { id: 'ocean', label: '晴空蓝', color: '#38bdf8', note: '清爽专注' },
 ]
+
+/** Motion is decoration: skip every optional JS animation when the OS asks for less. */
+const prefersReducedMotion = () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+/**
+ * Reveal a theme change with a circular wipe starting at the control the user clicked.
+ * `flushSync` commits the new theme inside the transition callback so the snapshot is
+ * the *new* look; browsers without the View Transitions API just swap instantly.
+ */
+function revealThemeChange(commit: () => void, origin?: Element | null) {
+  const start = (document as Document & { startViewTransition?: (callback: () => void) => unknown }).startViewTransition
+  if (!start || prefersReducedMotion()) { commit(); return }
+  if (origin instanceof Element) {
+    const rect = origin.getBoundingClientRect()
+    const x = rect.left + rect.width / 2
+    const y = rect.top + rect.height / 2
+    const radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y))
+    const root = document.documentElement
+    root.style.setProperty('--vt-x', `${x}px`)
+    root.style.setProperty('--vt-y', `${y}px`)
+    root.style.setProperty('--vt-r', `${Math.ceil(radius)}px`)
+  }
+  start.call(document, () => flushSync(commit))
+}
 
 const navItems: { id: PageId; label: string; icon: typeof House }[] = [
   { id: 'home', label: '概览', icon: House },
@@ -115,7 +143,7 @@ function App() {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [customAccent, setCustomAccent] = useState(settings.customAccent)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     document.documentElement.dataset.theme = settings.mode
     document.documentElement.dataset.palette = settings.theme
     const media = window.matchMedia('(prefers-color-scheme: light)')
@@ -449,11 +477,13 @@ function PageHeading({ eyebrow, title, description, action }: { eyebrow: string;
 function HomePage({ instances, javaInfo, gameLogs, gameStatus, showGameLog, onCreate, onBrowse, onSettings, onLaunch, onStop, onInstall, onDiagnostics, onAccount, accountName, hasAccount }: { instances: InstanceRecord[]; javaInfo: { path: string; majorVersion: number; versionText: string } | null; gameLogs: Record<string, string>; gameStatus: Record<string, { status: string; logPath: string }>; showGameLog: boolean; onCreate: () => void; onBrowse: () => void; onSettings: () => void; onLaunch: (instanceId: string) => void; onStop: (instanceId: string) => void; onInstall: (instance: InstanceRecord) => void; onDiagnostics: (instanceId: string) => void; onAccount: () => void; accountName?: string; hasAccount: boolean }) {
   const activeInstance = instances[0]
   const activeStatus = activeInstance ? gameStatus[activeInstance.id] : undefined
+  const heroRef = useRef<HTMLElement>(null)
+  useEffect(() => heroRef.current ? attachPointerParallax(heroRef.current) : undefined, [])
   return (
     <div className="home-page page-enter">
       <PageHeading eyebrow="你的世界，由此开始" title="欢迎回来。" description="把准备工作交给 MFMCL，留更多时间给你的世界。" />
 
-      <section className="hero-card">
+      <section className="hero-card" ref={heroRef}>
         <div className="hero-glow hero-glow-one" /><div className="hero-glow hero-glow-two" />
         <div className="hero-landscape" aria-hidden="true"><div className="moon-shape" /><div className="landscape-ridge ridge-back" /><div className="landscape-ridge ridge-front" /><div className="pixel-tree tree-one"><i /><i /><i /><b /></div><div className="pixel-tree tree-two"><i /><i /><i /><b /></div></div>
         <div className="hero-content">
@@ -543,7 +573,7 @@ function SettingsPage({ settings, updateSettings, showAdvanced, setShowAdvanced,
   const currentTheme = themeChoices.find((theme) => theme.id === settings.theme) ?? themeChoices[0]
   return <div className="settings-page page-enter"><PageHeading eyebrow="偏好设置" title="按你的方式来。" description="常用选项用简单语言呈现，技术选项需要时再展开。" action={<button className={`mode-toggle ${showAdvanced ? 'is-on' : ''}`} onClick={() => setShowAdvanced(!showAdvanced)}><SlidersHorizontal size={15} />{showAdvanced ? '高级设置' : '简易设置'}<span className="toggle-track"><i /></span></button>} />
     <div className="settings-layout"><div className="settings-main">
-      <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-appearance"><Palette size={17} /></div><div><h2>外观与颜色</h2><p>选择一个预设，或者调出属于你的颜色。</p></div></div><div className="theme-grid">{themeChoices.map((theme) => <button key={theme.id} className={`theme-option ${settings.theme === theme.id ? 'selected' : ''}`} onClick={() => updateSettings({ theme: theme.id, customAccent: theme.color })}><span className="theme-swatch" style={{ '--swatch': theme.color } as React.CSSProperties}>{settings.theme === theme.id && <Check size={13} />}</span><span className="theme-copy"><strong>{theme.label}</strong><small>{theme.note}</small></span>{settings.theme === theme.id && <span className="theme-selected">已选</span>}</button>)}</div><div className="custom-color-row"><div className="custom-color-label"><strong>自定义强调色</strong><span>按钮、选中态和重点标识</span></div><div className="color-input-wrap"><input aria-label="选择自定义强调色" type="color" value={customAccent} onChange={(event) => { setCustomAccent(event.target.value); updateSettings({ customAccent: event.target.value }) }} /><code>{customAccent.toUpperCase()}</code><button className="color-apply" onClick={saveAccent}>应用</button></div></div><div className="custom-background-row"><div className="custom-color-label"><strong>首页背景图片</strong><span>{settings.customBackground ? '已添加到本地设置，图片仅保存在此设备。' : '支持 PNG、JPEG、WebP，最大 2 MB。'}</span></div><div className="background-actions"><label className="button-secondary small background-picker"><Palette size={13} />选择图片<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; if (file.size > 2 * 1024 * 1024) { onToast('图片大小不能超过 2 MB。'); event.currentTarget.value = ''; return; } if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) { onToast('请选择 PNG、JPEG 或 WebP 图片。'); event.currentTarget.value = ''; return; } const reader = new FileReader(); reader.onload = () => { if (typeof reader.result === 'string') updateSettings({ customBackground: reader.result }); }; reader.onerror = () => onToast('无法读取这张图片。'); reader.readAsDataURL(file); event.currentTarget.value = ''; }} /></label>{settings.customBackground && <button className="button-secondary small" onClick={() => updateSettings({ customBackground: null })}><X size={13} />移除</button>}</div></div><div className="appearance-footer"><span>界面主题</span><div className="segmented-control"><button className={settings.mode === 'dark' ? 'selected' : ''} onClick={() => updateSettings({ mode: 'dark' })}><Moon size={14} />深色</button><button className={settings.mode === 'light' ? 'selected' : ''} onClick={() => updateSettings({ mode: 'light' })}><Sun size={14} />浅色</button><button className={settings.mode === 'system' ? 'selected' : ''} onClick={() => updateSettings({ mode: 'system' })}>跟随系统</button></div></div></section>
+      <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-appearance"><Palette size={17} /></div><div><h2>外观与颜色</h2><p>选择一个预设，或者调出属于你的颜色。</p></div></div><div className="theme-grid">{themeChoices.map((theme) => <button key={theme.id} className={`theme-option ${settings.theme === theme.id ? 'selected' : ''}`} onClick={(event) => revealThemeChange(() => { setCustomAccent(theme.color); updateSettings({ theme: theme.id, customAccent: theme.color }) }, event.currentTarget)}><span className="theme-swatch" style={{ '--swatch': theme.color } as React.CSSProperties}>{settings.theme === theme.id && <Check size={13} />}</span><span className="theme-copy"><strong>{theme.label}</strong><small>{theme.note}</small></span>{settings.theme === theme.id && <span className="theme-selected">已选</span>}</button>)}</div><div className="custom-color-row"><div className="custom-color-label"><strong>自定义强调色</strong><span>按钮、选中态和重点标识</span></div><div className="color-input-wrap"><input aria-label="选择自定义强调色" type="color" value={customAccent} onChange={(event) => { setCustomAccent(event.target.value); updateSettings({ customAccent: event.target.value }) }} /><code>{customAccent.toUpperCase()}</code><button className="color-apply" onClick={saveAccent}>应用</button></div></div><div className="custom-background-row"><div className="custom-color-label"><strong>首页背景图片</strong><span>{settings.customBackground ? '已添加到本地设置，图片仅保存在此设备。' : '支持 PNG、JPEG、WebP，最大 2 MB。'}</span></div><div className="background-actions"><label className="button-secondary small background-picker"><Palette size={13} />选择图片<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; if (file.size > 2 * 1024 * 1024) { onToast('图片大小不能超过 2 MB。'); event.currentTarget.value = ''; return; } if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) { onToast('请选择 PNG、JPEG 或 WebP 图片。'); event.currentTarget.value = ''; return; } const reader = new FileReader(); reader.onload = () => { if (typeof reader.result === 'string') updateSettings({ customBackground: reader.result }); }; reader.onerror = () => onToast('无法读取这张图片。'); reader.readAsDataURL(file); event.currentTarget.value = ''; }} /></label>{settings.customBackground && <button className="button-secondary small" onClick={() => updateSettings({ customBackground: null })}><X size={13} />移除</button>}</div></div><div className="appearance-footer"><span>界面主题</span><div className="segmented-control"><button className={settings.mode === 'dark' ? 'selected' : ''} onClick={(event) => revealThemeChange(() => updateSettings({ mode: 'dark' }), event.currentTarget)}><Moon size={14} />深色</button><button className={settings.mode === 'light' ? 'selected' : ''} onClick={(event) => revealThemeChange(() => updateSettings({ mode: 'light' }), event.currentTarget)}><Sun size={14} />浅色</button><button className={settings.mode === 'system' ? 'selected' : ''} onClick={(event) => revealThemeChange(() => updateSettings({ mode: 'system' }), event.currentTarget)}>跟随系统</button></div></div></section>
 
       <section className="settings-card"><div className="settings-card-heading"><div className="setting-heading-icon icon-download"><Download size={17} /></div><div><h2>下载与网络</h2><p>选择 Minecraft 文件来源和加速方式。</p></div></div><div className="setting-field"><div className="field-copy"><strong>下载来源</strong><span>混合模式会按文件校验后回退到可用来源。</span></div><div className="source-options"><SourceChoice active={settings.downloadSource === 'official'} title="官方" detail="Mojang 官方服务器" onClick={() => updateSettings({ downloadSource: 'official' })} /><SourceChoice active={settings.downloadSource === 'bmclapi'} title="BMCLAPI" detail="国内镜像" onClick={() => updateSettings({ downloadSource: 'bmclapi' })} /><SourceChoice active={settings.downloadSource === 'mixed'} title="混合" detail="镜像 + 官方回退" onClick={() => updateSettings({ downloadSource: 'mixed' })} /></div></div><div className="setting-divider" /><div className="setting-field aria-field"><div className="field-copy"><strong>下载加速</strong><span>aria2 组件仅用于固定版本发布构建；此开发构建默认使用原生校验下载器</span></div><div className="aria-badge"><span className="aria-dot" />待配置</div></div>{showAdvanced && <div className="advanced-download"><div className="slider-setting"><div><strong>同时下载数</strong><span>{settings.ariaConnections} 个文件任务</span></div><input type="range" min="1" max="16" value={settings.ariaConnections} onChange={(event) => updateSettings({ ariaConnections: Number(event.target.value) })} /><span className="slider-value">{settings.ariaConnections}</span></div><div className="slider-setting"><div><strong>单文件连接数</strong><span>服务器支持时才会分段</span></div><input type="range" min="1" max="16" value={settings.ariaSplits} onChange={(event) => updateSettings({ ariaSplits: Number(event.target.value) })} /><span className="slider-value">{settings.ariaSplits}</span></div></div>}</section>
 
@@ -562,7 +592,7 @@ function SourceChoice({ active, title, detail, onClick }: { active: boolean; tit
 }
 
 function InstanceDialog({ versions, loading, versionSource, name, setName, selectedVersion, setSelectedVersion, onClose, onSubmit }: { versions: VersionItem[]; loading: boolean; versionSource: 'loading' | 'official' | 'preview'; name: string; setName: (value: string) => void; selectedVersion: string; setSelectedVersion: (value: string) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
-  return <Modal title="创建游戏实例" eyebrow="新建实例" onClose={onClose}><form onSubmit={onSubmit} className="dialog-form"><label className="form-label">给实例起个名字<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：生存世界" maxLength={48} /></label><label className="form-label">Minecraft 版本<select value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} required><option value="">选择正式版、快照或历史版本</option>{versions.map((version) => <option key={version.id} value={version.id}>{version.id} · {version.type === 'release' ? '正式版' : version.type === 'snapshot' ? '快照' : '历史版'}</option>)}</select><span className="input-hint">{loading ? '正在读取 Minecraft 官方版本清单…' : versionSource === 'official' ? '版本清单来自官方元数据。' : '暂时无法连接官方清单，当前显示缓存预览版本。'}</span></label><div className="loader-select-card"><div className="loader-icon"><Layers3 size={17} /></div><div><strong>模组加载器</strong><span>先安装原版，后续可为实例添加加载器。</span></div><span className="loader-tag">Vanilla</span></div><div className="dialog-note"><ShieldCheck size={15} /><span>新实例会使用独立目录，原有世界不会被覆盖。</span></div><div className="dialog-actions"><button type="button" className="button-secondary" onClick={onClose}>取消</button><button type="submit" className="button-primary"><Plus size={15} />创建实例</button></div></form></Modal>
+  return <Modal title="创建游戏实例" eyebrow="新建实例" onClose={onClose}>{(dismiss) => <form onSubmit={onSubmit} className="dialog-form"><label className="form-label">给实例起个名字<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：生存世界" maxLength={48} /></label><label className="form-label">Minecraft 版本<select value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} required><option value="">选择正式版、快照或历史版本</option>{versions.map((version) => <option key={version.id} value={version.id}>{version.id} · {version.type === 'release' ? '正式版' : version.type === 'snapshot' ? '快照' : '历史版'}</option>)}</select><span className="input-hint">{loading ? '正在读取 Minecraft 官方版本清单…' : versionSource === 'official' ? '版本清单来自官方元数据。' : '暂时无法连接官方清单，当前显示缓存预览版本。'}</span></label><div className="loader-select-card"><div className="loader-icon"><Layers3 size={17} /></div><div><strong>模组加载器</strong><span>先安装原版，后续可为实例添加加载器。</span></div><span className="loader-tag">Vanilla</span></div><div className="dialog-note"><ShieldCheck size={15} /><span>新实例会使用独立目录，原有世界不会被覆盖。</span></div><div className="dialog-actions"><button type="button" className="button-secondary" onClick={dismiss}>取消</button><button type="submit" className="button-primary"><Plus size={15} />创建实例</button></div></form>}</Modal>
 }
 
 function accountKindLabel(account?: AccountRecord): string {
@@ -578,13 +608,15 @@ function OfflineAccountDialog({ onClose, onSubmit, onSkin, onMicrosoft }: { onCl
   return <Modal title="添加账户" eyebrow="游戏身份" onClose={onClose}><div className="account-dialog-intro"><div className="account-dialog-icon"><Gamepad2 size={20} /></div><p>选择登录方式。离线档案每次启动前都会提醒你，且无法用于需要正版验证的服务器。</p></div><form onSubmit={onSubmit} className="dialog-form"><label className="form-label">离线档案名称<input name="playerName" autoFocus minLength={3} maxLength={16} pattern="[A-Za-z0-9_]{3,16}" placeholder="3–16 位英文字母、数字或下划线" required /></label><div className="warning-box"><CircleAlert size={16} /><span>离线档案不验证 Microsoft 游戏授权。请只用于你有权使用的本地或离线模式环境。</span></div><div className="dialog-actions"><button type="button" className="button-secondary" onClick={onSkin}>使用皮肤站账户</button><button type="submit" className="button-primary">添加离线档案<ArrowRight size={14} /></button></div></form><button className="microsoft-signin-button" onClick={onMicrosoft}><span className="ms-logo">▦</span>使用 Microsoft 账户登录</button></Modal>
 }
 
-function Modal({ title, eyebrow, onClose, children }: { title: string; eyebrow: string; onClose: () => void; children: React.ReactNode }) {
+function Modal({ title, eyebrow, onClose, children }: { title: string; eyebrow: string; onClose: () => void; children: React.ReactNode | ((dismiss: () => void) => React.ReactNode) }) {
+  const { leaving, dismiss } = useExitAnimation()
+  const close = useCallback(() => dismiss(onClose), [dismiss, onClose])
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="modal-card" role="dialog" aria-modal="true" aria-label={title}><div className="modal-topline"><span>{eyebrow}</span><button className="icon-button" aria-label="关闭对话框" onClick={onClose}><X size={18} /></button></div><h2>{title}</h2>{children}</section></div>
+  }, [close])
+  return <div className={`modal-backdrop ${leaving ? 'is-leaving' : ''}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}><section className="modal-card" role="dialog" aria-modal="true" aria-label={title}><div className="modal-topline"><span>{eyebrow}</span><button className="icon-button" aria-label="关闭对话框" onClick={close}><X size={18} /></button></div><h2>{title}</h2><ModalCloseContext.Provider value={close}>{typeof children === 'function' ? children(close) : children}</ModalCloseContext.Provider></section></div>
 }
 
 export default App
