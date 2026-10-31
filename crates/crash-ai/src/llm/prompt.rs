@@ -102,10 +102,39 @@ pub fn build(
      * determined "Java 版本过低", the model's job is to explain and advise, not
      * to re-diagnose from scratch.
      */
-    if findings.is_empty() {
-        out.push_str("## 已有的规则分析\n规则没有匹配到已知的崩溃特征。下面是日志片段，请判断最可能的原因。");
-        out.push_str("你没有把握时要把置信度标成“低”。\n\n");
-    } else {
+    /*
+     * 无结论的情况：**不问原因**。
+     *
+     * ## 为什么改掉原来的写法
+     *
+     * 原提示词是「规则没匹配，请判断最可能的原因，没把握时标低置信度」。实测两个
+     * 模型在这种提示下都会编：
+     *
+     *   LFM3-1.7B → 「通常是模组冲突或内存/数据处理错误」
+     *   Qwen3.8-9B → 「最可能是存档损坏」（给出了具体但无依据的结论）
+     *
+     * 这不是模型不够大，是任务本身不该交给它：日志里那三行没有任何能指向原因的
+     * 信息，而「猜一个最可能的原因」这个指令必然得到一个猜测。把猜测包装成
+     * 「低置信度」并不能让它变得有用——用户看到「存档损坏」会去删存档。
+     *
+     * 所以改成就模型真正擅长的事：**描述日志说了什么、缺少什么信息**。这不是
+     * 敷衍——「这三行只说区块序列化失败，没有堆栈，需要完整 crash-report」
+     * 恰恰是用户需要的下一步。
+     */
+    if cause.is_none() && findings.is_empty() {
+        out.push_str("## 任务\n");
+        out.push_str(
+            "日志里没有可归类的异常，也匹配不到已知的崩溃特征。\
+             **不要猜测原因**——证据不足以支持任何结论。\n\n",
+        );
+        out.push_str("请只做两件事：\n");
+        out.push_str("1. 用一句话说明这几行日志显示了什么现象（照日志说，不要推断原因）。\n");
+        out.push_str("2. 指出还缺少哪些关键信息，玩家应该去哪里找（例如完整 crash-report、latest.log 的开头、hs_err_pid 文件）。\n\n");
+        out.push_str("不要给出「可能是 XX」「通常是 YY」这类猜测。不要在步骤里提出修复动作。\n");
+        out.push_str("置信度一律标「低」。\n\n");
+    }
+
+    if !findings.is_empty() {
         out.push_str("## 已有的规则分析（这些结论已经确认，不要反驳）\n");
         for (index, finding) in findings.iter().enumerate().take(4) {
             out.push_str(&format!("{}. {}\n", index + 1, finding.title));
@@ -189,10 +218,23 @@ mod tests {
     }
 
     #[test]
-    fn empty_findings_ask_for_a_low_confidence_guess() {
+    fn empty_findings_forbid_guessing_the_cause() {
+        /*
+         * 这是实测驱动的一次改写。原提示词是「请判断最可能的原因，没把握时标低
+         * 置信度」，两个模型在这种提示下都会编：
+         *   LFM3-1.7B → 「通常是模组冲突或内存/数据处理错误」
+         *   Qwen3.8-9B → 「最可能是存档损坏」
+         * 后者尤其有害：用户看到「存档损坏」会去删存档。
+         *
+         * 现在明确禁止猜原因，只要求描述现象与指出缺失的信息。
+         */
         let prompt = build(&facts(), &[], None, &Environment::default());
-        assert!(prompt.contains("规则没有匹配"));
-        assert!(prompt.contains("“低”"));
+        assert!(prompt.contains("不要猜测原因"));
+        assert!(prompt.contains("缺少哪些关键信息"));
+        assert!(
+            !prompt.contains("请判断最可能的原因"),
+            "the old guessing instruction must not come back"
+        );
     }
 
     #[test]

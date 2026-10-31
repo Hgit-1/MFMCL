@@ -200,23 +200,7 @@ pub async fn narrate(
      * model's steps are kept — but the whole narrative is labelled speculative
      * in the UI, because that is what it is.
      */
-    /*
-     * 有确定的因果结论（非 Unknown）也算「规则命中」：那种情况下我们同样有
-     * 可信的、人工整理过的建议，不该让模型自己发挥。
-     */
-    let confirmed = !findings.is_empty()
-        || cause.is_some_and(|item| item.kind != crate::causes::CauseKind::Unknown);
-    let rules_matched = confirmed;
-    let (steps, source) = if rules_matched {
-        let curated: Vec<String> = findings
-            .iter()
-            .flat_map(|finding| finding.suggestions.clone())
-            .take(6)
-            .collect();
-        (curated, StepSource::Rules)
-    } else {
-        (model_steps, StepSource::Model)
-    };
+    let (steps, source) = decide_steps(findings, cause, model_steps);
 
     Ok(Narrative {
         explanation,
@@ -288,6 +272,13 @@ struct Message {
 /// Handling both the closed and the unclosed case matters: a truncated response
 /// often ends with an open `<think>` and no answer at all.
 pub fn strip_thinking(text: &str) -> String {
+    /*
+     * 先处理成对标记，再清理剩下的孤立结束标记。
+     *
+     * 顺序不能反。之前的写法是「先全局删除 `</think>`，再找 `<think`」，结果成对
+     * 标记的结束符也被删掉了，起始标记永远找不到配对，于是**后面的正文整段被吞**
+     * （`<think>x</think>答案` 返回空串）。测试抓到了这个回归。
+     */
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     loop {
@@ -300,10 +291,18 @@ pub fn strip_thinking(text: &str) -> String {
         match after_open.find("</think>") {
             Some(end) => rest = &after_open[end + "</think>".len()..],
             // Unclosed: everything after it was reasoning, so drop it.
-            None => break,
+            None => return out.trim().to_owned(),
         }
     }
-    out.trim().to_owned()
+
+    /*
+     * 清理孤立的结束标记。
+     *
+     * 实测 LFM3 有时只输出 `</think>` 而没有起始标记（思考被模板吞掉，结束标记
+     * 留在正文里）。它原样出现在用户可见的解释里——截图里那句
+     * 「…置信度较低。</think>」就是这么来的。
+     */
+    out.replace("</think>", "").trim().to_owned()
 }
 
 /// Split the answer into the explanation and the numbered steps.
@@ -598,6 +597,64 @@ pub async fn narrate_streaming(
     finish_narrative(config, findings, cause, &raw)
 }
 
+/// 决定用谁的步骤。流式与非流式共用，避免两条路径分叉。
+///
+/// ## 规则
+///
+/// 有**确认的结论**（规则命中，或因果分析给出非 Unknown 的类别）时，步骤一律来自
+/// 规则：那些建议是人工整理并有测试覆盖的。
+///
+/// 否则**不要模型的步骤**。
+///
+/// ## 为什么必须机械地丢弃，而不是靠提示词
+///
+/// 提示词已经改成「不要猜测原因，只说明缺少什么信息」，但实测 LFM3 仍然给出：
+///
+///   解释：「通常与内存处理、数据同步或网络通信问题有关」
+///   步骤：「检查 Java 版本是否兼容」「关闭所有第三方模组」
+///
+/// 这些与日志毫无关系，而且有害——用户会去改 Java 版本。提示词约束对小模型不可靠，
+/// 所以在结构层面拦掉：没有确认结论，就没有可信的修复动作，一个也不给。
+///
+/// 这不是减少信息：告诉用户「证据不足，去找完整 crash-report」比三条错误建议有用。
+fn decide_steps(
+    findings: &[crate::Finding],
+    cause: Option<&crate::causes::Cause>,
+    model_steps: Vec<String>,
+) -> (Vec<String>, StepSource) {
+    let confirmed = !findings.is_empty()
+        || cause.is_some_and(|item| item.kind != crate::causes::CauseKind::Unknown);
+
+    if confirmed {
+        let curated: Vec<String> = findings
+            .iter()
+            .flat_map(|finding| finding.suggestions.clone())
+            .take(6)
+            .collect();
+        // 规则命中但没有建议时（例如只识别出「未知类别」），宁可少给也不要模型发挥。
+        if curated.is_empty() {
+            return (
+                vec![
+                    "这个问题已经定位，但没有可直接执行的修复步骤。".to_owned(),
+                    "把完整的 crash-report 贴在 issue 里，或到模组作者的支持渠道询问。".to_owned(),
+                ],
+                StepSource::Rules,
+            );
+        }
+        return (curated, StepSource::Rules);
+    }
+
+    let _ = model_steps;
+    (
+        vec![
+            "这份日志里没有足够的信息定位原因。".to_owned(),
+            "把完整的 crash-report（在实例的 crash-reports 文件夹里）贴进来，\
+             或者提供 latest.log 的开头部分。".to_owned(),
+        ],
+        StepSource::Rules,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // 流式辅助
 // ---------------------------------------------------------------------------
@@ -634,7 +691,16 @@ pub struct ThinkGuard {
 
 impl ThinkGuard {
     /// 过滤一段增量，返回应当显示的部分。
+    ///
+    /// 输出上再做一次孤立结束标记的清理：`</think>` 可能在本块里单独出现，
+    /// 而状态机只在成对标记的语境下处理它。清理输出而不是改写输入，避免把
+    /// 结束标记从状态机眼前拿走（那会让成对标记的正文被吞掉——曾经就是这样
+    /// 写错过一次）。
     pub fn filter(&mut self, chunk: &str) -> String {
+        self.filter_raw(chunk).replace("</think>", "")
+    }
+
+    fn filter_raw(&mut self, chunk: &str) -> String {
         self.tail.push_str(chunk);
         let mut out = String::new();
 
@@ -730,18 +796,7 @@ fn finish_narrative(
     }
     let (explanation, model_steps) = parse_answer(&cleaned);
 
-    let confirmed = !findings.is_empty()
-        || cause.is_some_and(|item| item.kind != crate::causes::CauseKind::Unknown);
-    let (steps, source) = if confirmed {
-        let curated: Vec<String> = findings
-            .iter()
-            .flat_map(|finding| finding.suggestions.clone())
-            .take(6)
-            .collect();
-        (curated, StepSource::Rules)
-    } else {
-        (model_steps, StepSource::Model)
-    };
+    let (steps, source) = decide_steps(findings, cause, model_steps);
 
     Ok(Narrative {
         explanation,
@@ -831,5 +886,18 @@ mod streaming_tests {
         // 规则命中时步骤来自规则，不是模型。
         assert_eq!(streamed.steps, vec!["提高内存分配"]);
         assert_eq!(streamed.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn stray_closing_tag_is_removed_without_an_opening_tag() {
+        /*
+         * 实测 LFM3 输出过这种形态：思考被模板吞掉了，但 `</think>` 留在正文里。
+         * 原实现只在找到 `<think` 后才处理结束标记，于是它原样显示给了用户。
+         */
+        assert_eq!(strip_thinking("置信度较低。</think>"), "置信度较低。");
+        let mut guard = ThinkGuard::default();
+        let mut visible = String::from(guard.filter("推理结束</think>答案是内存"));
+        visible.push_str(&guard.finish());
+        assert_eq!(visible, "推理结束答案是内存");
     }
 }
