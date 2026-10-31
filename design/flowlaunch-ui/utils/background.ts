@@ -395,7 +395,15 @@ export async function analyzeVideoPoster(blob: Blob): Promise<{ accent: string |
   video.muted = true;
   video.playsInline = true;
   video.preload = 'auto';
-  video.src = url;
+  /*
+   * 这里被 CodeQL 报 `js/xss-through-dom`（"DOM text reinterpreted as HTML"）。
+   * 是误报：`url` 来自 `URL.createObjectURL(blob)`，是同源的 `blob:` 地址，由浏览器
+   * 生成，不含任何可以来自外部的字符串——`blob` 本身就是用户选中的那个文件。
+   *
+   * 没有改成 `setAttribute` 之类：`src` 属性对 `<video>` 只接受可解析的媒体 URL，
+   * 不执行脚本，换写法不会更安全，只会让抑制失去精确性。
+   */
+  video.src = url; // lgtm[js/xss-through-dom]
 
   try {
     await new Promise<void>((resolve, reject) => {
