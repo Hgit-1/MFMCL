@@ -1,0 +1,20 @@
+[package]
+name = "crash-ai"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[[bin]]
+name = "crash-ai-server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "crash-ai-cli"
+path = "src/bin/cli.rs"

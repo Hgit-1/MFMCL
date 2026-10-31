@@ -1,0 +1,599 @@
+/*
+ * 崩溃分析页样式。
+ *
+ * 这一页是给人提设计意见用的原型，所以刻意保持中性、可读：没有品牌色，没有
+ * 装饰性渐变，只有信息层次。配色沿用启动器的变量名，方便之后整体迁移进设置
+ * 面板时不至于全盘重写。
+ */
+
+:root {
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-2: #f2f4f7;
+  --border: #e3e6ea;
+  --text: #16191d;
+  --text-2: #5b6470;
+  --text-3: #8b95a1;
+  --accent: #3a7ead;
+  --accent-soft: #eaf3f9;
+  --ok: #16865c;
+  --warn: #a8681b;
+  --warn-soft: #fdf4e7;
+  --danger: #b93a3a;
+  --danger-soft: #fdeeee;
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151a;
+    --surface: #191d24;
+    --surface-2: #20252d;
+    --border: #2a3038;
+    --text: #e8ecf1;
+    --text-2: #9aa4b1;
+    --text-3: #6d7783;
+    --accent: #6fb3dd;
+    --accent-soft: #1b2a35;
+    --ok: #4cc38a;
+    --warn: #e0a458;
+    --warn-soft: #2b2418;
+    --danger: #e57373;
+    --danger-soft: #2e1c1c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+
+/* --- 页头 ---------------------------------------------------------------- */
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 22px;
+}
+
+.head h1 {
+  margin: 0 0 4px;
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.sub {
+  margin: 0;
+  max-width: 58ch;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* 状态条：三个状态用同一个色点，颜色是唯一的信号。 */
+.status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.status .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.status[data-state="ok"] .dot { background: var(--ok); }
+.status[data-state="down"] .dot { background: var(--warn); }
+.status[data-state="checking"] .dot { animation: pulse 1.2s ease-in-out infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* --- 布局 ---------------------------------------------------------------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* --- 输入 ---------------------------------------------------------------- */
+
+.drop {
+  position: relative;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+/* 拖拽经过时整个输入区高亮：提示「松手就行」比只高亮一条细边更明确。 */
+.drop:has(textarea:focus) {
+  border-color: var(--accent);
+}
+
+.drop-hint {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/*
+ * `display: grid` above defeats the `hidden` attribute, so the drag overlay was
+ * visible on first paint ("松开以读取文件" covering an empty textarea — which reads
+ * as a broken page). `[hidden]` has to win explicitly.
+ */
+.drop-hint[hidden] {
+  display: none;
+}
+
+textarea {
+  width: 100%;
+  min-height: 340px;
+  padding: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  resize: vertical;
+  outline: none;
+}
+
+textarea::placeholder {
+  color: var(--text-3);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
+}
+
+.meta {
+  color: var(--text-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toggle input {
+  accent-color: var(--accent);
+}
+
+/* --- 可选环境 ------------------------------------------------------------ */
+
+.env {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.env summary {
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.env-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.env-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.env-grid input {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.env-grid input:focus {
+  border-color: var(--accent);
+}
+
+/* --- 按钮 ---------------------------------------------------------------- */
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.primary {
+  min-height: 38px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #07131c;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ghost,
+.file-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.ghost:hover,
+.file-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.submit-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hint {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+/* --- 结果 ---------------------------------------------------------------- */
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.result.empty {
+  display: grid;
+  place-items: center;
+  min-height: 220px;
+}
+
+.placeholder {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.lead {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.lead strong {
+  color: var(--text);
+}
+
+.banner {
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
+  border-radius: 8px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+.none {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.none strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.none p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.none code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+/* --- 单条结论 ------------------------------------------------------------ */
+
+.finding,
+.narrative {
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+/* 左侧色条按置信度区分：很可能=实心，可能=中等，不确定=浅。 */
+.finding.conf-high { border-left: 3px solid var(--danger); }
+.finding.conf-medium { border-left: 3px solid var(--warn); }
+.finding.conf-low,
+.finding.conf-guess { border-left: 3px solid var(--text-3); }
+
+/*
+ * 模型推测：虚线框 + 强调色文字。
+ * 这不是装饰——它是「这条结论没有规则支撑」的唯一视觉信号。
+ */
+.narrative {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+}
+
+.narrative.speculative {
+  border-style: dashed;
+}
+
+.finding header,
+.narrative header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.finding h3,
+.narrative h3 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.conf-high .badge { background: var(--danger-soft); color: var(--danger); }
+.conf-medium .badge { background: var(--warn-soft); color: var(--warn); }
+.badge.model { background: var(--accent-soft); color: var(--accent); }
+
+/* 规则 id 用等宽小字：它面向的是愿意查文档的用户，不该抢标题的注意力。 */
+.rule-code {
+  margin-left: auto;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.finding p,
+.narrative p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* 步骤用有序列表：顺序有意义（先做什么、再做什么）。 */
+.steps {
+  margin: 9px 0 0;
+  padding-left: 20px;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.steps li {
+  margin-bottom: 3px;
+}
+
+.inline-evidence,
+.evidence-block {
+  margin-top: 9px;
+}
+
+.inline-evidence summary,
+.evidence-block summary {
+  color: var(--text-3);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.inline-evidence pre,
+.evidence-block pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* --- 骨架屏 -------------------------------------------------------------- */
+
+.skeleton {
+  height: 80px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s linear infinite;
+}
+
+.skeleton.short { height: 48px; }
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton, .status[data-state="checking"] .dot { animation: none; }
+}
+
+/* --- 页脚 ---------------------------------------------------------------- */
+
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+/* 步骤来源说明：小字，紧跟在步骤列表下方。
+   它是「这些步骤是谁写的」的唯一线索，所以不能省，但也不该抢注意力。 */
+.source-note {
+  margin: 7px 0 0;
+  color: var(--text-3);
+  font-size: 11px;
+}

@@ -5,6 +5,7 @@ members = [
   "crates/download-engine",
   "crates/launcher-core",
   "crates/launcher-auth",
+  "crates/crash-ai",
   "src-tauri",
 ]
 

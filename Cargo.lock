@@ -623,6 +623,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "crash-ai"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2369,6 +2381,7 @@ name = "mfmcl-desktop"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "crash-ai",
  "download-engine",
  "launcher-auth",
  "launcher-core",
