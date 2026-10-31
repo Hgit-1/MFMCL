@@ -88,8 +88,31 @@ async fn handle(mut stream: TcpStream, state: Arc<AppState>) -> std::io::Result<
         return Ok(());
     };
 
+    /*
+     * 流式路由直接拿走 socket。
+     *
+     * ## 为什么不能复用 `route() -> Response`
+     *
+     * 那个签名要求先把整个响应体算出来才能写头。对 SSE 是致命的：浏览器在收到
+     * 响应头之前不会派发任何事件，于是规则结果和第一个 token 会一起在最后出现
+     * ——实测两者都在 9418 ms 到达，等于没有流式。
+     */
+    if request.method == "POST" && request.path.split('?').next() == Some("/api/analyse/stream") {
+        return analyse_stream(request, state, &mut stream).await;
+    }
+
     let response = route(&request, &state).await;
     write_response(&mut stream, response).await
+}
+
+/// 写 SSE 响应头。正文随后由调用方逐段写入。
+async fn write_sse_head(stream: &mut TcpStream) -> std::io::Result<()> {
+    stream
+        .write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n",
+        )
+        .await?;
+    stream.flush().await
 }
 
 struct Request {
@@ -235,6 +258,7 @@ async fn route(request: &Request, state: &AppState) -> Response {
         ("GET", "/api/sources") => sources().await,
         ("POST", "/api/read") => read_controlled(request).await,
         ("POST", "/api/analyse") => analyse(request, state).await,
+        // 流式路由在 `handle` 里提前接管 socket，不会走到这里。
         (_, "/api/analyse") => Response::error(405, "只接受 POST"),
         _ => Response::error(404, "没有这个地址"),
     }
@@ -576,4 +600,185 @@ async fn read_controlled(request: &Request) -> Response {
 /// 这里直接同步读可以接受。真正的分析路径在 `analyse()` 里走 blocking 池。
 fn tauri_hardware() -> crash_ai::hardware::Hardware {
     crash_ai::hardware::detect()
+}
+
+// ---------------------------------------------------------------------------
+// 流式分析（SSE）
+// ---------------------------------------------------------------------------
+
+/// 一条 SSE 事件。
+///
+/// 事件名而不是只有 data：界面要能区分「规则结果」「模型增量」「结束」三种东西，
+/// 靠解析 JSON 里的字段来猜会让客户端代码变脆。
+fn sse_event(name: &str, payload: &serde_json::Value) -> String {
+    format!("event: {name}\ndata: {payload}\n\n")
+}
+
+/// 流式分析。
+///
+/// ## 为什么用 SSE 而不是 WebSocket
+///
+/// 这是单向的「服务端推、客户端收」，SSE 就是为这个场景设计的：不需要握手升级，
+/// 浏览器原生 `EventSource` 支持，断线重连语义也自带。WebSocket 在这里只多出
+/// 双向通道的复杂度。
+///
+/// ## 事件的顺序是设计的一部分
+///
+/// ```
+/// rules    规则 + 因果 + 硬件（毫秒级）
+/// status   模型可行性（可能直接跳 end）
+/// chunk    模型输出的增量，多次
+/// done     最终结构（含解析后的步骤）
+/// error    模型失败（规则结果已经在前面发过了）
+/// ```
+///
+/// `rules` 先发是刻意的：用户在第一秒就看到了结论。
+async fn analyse_stream(
+    request: Request,
+    state: Arc<AppState>,
+    stream: &mut TcpStream,
+) -> std::io::Result<()> {
+    if request.body.len() > MAX_BODY_BYTES {
+        return write_response(stream, Response::error(413, "日志过大")).await;
+    }
+    let parsed: AnalyseRequest = match serde_json::from_slice(&request.body) {
+        Ok(value) => value,
+        Err(error) => {
+            return write_response(stream, Response::error(400, &format!("请求格式无效：{error}"))).await;
+        }
+    };
+    if parsed.log.trim().is_empty() {
+        return write_response(stream, Response::error(400, "日志为空")).await;
+    }
+
+    let mut environment = parsed.environment;
+    if environment.hardware.is_none() {
+        environment.hardware = Some(crash_ai::hardware::detect());
+    }
+
+    /*
+     * 先写响应头，再做任何耗时的事。
+     *
+     * 浏览器在收到响应头之前不会派发任何 SSE 事件。之前把整条流缓冲到最后才写，
+     * 实测规则结果与第一个 token 都在 9418 ms 到达——等于没有流式。
+     */
+    write_sse_head(stream).await?;
+
+    /*
+     * 本地部分（毫秒级）：规则 + 因果 + 硬件。立即推送。
+     */
+    let (findings, cause, capability, facts, warnings) =
+        crash_ai::analyse_local(&parsed.log, &environment);
+
+    let config = state.config.clone();
+    let assessment = crash_ai::feasibility::assess_llm(
+        &environment.hardware.clone().unwrap_or_default(),
+        config.parameters_b,
+        config.context_tokens,
+    );
+    let tripped = state
+        .health
+        .lock()
+        .ok()
+        .and_then(|health| health.disabled_reason().map(str::to_owned));
+    let want_model = parsed.use_model && !assessment.disable_model && tripped.is_none();
+
+    let rules_event = sse_event(
+        "rules",
+        &serde_json::json!({
+            "findings": findings.clone(),
+            "cause": cause.clone(),
+            "capability": capability,
+            "facts": facts.clone(),
+            "warnings": warnings,
+            "modelStatus": assessment,
+        }),
+    );
+    stream.write_all(rules_event.as_bytes()).await?;
+    stream.flush().await?;
+
+    if let Some(reason) = &tripped {
+        let event = sse_event("status", &serde_json::json!({ "disabled": true, "reason": reason }));
+        stream.write_all(event.as_bytes()).await?;
+        stream.flush().await?;
+    }
+
+    if want_model {
+        /*
+         * 增量转发。
+         *
+         * 回调是同步的、写 socket 是异步的，所以用 channel 桥接：worker 在回调里
+         * 发送片段，本函数 `await` 接收并立刻写出。这是唯一能同时满足两种签名、
+         * 又保持真正流式的方式。
+         */
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let config_for_model = state.config.clone();
+        let facts_for_model = facts.clone();
+        let findings_for_model = findings.clone();
+        let cause_for_model = cause.clone();
+        let environment_for_model = environment.clone();
+
+        let worker = tokio::spawn(async move {
+            let mut sender = tx;
+            let mut handle = move |piece: &str| {
+                let _ = sender.send(piece.to_owned());
+            };
+            crash_ai::llm::narrate_streaming(
+                &config_for_model,
+                &facts_for_model,
+                &findings_for_model,
+                cause_for_model.as_ref(),
+                &environment_for_model,
+                &mut handle,
+            )
+            .await
+        });
+
+        let mut client_gone = false;
+        while let Some(piece) = rx.recv().await {
+            if client_gone {
+                // 仍然要排空通道，否则 worker 的发送会一直堆积。
+                continue;
+            }
+            let event = sse_event("chunk", &serde_json::json!({ "text": piece }));
+            if stream.write_all(event.as_bytes()).await.is_err() {
+                client_gone = true;
+                continue;
+            }
+            let _ = stream.flush().await;
+        }
+
+        let result = match worker.await {
+            Ok(value) => value,
+            Err(_) => {
+                let event = sse_event("error", &serde_json::json!({ "error": "模型任务异常终止", "modelUsed": false }));
+                let _ = stream.write_all(event.as_bytes()).await;
+                return Ok(());
+            }
+        };
+
+        match result {
+            Ok(narrative) => {
+                if let Ok(mut health) = state.health.lock() {
+                    health.record_success();
+                }
+                let event = sse_event("done", &serde_json::json!({ "narrative": narrative, "modelUsed": true }));
+                let _ = stream.write_all(event.as_bytes()).await;
+            }
+            Err(error) => {
+                if let Ok(mut health) = state.health.lock() {
+                    health.record_failure(&error.to_string());
+                }
+                let event = sse_event("error", &serde_json::json!({ "error": error.to_string(), "modelUsed": false }));
+                let _ = stream.write_all(event.as_bytes()).await;
+            }
+        }
+        let _ = stream.flush().await;
+    } else {
+        let event = sse_event("done", &serde_json::json!({ "narrative": null, "modelUsed": false }));
+        let _ = stream.write_all(event.as_bytes()).await;
+        let _ = stream.flush().await;
+    }
+
+    Ok(())
 }

@@ -378,6 +378,44 @@ pub async fn analyse(
     analyse_with_status(log, environment, config, use_model, None).await
 }
 
+/// 只跑本地部分（规则 + 因果 + 硬件），不碰模型。
+///
+/// ## 为什么要把这一步单独暴露出来
+///
+/// 流式分析时，规则结论 4 毫秒就能算出来，而模型要 6–13 秒。如果等模型跑完再一起
+/// 返回，用户在前十几秒里什么也看不到——这正是「至少给个动画」这个诉求的来源。
+///
+/// 把它拆出来以后，服务端可以先把规则结果推给界面，再让模型逐字补上解释：
+/// 用户在第一秒就看到了「是什么问题」，剩下的时间是在读内容而不是等进度条。
+pub fn analyse_local(
+    log: &str,
+    environment: &Environment,
+) -> (Vec<Finding>, Option<causes::Cause>, Option<hardware::Capability>, LogFacts, Vec<String>) {
+    let (findings, facts, mut warnings) = analyse_log(log, environment);
+
+    let cause = causes::analyse_trace(log);
+    if let Some(found) = &cause
+        && found.kind == causes::CauseKind::Unknown
+    {
+        warnings.push("堆栈里没有可归类的异常模式".to_owned());
+    }
+
+    let capability = environment.hardware.as_ref().map(|hardware| {
+        let workload = hardware::Workload {
+            game_version: environment
+                .game_version
+                .clone()
+                .or_else(|| facts.detected_game_version.clone()),
+            loader: environment.loader.clone(),
+            mod_count: environment.mod_count,
+            allocated_memory_mb: environment.memory_mb,
+        };
+        hardware::assess(hardware, &workload)
+    });
+
+    (findings, cause, capability, facts, warnings)
+}
+
 /// 与 `analyse` 相同，但接受一份预先算好的模型可行性判断。
 ///
 /// 分开的原因：可行性判断需要硬件信息，而硬件探测是阻塞的（读 `lspci`、sysinfo）。

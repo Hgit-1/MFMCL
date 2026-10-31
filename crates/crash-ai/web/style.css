@@ -648,6 +648,11 @@ button {
   background: var(--surface-2);
 }
 
+/* 与 .model-status 同理：flex 会压过 hidden 属性。 */
+.hardware[hidden] {
+  display: none;
+}
+
 .hardware[data-verdict="hopeless"] {
   border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
   background: var(--danger-soft);
@@ -747,6 +752,15 @@ button {
   background: var(--warn-soft);
 }
 
+/*
+ * `display: flex` 会压过 `hidden` 属性，让这块在没有内容时仍然占一条空白横条
+ * （实测在截图里就是结果区上方那道空框）。必须显式让 `[hidden]` 赢。
+ * 与 `.drop-hint` 同一个坑。
+ */
+.model-status[hidden] {
+  display: none;
+}
+
 /* 熔断用中性色：它是一次可恢复的临时状态，不像「跑不动」那样是硬限制。 */
 .model-status[data-state="tripped"] {
   border-color: var(--border);
@@ -776,4 +790,57 @@ button {
 .model-status-note {
   color: var(--ok) !important;
   font-size: 11px;
+}
+
+/* --- 流式输出 ------------------------------------------------------------ */
+
+/*
+ * 闪烁光标。
+ *
+ * 它是「模型还在写」的唯一信号。没有它，逐字出现的文字和一个已经卡住的界面
+ * 看起来一样——用户无法判断该继续等还是刷新。
+ */
+.stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 13px;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: cursor-blink 1s steps(2, start) infinite;
+}
+
+@keyframes cursor-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+/* 模型写到一半的文字。保留换行，因为模型输出里步骤是分行的。 */
+.stream-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 等待第一个 token 时的占位。比空区域好：空区域读起来像「什么都没发生」。 */
+.stream-pending {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.stream-pending::after {
+  content: '…';
+  animation: pending-dots 1.4s steps(4, end) infinite;
+}
+
+@keyframes pending-dots {
+  0% { opacity: .3; }
+  50% { opacity: 1; }
+  100% { opacity: .3; }
+}
+
+/* 减少动效时不闪烁：改为常亮的细边，仍然表示「这里还在进行」。 */
+@media (prefers-reduced-motion: reduce) {
+  .stream-cursor { animation: none; opacity: .6; }
+  .stream-pending::after { animation: none; content: '…'; }
 }

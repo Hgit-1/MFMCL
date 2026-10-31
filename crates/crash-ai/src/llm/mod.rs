@@ -462,3 +462,374 @@ mod tests {
         assert_eq!(steps, vec!["提高内存"]);
     }
 }
+
+// ---------------------------------------------------------------------------
+// 流式输出
+// ---------------------------------------------------------------------------
+
+/// 流式回调。每收到一小段文本就调用一次。
+///
+/// 用 `Send` 是因为它会被跨 `await` 持有：调用方通常在异步任务里把片段转发到
+/// SSE 连接。
+pub type StreamHandler<'a> = &'a mut (dyn FnMut(&str) + Send);
+
+/// 与 `narrate` 相同，但把模型输出边生成边回调。
+///
+/// ## 为什么值得单独实现
+///
+/// 1.7B 模型在 CPU 上生成一段完整解释要 6–13 秒。没有流式时，用户面对的是一个
+/// 骨架屏，无法区分「正在推理」和「卡死了」。有流式以后，第一个字通常在 1–2 秒内
+/// 出现，剩下的时间用户是在读内容，而不是在等。
+///
+/// ## 实现上的两个坑
+///
+/// 1. **思考块必须在流里实时剥离**。不能等整个响应结束再剥：那样用户会先看到
+///    一段 `<think>...` 的推理过程，然后它又消失。所以按行切分时用一个状态机
+///    跟踪「当前是否在遮罩内」。
+/// 2. **增量可能把一个标记切成两半**（`</thi` + `nk>`），所以剥离逻辑必须容忍
+///    跨块的半截标记，不能假设每一块都是完整的。
+pub async fn narrate_streaming(
+    config: &LlmConfig,
+    facts: &crate::LogFacts,
+    findings: &[crate::Finding],
+    cause: Option<&crate::causes::Cause>,
+    environment: &crate::Environment,
+    on_chunk: StreamHandler<'_>,
+) -> Result<Narrative, LlmError> {
+    let user_prompt = prompt::build(facts, findings, cause, environment);
+
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": [
+            { "role": "system", "content": prompt::SYSTEM },
+            { "role": "user", "content": user_prompt },
+        ],
+        "max_tokens": config.max_tokens,
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "stream": true,
+        "chat_template_kwargs": { "enable_thinking": false },
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(config.timeout)
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| LlmError::Unreachable(error.to_string()))?;
+
+    let response = client
+        .post(format!("{}/v1/chat/completions", config.base_url.trim_end_matches('/')))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_connect() || error.is_timeout() {
+                LlmError::Unreachable(format!("{}（模型可能没有启动）", error))
+            } else {
+                LlmError::Unreachable(error.to_string())
+            }
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(LlmError::BadResponse(format!(
+            "HTTP {status}: {}",
+            truncate(&text, 300)
+        )));
+    }
+
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut raw = String::new();
+    let mut pending = String::new();
+    let mut guard = ThinkGuard::default();
+
+    /*
+     * 按字节累积再按行切分。
+     *
+     * SSE 的 `data:` 行以 `\n` 结束，但一个 TCP 块可能包含半行，也可能包含多行。
+     * 所以保留未完成的部分（`pending`），只处理完整的行。
+     */
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|error| LlmError::Unreachable(error.to_string()))?;
+        pending.push_str(&String::from_utf8_lossy(&bytes));
+
+        while let Some(index) = pending.find('\n') {
+            let line: String = pending.drain(..=index).collect();
+            let line = line.trim_end_matches(['\r', '\n']);
+            let Some(payload) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            if payload.trim() == "[DONE]" {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<StreamChunk>(payload) else {
+                continue;
+            };
+            let Some(delta) = value
+                .choices
+                .first()
+                .and_then(|choice| choice.delta.as_ref())
+                .and_then(|delta| delta.content.as_deref())
+            else {
+                continue;
+            };
+            raw.push_str(delta);
+
+            /*
+             * 实时剥离思考块后转发。
+             *
+             * 只有通过了 guard 的文本才会到达界面，所以用户不会先看到推理过程。
+             */
+            let visible = guard.filter(delta);
+            if !visible.is_empty() {
+                on_chunk(&visible);
+            }
+        }
+    }
+
+    if raw.trim().is_empty() {
+        return Err(LlmError::BadResponse(
+            "模型没有返回任何内容（流式响应为空）".to_owned(),
+        ));
+    }
+
+    finish_narrative(config, findings, cause, &raw)
+}
+
+// ---------------------------------------------------------------------------
+// 流式辅助
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct StreamChunk {
+    #[serde(default)]
+    choices: Vec<StreamChoice>,
+}
+
+#[derive(Deserialize)]
+struct StreamChoice {
+    #[serde(default)]
+    delta: Option<StreamDelta>,
+}
+
+#[derive(Deserialize)]
+struct StreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+}
+
+/// 在增量文本里过滤 `<think>` 段。
+///
+/// 增量切分会让标记本身被拆开（`</thi` + `nk>`），所以状态机要能跨块保持：
+/// 遇到 `<` 时先缓存，等后续字节决定它是不是标记的一部分。
+#[derive(Default)]
+pub struct ThinkGuard {
+    /// 当前是否在 `<think>` 块内。
+    inside: bool,
+    /// 已收到但还无法判定的尾部（可能是半个标记）。
+    tail: String,
+}
+
+impl ThinkGuard {
+    /// 过滤一段增量，返回应当显示的部分。
+    pub fn filter(&mut self, chunk: &str) -> String {
+        self.tail.push_str(chunk);
+        let mut out = String::new();
+
+        loop {
+            if self.inside {
+                // 在遮罩内：找到结束标记前全部丢弃。
+                match self.tail.find("</think>") {
+                    Some(index) => {
+                        self.tail.drain(..index + "</think>".len());
+                        self.inside = false;
+                    }
+                    None => {
+                        /*
+                         * 还没看到结束标记。保留可能是 `</think>` 前缀的尾部，
+                         * 其余丢掉——这部分内容不该显示。
+                         */
+                        let keep = partial_suffix(&self.tail, "</think>");
+                        self.tail.drain(..self.tail.len() - keep);
+                        return out;
+                    }
+                }
+            } else {
+                match self.tail.find("<think") {
+                    Some(index) => {
+                        out.push_str(&self.tail[..index]);
+                        self.tail.drain(..index);
+                        // 等到 `>` 才能确认这是标记而不是普通文本里的尖括号。
+                        match self.tail.find('>') {
+                            Some(end) => {
+                                self.tail.drain(..=end);
+                                self.inside = true;
+                            }
+                            None => return out,
+                        }
+                    }
+                    None => {
+                        /*
+                         * 没有起始标记。但尾部可能是 `<thi` 这样的半个标记，
+                         * 需要保留到下一块再判断。
+                         */
+                        let keep = partial_suffix(&self.tail, "<think");
+                        let cut = self.tail.len() - keep;
+                        out.push_str(&self.tail[..cut]);
+                        self.tail.drain(..cut);
+                        return out;
+                    }
+                }
+            }
+        }
+    }
+
+    /// 收尾：把仍然缓存的内容吐出来。
+    ///
+    /// 只有在确认它不属于任何一个被截断的标记时才返回——否则会漏出半个标签。
+    pub fn finish(&mut self) -> String {
+        let rest = std::mem::take(&mut self.tail);
+        if self.inside || rest.starts_with('<') {
+            String::new()
+        } else {
+            rest
+        }
+    }
+}
+
+/// `text` 的末尾有多少字符是 `marker` 的前缀。
+fn partial_suffix(text: &str, marker: &str) -> usize {
+    let bytes = text.as_bytes();
+    let marker_bytes = marker.as_bytes();
+    let max = bytes.len().min(marker_bytes.len().saturating_sub(1));
+    for length in (1..=max).rev() {
+        if bytes[bytes.len() - length..] == marker_bytes[..length] {
+            return length;
+        }
+    }
+    0
+}
+
+/// 组装最终的 `Narrative`。
+///
+/// 与 `narrate` 共用，保证流式与非流式的解析结果完全一致——否则「流式看到的文字」
+/// 和「最终结构里的文字」可能不同，用户会看到内容闪一下然后变化。
+fn finish_narrative(
+    config: &LlmConfig,
+    findings: &[crate::Finding],
+    cause: Option<&crate::causes::Cause>,
+    raw: &str,
+) -> Result<Narrative, LlmError> {
+    let cleaned = strip_thinking(raw);
+    if cleaned.trim().is_empty() {
+        return Err(LlmError::BadResponse(
+            "模型没有给出内容（可能仍然输出了思考块并耗尽了 token）".to_owned(),
+        ));
+    }
+    let (explanation, model_steps) = parse_answer(&cleaned);
+
+    let confirmed = !findings.is_empty()
+        || cause.is_some_and(|item| item.kind != crate::causes::CauseKind::Unknown);
+    let (steps, source) = if confirmed {
+        let curated: Vec<String> = findings
+            .iter()
+            .flat_map(|finding| finding.suggestions.clone())
+            .take(6)
+            .collect();
+        (curated, StepSource::Rules)
+    } else {
+        (model_steps, StepSource::Model)
+    };
+
+    Ok(Narrative {
+        explanation,
+        steps,
+        source,
+        confidence: confidence_from(&cleaned).min(Confidence::Medium),
+        model: config.model.clone(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 流式测试
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+
+    #[test]
+    fn think_guard_strips_complete_block_in_one_chunk() {
+        let mut guard = ThinkGuard::default();
+        assert_eq!(guard.filter("<think>secret</think>答案"), "答案");
+    }
+
+    #[test]
+    fn think_guard_handles_markers_split_across_chunks() {
+        /*
+         * 这是流式最容易出错的地方：增量把一个标记切成两半。
+         * `</thi` + `nk>` 必须被识别成一个结束标记，而不是当成正文吐出去。
+         */
+        let mut guard = ThinkGuard::default();
+        let mut visible = String::new();
+        for piece in ["<thi", "nk>", "推理中", "</thi", "nk>", "答案是内存不足"] {
+            visible.push_str(&guard.filter(piece));
+        }
+        visible.push_str(&guard.finish());
+        assert_eq!(visible, "答案是内存不足");
+    }
+
+    #[test]
+    fn think_guard_passes_ordinary_text_untouched() {
+        let mut guard = ThinkGuard::default();
+        let mut visible = String::new();
+        for piece in ["说明：", "内存不足。", "\n步骤：\n1. 提高内存"] {
+            visible.push_str(&guard.filter(piece));
+        }
+        visible.push_str(&guard.finish());
+        assert_eq!(visible, "说明：内存不足。\n步骤：\n1. 提高内存");
+    }
+
+    #[test]
+    fn think_guard_does_not_leak_a_truncated_tag() {
+        // 流在标记中途断掉：不能把半个标签显示出来。
+        let mut guard = ThinkGuard::default();
+        let visible = guard.filter("答案<thi");
+        assert_eq!(visible, "答案");
+        assert_eq!(guard.finish(), "", "half a tag must not be emitted");
+    }
+
+    #[test]
+    fn think_guard_keeps_stray_angle_bracket() {
+        // 普通文本里的尖括号不代表标记——等到能确认是 `<think` 才拦截。
+        let mut guard = ThinkGuard::default();
+        let mut visible = String::from(guard.filter("内存 < 4GB 时"));
+        visible.push_str(&guard.finish());
+        assert_eq!(visible, "内存 < 4GB 时");
+    }
+
+    #[test]
+    fn streaming_and_non_streaming_parse_identically() {
+        /*
+         * 两条路径必须给出一致的结构，否则界面上会「先看到文字、再被替换」。
+         */
+        let findings = vec![crate::Finding {
+            code: "runtime.outofmemory".into(),
+            title: "内存不足".into(),
+            confidence: Confidence::High,
+            explanation: String::new(),
+            suggestions: vec!["提高内存分配".into()],
+            evidence: vec![],
+            mods: vec![],
+        }];
+        let config = LlmConfig::default();
+        let raw = "说明：堆内存耗尽。\n步骤：\n1. 降低内存\n置信度：高";
+        let streamed = finish_narrative(&config, &findings, None, raw).unwrap();
+        assert_eq!(streamed.explanation, "堆内存耗尽。");
+        // 规则命中时步骤来自规则，不是模型。
+        assert_eq!(streamed.steps, vec!["提高内存分配"]);
+        assert_eq!(streamed.confidence, Confidence::Medium);
+    }
+}

@@ -627,6 +627,7 @@ name = "crash-ai"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "futures-util",
  "regex",
  "reqwest 0.12.28",
  "serde",

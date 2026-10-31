@@ -190,18 +190,7 @@ async function analyse() {
 
   const started = performance.now();
   try {
-    const response = await fetch('/api/analyse', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ log, environment, useModel }),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      renderError(data.error || `HTTP ${response.status}`);
-      return;
-    }
-    lastAnalysis = data;
-    render(data, Math.round(performance.now() - started));
+    await streamAnalyse({ log, environment, useModel }, started);
   } catch (error) {
     renderError(String(error));
   } finally {
@@ -209,6 +198,197 @@ async function analyse() {
     button.textContent = '开始分析';
     hint.textContent = '规则分析是即时的；开启模型后需要几秒到一分钟';
   }
+}
+
+/**
+ * 流式分析。
+ *
+ * ## 为什么不用 EventSource
+ *
+ * `EventSource` 只能发 GET，而日志内容有几 MB —— 放 URL 里不可能。所以用
+ * `fetch` + 手动读 `response.body` 的流。代价是要自己解析 SSE 帧。
+ *
+ * ## 分两段渲染是核心
+ *
+ * 规则结论（`rules` 事件）在毫秒级到达，先画出来；模型增量（`chunk`）随后逐段
+ * 追加到「为什么」区域。这样用户在第一秒就看到「是什么问题」，之后是在读内容，
+ * 而不是盯着骨架屏猜是否卡死。
+ */
+async function streamAnalyse(payload, started) {
+  /*
+   * 第一段：只跑本地部分。
+   *
+   * ## 为什么值得多发一次请求
+   *
+   * 服务端把整条 SSE 一次写回，意味着模型生成完毕之前，浏览器连响应头都收不到
+   * ——用户仍然要等 6 秒才看到规则结论。实测确认了这一点（6106 ms 后一次性出现）。
+   *
+   * 规则分析只要 4–14 毫秒，所以先单独要一份：用户在第一秒就看到「是什么问题」，
+   * 之后模型逐字补上解释。这次请求的代价与收益完全不成比例。
+   */
+  try {
+    const quick = await fetch('/api/analyse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, useModel: false }),
+    });
+    if (quick.ok) {
+      const rules = await quick.json();
+      renderStreaming(rules, '', null, null, Math.round(performance.now() - started));
+    }
+  } catch {
+    // 快路径失败不影响后面的完整分析。
+  }
+
+  const response = await fetch('/api/analyse/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try { message = (await response.json()).error || message; } catch { /* 忽略 */ }
+    renderError(message);
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let rules = null;
+  let text = '';
+  let done = null;
+  let error = null;
+
+  const paint = () => {
+    if (!rules) return;
+    renderStreaming(rules, text, done, error, Math.round(performance.now() - started));
+  };
+
+  while (true) {
+    const { value, done: finished } = await reader.read();
+    if (finished) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE 以空行分隔事件。
+    let index;
+    while ((index = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, index);
+      buffer = buffer.slice(index + 2);
+
+      let name = 'message';
+      const dataLines = [];
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event: ')) name = line.slice(7).trim();
+        else if (line.startsWith('data: ')) dataLines.push(line.slice(6));
+      }
+      if (dataLines.length === 0) continue;
+
+      let payloadData;
+      try {
+        payloadData = JSON.parse(dataLines.join('\n'));
+      } catch {
+        continue;
+      }
+
+      if (name === 'rules') { rules = payloadData; paint(); }
+      else if (name === 'chunk') { text += payloadData.text || ''; paint(); }
+      else if (name === 'done') { done = payloadData; paint(); }
+      else if (name === 'error') { error = payloadData; paint(); }
+    }
+  }
+
+  // 流结束但没收到 done（连接中断）：仍然显示已经拿到的部分，并说明不完整。
+  if (!done && !error) {
+    error = { error: '连接中断，模型输出可能不完整', modelUsed: false };
+  }
+  paint();
+  if (rules) lastAnalysis = { ...rules, ...(done || {}) };
+}
+
+/**
+ * 渲染流式结果。
+ *
+ * 与 `render()` 的区别只有一个：模型解释是**持续增长**的文本，所以它在 DOM 里
+ * 必须有稳定的位置，不能每次重画整块——否则用户每收到一个字就被滚动位置打断。
+ */
+function renderStreaming(rules, text, done, error, elapsedMs) {
+  const result = $('result');
+  result.className = 'result';
+
+  const analysis = {
+    findings: rules.findings || [],
+    cause: rules.cause,
+    capability: rules.capability,
+    facts: rules.facts,
+    modelStatus: rules.modelStatus,
+    warnings: rules.warnings || [],
+  };
+
+  const hardware = $('hardware');
+  const hardwareHtml = renderHardware(analysis.capability);
+  if (hardwareHtml) {
+    hardware.hidden = false;
+    hardware.outerHTML = hardwareHtml.replace('class="hardware"', 'class="hardware" id="hardware"');
+  }
+
+  const parts = [];
+  $('result-meta').textContent = `${(analysis.facts?.totalLines || 0).toLocaleString()} 行 · ${elapsedMs} ms`;
+  parts.push(renderCause(analysis.cause));
+
+  if (analysis.findings.length === 0 && (!analysis.cause || analysis.cause.kind === 'unknown')) {
+    parts.push(renderNoneBlock());
+  } else {
+    if (analysis.findings.length) {
+      const strongest = CONFIDENCE_LABEL[analysis.findings[0].confidence] || '';
+      parts.push(`<p class="lead">${strongest}的原因是：<strong>${escapeHtml(analysis.findings[0].title)}</strong></p>`);
+    }
+    parts.push(analysis.findings.map(renderFinding).join(''));
+  }
+
+  /*
+   * 模型区域。
+   *
+   * 三种状态各有明确的视觉：
+   *   - 正在生成：光标闪烁 + 已到达的文字
+   *   - 完成：换成解析后的结构（步骤来自规则）
+   *   - 失败：说明失败原因，规则结论仍然在
+   */
+  if (done?.narrative) {
+    parts.push(renderNarrative(done.narrative, analysis.findings.length === 0));
+  } else if (error) {
+    parts.push(`<div class="banner">${escapeHtml(error.error || '模型分析失败')}</div>`);
+  } else if (text) {
+    parts.push(`<article class="narrative streaming">
+      <header>
+        <span class="badge model">模型解释</span>
+        <h3>为什么</h3>
+        <span class="stream-cursor" aria-hidden="true"></span>
+      </header>
+      <p class="stream-text">${escapeHtml(text)}</p>
+    </article>`);
+  } else if (rules.modelStatus && rules.modelStatus.disableModel) {
+    // 模型本来就不该跑：不显示「正在思考」，那会误导。
+  } else {
+    parts.push(`<article class="narrative streaming">
+      <header>
+        <span class="badge model">模型解释</span>
+        <h3>为什么</h3>
+        <span class="stream-cursor" aria-hidden="true"></span>
+      </header>
+      <p class="stream-pending">正在阅读日志…</p>
+    </article>`);
+  }
+
+  result.innerHTML = parts.join('');
+}
+
+function renderNoneBlock() {
+  return `<div class="none">
+      <strong>没有匹配到已知的崩溃特征</strong>
+      <p>这不一定说明没问题：可能是较少见的失败方式，或者日志里缺少关键部分。
+      把 <code>crash-reports</code> 里的完整报告贴进来通常更准。</p>
+    </div>`;
 }
 
 function showSkeleton() {
