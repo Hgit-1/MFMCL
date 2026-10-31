@@ -634,3 +634,72 @@ mod tests {
         assert_eq!(findings[0].confidence, Confidence::High);
     }
 }
+
+/// 哪些关键词规则与一个确定的因果类别是同一个问题。
+///
+/// ## 判断标准是「修复动作是否相同」，不是字面相似
+///
+/// 一个 inotify 上限和 mixin 注入失败需要完全不同的处理，所以它们互不相关；
+/// 而「内存不足」与「堆参数无效」都指向内存设置，可以并存。
+///
+/// 这张表存在的直接原因：真实报告
+/// `crash-2026-08-20_13.43.14-client.txt` 里，堆栈每一帧都带 `{re:mixin}`
+/// （Forge 的改写标记），关键词规则因此报「Mixin 注入失败」；而真实原因是
+/// inotify 实例上限。两者同时出现时，用户只会看到两条互相矛盾的结论。
+pub fn related_to(kind: crate::causes::CauseKind) -> &'static [&'static str] {
+    use crate::causes::CauseKind as K;
+    match kind {
+        // 系统资源上限：只有「内存参数」类可能相关（EAGAIN/ENOMEM 常与内存同现），
+        // 模组、图形、Java 版本全部无关。
+        K::SystemLimit => &["heap.reserve", "heap.invalid"],
+        K::OutOfMemory => &["runtime.outofmemory", "heap.reserve", "heap.invalid"],
+        K::JvmArguments => &["heap.invalid", "jvm.option.invalid", "jvm.option.space"],
+        K::JavaVersion => &["java.class.version", "java.class.version.mismatch", "java.too.new", "java.openj9"],
+        K::GameFiles => &[
+            "files.missing.assets",
+            "files.corrupt.jar",
+            "files.class.notfound",
+            "files.no.main.class",
+        ],
+        K::Graphics => &["gpu.opengl", "gpu.gl.function", "gpu.driver"],
+        K::Mods => &[
+            "mods.mixin",
+            "mods.duplicate",
+            "mods.missing.dependency",
+            "mods.incompatible",
+            "mods.forge.dependency",
+        ],
+        // 本地库缺失是「装系统包」的问题，不是「模组坏了」。
+        K::NativeLibrary => &[],
+        K::FileAccess => &["files.access.denied"],
+        K::ExternalKill => &["runtime.killed"],
+        K::NoDisplay => &["runtime.headless"],
+        // 未知类别不筛选：交给关键词兜底。
+        K::Unknown => &[
+            "heap.invalid",
+            "heap.reserve",
+            "jvm.option.invalid",
+            "jvm.option.space",
+            "java.class.version",
+            "java.class.version.mismatch",
+            "java.too.new",
+            "java.openj9",
+            "files.missing.assets",
+            "files.corrupt.jar",
+            "files.class.notfound",
+            "files.no.main.class",
+            "files.access.denied",
+            "gpu.opengl",
+            "gpu.gl.function",
+            "gpu.driver",
+            "mods.mixin",
+            "mods.duplicate",
+            "mods.missing.dependency",
+            "mods.incompatible",
+            "mods.forge.dependency",
+            "runtime.killed",
+            "runtime.headless",
+            "runtime.outofmemory",
+        ],
+    }
+}

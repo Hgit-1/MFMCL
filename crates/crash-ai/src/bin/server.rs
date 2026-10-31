@@ -222,6 +222,8 @@ async fn route(request: &Request, state: &AppState) -> Response {
         ("GET", "/app.js") => Response::text(200, "text/javascript; charset=utf-8", WEB_APP_JS),
         ("GET", "/style.css") => Response::text(200, "text/css; charset=utf-8", WEB_STYLE),
         ("GET", "/api/health") => health(state).await,
+        ("GET", "/api/sources") => sources().await,
+        ("POST", "/api/read") => read_controlled(request).await,
         ("POST", "/api/analyse") => analyse(request, state).await,
         (_, "/api/analyse") => Response::error(405, "只接受 POST"),
         _ => Response::error(404, "没有这个地址"),
@@ -283,9 +285,23 @@ async fn analyse(request: &Request, state: &AppState) -> Response {
         return Response::error(400, "日志为空");
     }
 
+    /*
+     * 补齐硬件信息。
+     *
+     * 调用方（页面）拿不到本机硬件，所以由服务自己探测。这也让「资源不足」的
+     * 判断有真实依据——而不是让模型去猜。
+     *
+     * 只在调用方没有提供时补：桌面版会把更精确的硬件信息（含实例所在磁盘空间）
+     * 一起传进来，那种情况不该被这里的探测覆盖。
+     */
+    let mut environment = parsed.environment;
+    if environment.hardware.is_none() {
+        environment.hardware = Some(crash_ai::hardware::detect());
+    }
+
     let started = std::time::Instant::now();
     let analysis =
-        crash_ai::analyse(&parsed.log, &parsed.environment, &state.config, parsed.use_model).await;
+        crash_ai::analyse(&parsed.log, &environment, &state.config, parsed.use_model).await;
     println!(
         "analyse: {} bytes, model={}, findings={}, {} ms",
         parsed.log.len(),
@@ -307,4 +323,144 @@ async fn analyse(request: &Request, state: &AppState) -> Response {
         );
     }
     Response::json(200, value)
+}
+
+// ---------------------------------------------------------------------------
+// 受控文件读取
+// ---------------------------------------------------------------------------
+
+/// 允许读取的根目录。
+///
+/// ## 为什么是白名单根目录，而不是「任意路径 + 校验」
+///
+/// 这个服务会在用户本机跑，如果它能读任意文件，任何能访问 8790 端口的进程就能
+/// 借它读走 `~/.ssh/id_rsa`。所以读取被限定在启动器自己的数据根下：
+///
+///   - `MFMCL_MINECRAFT_DIR` 指定的目录（默认 `~/.minecraft`）
+///   - 当前工作目录下的 `crash-reports`
+///
+/// 判定用的是 **canonicalize 之后的前缀比较**，而不是字符串比较：`../` 与符号
+/// 链接都能绕过字面前缀，但绕不过真实路径。
+fn allowed_roots() -> Vec<std::path::PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(value) = std::env::var("MFMCL_MINECRAFT_DIR") {
+        let path = std::path::PathBuf::from(value);
+        if let Ok(real) = path.canonicalize() {
+            roots.push(real);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let path = std::path::PathBuf::from(home).join(".minecraft");
+        if let Ok(real) = path.canonicalize() {
+            roots.push(real);
+        }
+    }
+    if let Ok(real) = std::env::current_dir() {
+        roots.push(real);
+    }
+    roots
+}
+
+/// 判定一个路径是否在允许范围内，并返回其真实路径。
+fn resolve_allowed(path: &str) -> Result<std::path::PathBuf, String> {
+    let candidate = std::path::PathBuf::from(path);
+    if !candidate.is_absolute() {
+        return Err("需要绝对路径".into());
+    }
+    let real = candidate
+        .canonicalize()
+        .map_err(|error| format!("无法解析路径：{error}"))?;
+    if !real.starts_with("/") {
+        return Err("路径无效".into());
+    }
+    let roots = allowed_roots();
+    if !roots.iter().any(|root| real.starts_with(root)) {
+        return Err(format!(
+            "拒绝读取该路径：它不在允许的范围内（{}）",
+            roots.iter().map(|root| root.display().to_string()).collect::<Vec<_>>().join("、")
+        ));
+    }
+    if !real.is_file() {
+        return Err("不是一个文件".into());
+    }
+    Ok(real)
+}
+
+/// 列出可用的崩溃报告，让页面不必让用户自己找路径。
+///
+/// 只扫描允许根目录下的 `versions/*/crash-reports/*.txt`，不递归进任意位置。
+async fn sources() -> Response {
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for root in allowed_roots() {
+        let versions = root.join("versions");
+        let Ok(entries) = std::fs::read_dir(&versions) else { continue };
+        for entry in entries.flatten() {
+            let reports = entry.path().join("crash-reports");
+            let Ok(files) = std::fs::read_dir(&reports) else { continue };
+            for file in files.flatten() {
+                let path = file.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("txt") {
+                    continue;
+                }
+                let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+                if !name.starts_with("crash-") {
+                    continue;
+                }
+                let size = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+                let modified = file
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                found.push(serde_json::json!({
+                    "instance": entry.file_name().to_string_lossy(),
+                    "name": name,
+                    "path": path.to_string_lossy(),
+                    "bytes": size,
+                    "modified": modified,
+                }));
+            }
+        }
+    }
+    // 最近修改的排前面：用户要找的几乎总是刚崩溃的那次。
+    found.sort_by(|a, b| b["modified"].as_u64().cmp(&a["modified"].as_u64()));
+    Response::json(200, serde_json::json!({ "reports": found }))
+}
+
+#[derive(serde::Deserialize)]
+struct ReadRequest {
+    path: String,
+}
+
+/// 读取一个崩溃报告。路径必须落在允许的根目录内。
+async fn read_controlled(request: &Request) -> Response {
+    let parsed: ReadRequest = match serde_json::from_slice(&request.body) {
+        Ok(value) => value,
+        Err(error) => return Response::error(400, &format!("请求格式无效：{error}")),
+    };
+    let path = match resolve_allowed(&parsed.path) {
+        Ok(path) => path,
+        Err(message) => return Response::error(403, &message),
+    };
+    /*
+     * 崩溃报告可能非常大（含完整模组列表）。超过分析上限的部分由分析器自己截断，
+     * 但读入内存前先挡掉明显过大的文件，避免一次读几百 MB。
+     */
+    let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+    if size > (crash_ai::MAX_LOG_BYTES as u64) * 2 {
+        return Response::error(413, "文件过大");
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(content) => Response::json(
+            200,
+            serde_json::json!({
+                "path": path.to_string_lossy(),
+                "name": path.file_name().and_then(|value| value.to_str()).unwrap_or(""),
+                "content": content,
+            }),
+        ),
+        Err(error) => Response::error(500, &format!("无法读取文件：{error}")),
+    }
 }

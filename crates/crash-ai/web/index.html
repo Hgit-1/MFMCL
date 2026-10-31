@@ -57,6 +57,23 @@
         </label>
       </div>
 
+      <!--
+        本机崩溃报告。从允许的根目录里列出，用户不必自己找路径。
+        只在服务端能读到 .minecraft 时出现——读不到就不显示一个空的下拉框。
+      -->
+      <div class="reports" id="reports" hidden>
+        <label class="reports-label" for="report-select">本机崩溃报告</label>
+        <select id="report-select">
+          <option value="">选择一份最近的崩溃报告…</option>
+        </select>
+      </div>
+
+      <!--
+        硬件状态。它是「这台机器是不是根本带不动」的唯一依据，
+        所以位置固定、不折叠：一个折叠起来的「资源不足」等于没说。
+      -->
+      <div class="hardware" id="hardware" hidden></div>
+
       <details class="env">
         <summary>环境信息（可选，能显著提高准确度）</summary>
         <div class="env-grid">

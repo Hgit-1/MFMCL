@@ -79,7 +79,24 @@ pub async fn crash_ai_analyse(
         return Err("日志为空。".into());
     }
     let config = state.config.clone();
-    let environment = environment.unwrap_or_default();
+    let mut environment = environment.unwrap_or_default();
+
+    /*
+     * 补齐硬件信息。
+     *
+     * 桌面版是唯一能拿到真实机器数据的地方，所以硬件判断必须在这里补，而不是
+     * 让界面或模型去猜。只在调用方没提供时补——实例级的信息（磁盘剩余空间）
+     * 由调用方填得更准。
+     *
+     * 探测走 `spawn_blocking`：它会读 `lspci` 与 sysinfo，是阻塞操作，不该占用
+     * 异步运行时的工作线程。
+     */
+    if environment.hardware.is_none() {
+        environment.hardware = tauri::async_runtime::spawn_blocking(crash_ai::hardware::detect)
+            .await
+            .ok();
+    }
+
     Ok(crash_ai::analyse(&log, &environment, &config, use_model.unwrap_or(true)).await)
 }
 
@@ -167,4 +184,92 @@ pub struct InstanceReport {
     pub found: bool,
     pub name: Option<String>,
     pub content: Option<String>,
+}
+
+/// 列出可分析的本机崩溃报告。
+///
+/// ## 为什么把扫描放在后端
+///
+/// 浏览器预览没有文件系统访问权，而桌面版可以。把这个能力放在命令里，界面在两种
+/// 环境下行为一致：能拿到列表就显示选择器，拿不到就让用户自己粘贴。
+///
+/// 只扫允许的位置——实例的 `crash-reports` 与 Minecraft 目录下的 `versions`。
+/// 不接受任意路径参数：那会让这个命令变成「读任意文件」的入口。
+#[tauri::command]
+pub async fn crash_ai_local_reports(
+    store: State<'_, launcher_core::LauncherStore>,
+    extra_roots: Option<Vec<String>>,
+) -> Result<Vec<LocalReport>, String> {
+    let mut reports: Vec<LocalReport> = Vec::new();
+
+    // 1. 启动器管理的实例。
+    if let Ok(instances) = store.list_instances() {
+        for instance in instances {
+            collect_reports(&instance.game_dir.join("crash-reports"), &instance.name, &mut reports);
+        }
+    }
+
+    /*
+     * 2. 额外根目录。
+     *
+     * 用户在设置里可能指定了一个自己管理的 `.minecraft`。传进来的路径同样只用于
+     * 拼 versions 下的 crash-reports，不会被当作任意文件路径打开。
+     */
+    for root in extra_roots.unwrap_or_default().into_iter().take(4) {
+        let versions = std::path::PathBuf::from(&root).join("versions");
+        let Ok(entries) = std::fs::read_dir(&versions) else { continue };
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            collect_reports(&entry.path().join("crash-reports"), &name, &mut reports);
+        }
+    }
+
+    // 最近修改的排前面。
+    reports.sort_by(|a, b| b.modified.cmp(&a.modified));
+    Ok(reports)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalReport {
+    pub instance: String,
+    pub name: String,
+    pub path: String,
+    pub bytes: u64,
+    pub modified: u64,
+}
+
+fn collect_reports(directory: &std::path::Path, instance: &str, out: &mut Vec<LocalReport>) {
+    let Ok(entries) = std::fs::read_dir(directory) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("txt") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_owned();
+        if !name.starts_with("crash-") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else { continue };
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        out.push(LocalReport {
+            instance: instance.to_owned(),
+            name,
+            path: path.to_string_lossy().into_owned(),
+            bytes: metadata.len(),
+            modified,
+        });
+    }
 }

@@ -20,6 +20,54 @@ let lastAnalysis = null;
  * 打开页面就问，而不是等到第一次分析才发现模型没起。用户看到一个「模型未连接」
  * 的标记，就知道该启动 llama.cpp，而不是对着一句「分析失败」猜。
  */
+/**
+ * 列出本机崩溃报告。
+ *
+ * 服务端只扫描它被允许的目录（`MFMCL_MINECRAFT_DIR` 与 `~/.minecraft`）。读不到
+ * 就把整块藏起来——显示一个空下拉框会让用户以为功能坏了。
+ */
+async function loadReports() {
+  try {
+    const response = await fetch('/api/sources');
+    const data = await response.json();
+    const reports = data.reports || [];
+    if (reports.length === 0) return;
+    const select = $('report-select');
+    for (const report of reports) {
+      const option = document.createElement('option');
+      option.value = report.path;
+      const size = formatBytes(report.bytes);
+      option.textContent = `${report.instance} · ${report.name} (${size})`;
+      select.appendChild(option);
+    }
+    $('reports').hidden = false;
+  } catch {
+    // 服务端不支持时静默：用户还可以粘贴日志。
+  }
+}
+
+async function loadReport(path) {
+  if (!path) return;
+  try {
+    const response = await fetch('/api/read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      $('log').value = `无法读取：${data.error || response.status}`;
+      updateLogMeta();
+      return;
+    }
+    $('log').value = data.content;
+    updateLogMeta();
+  } catch (error) {
+    $('log').value = `无法读取：${error}`;
+    updateLogMeta();
+  }
+}
+
 async function checkHealth() {
   const status = $('status');
   const text = $('status-text');
@@ -165,11 +213,100 @@ const CONFIDENCE_LABEL = {
   guess: '推测',
 };
 
+const VERDICT_LABEL = {
+  hopeless: '这台电脑无法运行这个整合包',
+  tight: '这台电脑比较吃力',
+  adequate: '这台电脑够用',
+  ample: '这台电脑绰绰有余',
+};
+
+/**
+ * 硬件结论。
+ *
+ * 「彻底带不动」是这里唯一会阻止用户继续调设置的信息，所以它必须显眼，
+ * 并且给出的是「为什么不可能」而不是「可能有点慢」。
+ */
+function renderHardware(capability) {
+  if (!capability || !capability.detected) return '';
+  const verdict = capability.verdict;
+  const rows = capability.assessments
+    .map(item => `<div class="hardware-row">
+        <b>${escapeHtml(resourceLabel(item.resource))}</b>
+        <span class="measured">${escapeHtml(item.measured)}</span>
+        <span>／ 需要 ${escapeHtml(item.required)}</span>
+      </div>`)
+    .join('');
+  const advice = (capability.advice || []).length
+    ? `<ul class="hardware-advice">${capability.advice.map(a => `<li>${escapeHtml(a)}</li>`).join('')}</ul>`
+    : '';
+  return `<div class="hardware" data-verdict="${verdict}">
+      <div class="hardware-head">${escapeHtml(VERDICT_LABEL[verdict] || verdict)}</div>
+      ${rows}
+      ${advice}
+    </div>`;
+}
+
+function resourceLabel(resource) {
+  return {
+    memory: '物理内存',
+    heap: '分配的堆内存',
+    cpu: 'CPU',
+    gpu: '显卡',
+    disk: '磁盘',
+    display: '显示环境',
+  }[resource] || resource;
+}
+
+/** 因果结论：从堆栈里读出来的「是什么问题」。 */
+function renderCause(cause) {
+  if (!cause || cause.kind === 'unknown') return '';
+  const mods = (cause.modFailures || []).slice(0, 8);
+  const modList = mods.length
+    ? `<div class="mod-failures">${mods
+        .map(m => `<div><code>${escapeHtml(m.modId)}</code> <span>${escapeHtml(m.message)}</span></div>`)
+        .join('')}</div>`
+    : '';
+  return `<div class="cause-bar">
+      <div>
+        <strong>${escapeHtml(reasonHeadline(cause))}</strong>
+        <p>${escapeHtml(cause.reason)}</p>
+        ${modList}
+      </div>
+    </div>`;
+}
+
+function reasonHeadline(cause) {
+  return {
+    systemLimit: '问题在操作系统，不在游戏',
+    outOfMemory: '游戏内存不足',
+    jvmArguments: 'JVM 启动参数无效',
+    javaVersion: 'Java 版本不匹配',
+    gameFiles: '游戏文件缺失或损坏',
+    graphics: '图形栈/显卡问题',
+    mods: '模组加载失败',
+    nativeLibrary: '缺少系统依赖库',
+    fileAccess: '文件访问被拒绝',
+    externalKill: '进程被外部终止',
+    noDisplay: '没有可用的图形会话',
+  }[cause.kind] || '未知原因';
+}
+
 function render(data, elapsedMs) {
   const result = $('result');
   result.className = 'result';
 
+  // 硬件状态放在最上面：如果机器根本带不动，其他内容都不重要。
+  const hardware = $('hardware');
+  const hardwareHtml = renderHardware(data.capability);
+  if (hardwareHtml) {
+    hardware.hidden = false;
+    hardware.outerHTML = hardwareHtml.replace('class="hardware"', 'class="hardware" id="hardware"');
+  }
+
   const parts = [];
+
+  // 因果结论先于规则清单：它是权威结论，规则是它的展开。
+  parts.push(renderCause(data.cause));
 
   // 概要：一句话说清有多少条结论、几行日志、用了多少时间。
   const findings = data.findings || [];
@@ -184,7 +321,7 @@ function render(data, elapsedMs) {
     )}</div>`);
   }
 
-  if (findings.length === 0) {
+  if (findings.length === 0 && (!data.cause || data.cause.kind === 'unknown')) {
     parts.push(`
       <div class="none">
         <strong>没有匹配到已知的崩溃特征</strong>
@@ -301,7 +438,12 @@ java.lang.OutOfMemoryError: Java heap space
 
 function init() {
   void checkHealth();
+  void loadReports();
   wireDrop();
+
+  $('report-select').addEventListener('change', event => {
+    void loadReport(event.target.value);
+  });
 
   $('log').addEventListener('input', updateLogMeta);
   $('file').addEventListener('change', event => void readFile(event.target.files?.[0]));

@@ -73,9 +73,10 @@ pub async fn narrate(
     config: &LlmConfig,
     facts: &crate::LogFacts,
     findings: &[crate::Finding],
+    cause: Option<&crate::causes::Cause>,
     environment: &crate::Environment,
 ) -> Result<Narrative, LlmError> {
-    let user_prompt = prompt::build(facts, findings, environment);
+    let user_prompt = prompt::build(facts, findings, cause, environment);
 
     let body = serde_json::json!({
         "model": config.model,
@@ -179,7 +180,13 @@ pub async fn narrate(
      * model's steps are kept — but the whole narrative is labelled speculative
      * in the UI, because that is what it is.
      */
-    let rules_matched = !findings.is_empty();
+    /*
+     * 有确定的因果结论（非 Unknown）也算「规则命中」：那种情况下我们同样有
+     * 可信的、人工整理过的建议，不该让模型自己发挥。
+     */
+    let confirmed = !findings.is_empty()
+        || cause.is_some_and(|item| item.kind != crate::causes::CauseKind::Unknown);
+    let rules_matched = confirmed;
     let (steps, source) = if rules_matched {
         let curated: Vec<String> = findings
             .iter()

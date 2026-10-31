@@ -1145,6 +1145,7 @@ pub fn run() {
             crash_ai::crash_ai_status,
             crash_ai::crash_ai_analyse,
             crash_ai::crash_ai_instance_report,
+            crash_ai::crash_ai_local_reports,
         ])
         .run(tauri::generate_context!())
         .expect("MFMCL desktop application failed");

@@ -597,3 +597,135 @@ button {
   color: var(--text-3);
   font-size: 11px;
 }
+
+/* --- 本机崩溃报告选择 ---------------------------------------------------- */
+
+.reports {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.reports-label {
+  flex: none;
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+
+.reports select {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  outline: none;
+}
+
+.reports select:focus { border-color: var(--accent); }
+
+/* --- 硬件状态 ------------------------------------------------------------ */
+
+/*
+ * 「彻底带不动」用整块警告呈现，而不是和其他提示同级。
+ * 用户看到它就应该停止调设置——继续尝试只会浪费时间。
+ */
+.hardware {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.hardware[data-verdict="hopeless"] {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: var(--danger-soft);
+}
+
+.hardware[data-verdict="tight"] {
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
+  background: var(--warn-soft);
+}
+
+.hardware-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.hardware[data-verdict="hopeless"] .hardware-head { color: var(--danger); }
+.hardware[data-verdict="tight"] .hardware-head { color: var(--warn); }
+.hardware[data-verdict="ample"] .hardware-head,
+.hardware[data-verdict="adequate"] .hardware-head { color: var(--ok); }
+
+/* 每项资源一行，等宽对齐，便于横向比较「有多少 vs 要多少」。 */
+.hardware-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.hardware-row b {
+  flex: 0 0 52px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.hardware-row .measured { color: var(--text); }
+
+.hardware-advice {
+  margin: 2px 0 0;
+  padding-left: 16px;
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+
+/* 因果结论条：一句话说明「是什么问题」，位置在 findings 之上。 */
+.cause-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+
+.cause-bar strong { font-size: 13px; }
+.cause-bar p { margin: 3px 0 0; color: var(--text-2); font-size: 12px; }
+
+/* 模组失败列表：每条一行，等宽 id + 说明。 */
+.mod-failures {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 11px;
+}
+
+.mod-failures code {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.mod-failures span { color: var(--text-2); }

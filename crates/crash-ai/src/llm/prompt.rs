@@ -20,6 +20,7 @@
 // something even a small model follows most of the time, and when it does not,
 // the whole answer still degrades to an explanation rather than being lost.
 
+use crate::causes::{Cause, CauseKind};
 use crate::{Environment, Finding, LogFacts};
 
 /// The system message. Kept under ~120 words on purpose.
@@ -41,7 +42,12 @@ pub const SYSTEM: &str = "\
 置信度：高/中/低";
 
 /// Build the user message.
-pub fn build(facts: &LogFacts, findings: &[Finding], environment: &Environment) -> String {
+pub fn build(
+    facts: &LogFacts,
+    findings: &[Finding],
+    cause: Option<&Cause>,
+    environment: &Environment,
+) -> String {
     let mut out = String::with_capacity(2048);
 
     out.push_str("## 环境\n");
@@ -70,6 +76,24 @@ pub fn build(facts: &LogFacts, findings: &[Finding], environment: &Environment) 
         out.push_str(&format!("- 模组数量：{count}\n"));
     }
     out.push('\n');
+
+    /*
+     * 因果结论放在最前。
+     *
+     * 它是从堆栈里读出来的（抛出的异常 + 最近的帧），比关键词可靠。模型拿到
+     * 「原因已确定」这个前提后，任务就简化成「解释并给建议」，而不是自己诊断。
+     * 实测这一条对 1.7B 的输出质量影响很大。
+     */
+    if let Some(cause) = cause
+        && cause.kind != CauseKind::Unknown
+    {
+        out.push_str("## 已确定的根本原因（从堆栈分析得出，不要推翻）\n");
+        out.push_str(&format!("类别：{}\n", kind_label(cause.kind)));
+        if let Some(exception) = &cause.root_exception {
+            out.push_str(&format!("最内层异常：{exception}\n"));
+        }
+        out.push_str(&format!("判断依据：{}\n\n", cause.reason));
+    }
 
     /*
      * Findings are stated as established facts.
@@ -104,6 +128,24 @@ pub fn build(facts: &LogFacts, findings: &[Finding], environment: &Environment) 
     out.push_str("\n```\n");
 
     out
+}
+
+/// 类别 → 给模型看的中文名。
+fn kind_label(kind: CauseKind) -> &'static str {
+    match kind {
+        CauseKind::SystemLimit => "操作系统资源上限",
+        CauseKind::OutOfMemory => "游戏内存不足",
+        CauseKind::JvmArguments => "JVM 启动参数无效",
+        CauseKind::JavaVersion => "Java 版本不匹配",
+        CauseKind::GameFiles => "游戏文件缺失或损坏",
+        CauseKind::Graphics => "图形栈/显卡问题",
+        CauseKind::Mods => "模组加载失败",
+        CauseKind::NativeLibrary => "本地依赖库缺失",
+        CauseKind::FileAccess => "文件访问被拒绝",
+        CauseKind::ExternalKill => "进程被外部终止",
+        CauseKind::NoDisplay => "缺少图形会话",
+        CauseKind::Unknown => "未确定",
+    }
 }
 
 fn clip(text: &str, limit: usize) -> String {
@@ -141,14 +183,14 @@ mod tests {
             evidence: vec!["java.lang.OutOfMemoryError".into()],
             mods: vec![],
         };
-        let prompt = build(&facts(), &[finding], &Environment::default());
+        let prompt = build(&facts(), &[finding], None, &Environment::default());
         assert!(prompt.contains("已经确认，不要反驳"));
         assert!(prompt.contains("内存不足"));
     }
 
     #[test]
     fn empty_findings_ask_for_a_low_confidence_guess() {
-        let prompt = build(&facts(), &[], &Environment::default());
+        let prompt = build(&facts(), &[], None, &Environment::default());
         assert!(prompt.contains("规则没有匹配"));
         assert!(prompt.contains("“低”"));
     }
@@ -161,7 +203,7 @@ mod tests {
             loader: Some("Fabric".into()),
             ..Default::default()
         };
-        let prompt = build(&facts(), &[], &environment);
+        let prompt = build(&facts(), &[], None, &environment);
         assert!(prompt.contains("2048 MB"));
         assert!(prompt.contains("32 位"));
         assert!(prompt.contains("Fabric"));
@@ -169,7 +211,7 @@ mod tests {
 
     #[test]
     fn log_excerpt_is_fenced() {
-        let prompt = build(&facts(), &[], &Environment::default());
+        let prompt = build(&facts(), &[], None, &Environment::default());
         assert!(prompt.contains("```\njava.lang.OutOfMemoryError"));
     }
 }

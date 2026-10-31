@@ -5,6 +5,101 @@
 - 页面：`http://127.0.0.1:8790/`（独立服务，供设计评审）
 - 后端：`crates/crash-ai`（库 + 独立服务 + CLI），同一份代码也接进了桌面版
 
+## 架构演进：从关键词匹配到堆栈因果分析
+
+第一版用关键词规则匹配（「日志里出现 mixin 就报 mixin 失败」）。在**真实崩溃报告**
+上这个做法失效了，而且失效的方式很有害：
+
+```text
+crash-2026-08-20_13.43.14-client.txt
+  java.io.IOException: User limit of inotify instances reached
+  	at ...FileWatcher$WatchedDir.<init>
+  	at net.minecraftforge.fml.config.ConfigTracker.openConfig
+  	at ... {re:mixin}              ← Forge 给每一帧都加这个标记
+```
+
+真实原因是**操作系统的 inotify 实例上限**。但堆栈上密密麻麻全是 `{re:mixin}`
+（Forge 对每个被改写的帧都这样标注），关键词规则于是报「Mixin 注入失败」——用户
+会去挨个关模组，而真正该做的是 `sysctl fs.inotify.max_user_instances=1024`。
+
+现在改为两条互补的通道：
+
+| 通道 | 输入 | 用途 |
+| --- | --- | --- |
+| `causes.rs` 堆栈因果分析 | 异常链 + 帧 | **决定是什么问题**（权威） |
+| `rules.rs` 关键词规则 | 全文 | 在因果分析无结论时兜底；有结论时只保留相关条目 |
+
+关键规则：**因果分析确定类别后，与之无关的关键词规则一律丢弃**。「相关」的判断标准
+是「修复动作是否相同」——inotify 上限和 mixin 失败需要完全不同的处理，所以不相关。
+
+因果分析读三样东西，都不是关键词：
+
+1. **异常链**：每个 `Caused by:` 是更深一层，**最内层**才是根因。外层
+   `RuntimeException` 包一个 `IOException` 是常态。
+2. **抛出的那一帧**：离抛出点最近的、未被插桩的帧属于真正失败的代码。
+3. **插桩标记是噪声**：`{re:mixin}`、`pl:mixin:`、`TRANSFORMER/` 表示「这帧被改写过」，
+   不表示「这帧失败了」。把它们当作证据正是上面那个 bug 的成因。
+
+## 没有 Java 异常的情况
+
+`hs_err_pid`（JVM 原生崩溃）与看门狗超时都不抛 Java 异常。它们以前会落到「未知」，
+而这两类恰恰最难让用户自己看懂：
+
+- **hs_err**：`# A fatal error has been detected` + `Problematic frame` 指向出事的模块。
+  如果是显卡驱动（`nvoglv` / `atio` / `opengl32`），结论就是显卡问题。
+- **看门狗超时**：`ThreadDeath` + `watchdog`，说明服务器线程被判定卡死。
+
+## Forge 的 `-- MOD xxx --` 块
+
+模组加载失败时，Forge 把真正的原因写在这些块里，而不是异常里：
+
+```text
+-- MOD ktice --
+	Failure message: Mod ktice requires tconstruct 3.5.2 or above
+```
+
+不解析它们，结论就只能停在「模组加载失败」。现在会提取每个模组的 id、缺失的依赖、
+要求的版本，并把它们作为证据列出来。真实报告里有 27 条。
+
+## 硬件判断与「彻底带不动」
+
+服务端在每次分析时自动探测本机硬件（`hardware::detect`）：内存、CPU 核心数与主频、
+GPU 型号、是否有图形会话、是否软件渲染。
+
+判定是**相对当前整合包**的，不是绝对的：
+
+| 判定 | 含义 | 例子 |
+| --- | --- | --- |
+| `ample` | 绰绰有余 | 32 GB 跑 20 个模组 |
+| `adequate` | 够用 | — |
+| `tight` | 吃力但能跑 | 8 GB 跑 300 个模组 |
+| `hopeless` | **彻底带不动** | 2 GB 内存 / 单核 CPU / 内存不足所需的一半 |
+
+「彻底带不动」的门槛刻意保守：只有当差距**不可能**通过调设置弥补时才这么判——物理
+内存不到需求的一半、单核 CPU、低于 2 GB。措辞也不留余地：这类机器该听到的是「这个
+整合包不适合这台电脑」，而不是「试试减少模组」（后者会让用户反复失败）。
+
+两个易错点，都已经有测试钉住：
+
+- **严重度不能靠枚举顺序**。`Verdict` 的 derive 顺序（`Ample < Adequate < Tight <
+  Hopeless`）**不是**严重度顺序，早期用 `max()` 取最差项导致「24 GB 内存 + 2 核」
+  被判成 `Ample`（因为 `Ample > Tight`），唯一的内存警告被吞掉。现在用显式的
+  `severity()`。
+- **堆内存超配是设置问题，不是电脑太老**。给 8 GB 的机器分配 8 GB 会被判 `Tight`
+  而不是 `Hopeless`——调小一个数字就能解决。
+
+## 受控的文件读取
+
+服务支持读取本机崩溃报告，但**只限白名单根目录**：
+
+- `MFMCL_MINECRAFT_DIR` 或 `~/.minecraft`
+- 工作目录
+
+判定用 **canonicalize 之后的前缀比较**。`../` 和符号链接都能绕过字面前缀，但绕不过
+真实路径。实测 `/etc/passwd`、`~/.ssh/id_rsa`、`../../../etc/passwd` 全部被拒绝。
+
+`/api/sources` 只扫 `versions/*/crash-reports/crash-*.txt`，让用户不必自己找路径。
+
 ## 设计原则（评审时请先读这一节）
 
 一个 1.7B 的模型不能独立判断崩溃原因。实测中，它在内存溢出的日志上给出的建议是
