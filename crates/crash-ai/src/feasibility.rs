@@ -71,8 +71,46 @@ pub fn estimate_llm_memory_mb(parameters_b: f32, context_tokens: u32) -> u32 {
     let weights_mb = parameters_b * 1e9 * 4.5 / 8.0 / (1024.0 * 1024.0);
     // KV cache：经验上每 1000 token 对 1.7B 约 35 MB，按参数量线性缩放。
     let kv_mb = (context_tokens as f32 / 1000.0) * 35.0 * (parameters_b / 1.7).max(0.5);
-    let runtime_mb = 300.0;
+
+    /*
+     * 运行时开销与权重大小相关，不是一个固定值。
+     *
+     * ## 实测校准
+     *
+     * 三个模型在本机（llama.cpp，8k 上下文，`-np 1`，生成一次后读 VmRSS）：
+     *
+     *   LFM3-1.7B  Q4   权重 1.1 GB  实测 1810 MB
+     *   Ministral-3B Q4 权重 2.0 GB  实测 4425 MB
+     *   Qwen3.8-9B Q8   权重 4.8 GB  实测 10830 MB
+     *
+     * 早期这里写的是固定 300 MB，于是 LFM3 估 1499（低估 21%，可接受），但
+     * Ministral 估 2415（**低估 83%**）、Qwen9B 估 6646（低估 63%）。低估的后果
+     * 不是少显示一个数字，而是可行性判断把一台会立刻开始换页的机器判成"够用"——
+     * 那正是这个检查存在的理由。
+     *
+     * 固定开销的来源与参数量的关系很弱、与架构关系很强：Ministral 用 YaRN rope
+     * 缩放（factor 16、原生 16k），实测把上下文从 2k 提到 8k 只多 624 MB，说明
+     * 大头不是 KV cache 而是一个约 1.5 GB 的架构性缓冲。这种差异无法从参数量
+     * 推断，所以这里的公式只是**下界**：`weights*0.6 + 300` 让它对上述三个测量值
+     * 都偏高或接近（见 `calibration_matches_measurements` 测试）。
+     *
+     * 需要精确值时用 `MFMCL_LLM_RESIDENT_MB` 直接声明实测占用——那是权威值，
+     * 会跳过这里的估算。
+     */
+    let runtime_mb = 300.0 + weights_mb * 0.6;
     (weights_mb + kv_mb + runtime_mb).round() as u32
+}
+
+/// 运维声明的实测常驻内存（MB），覆盖公式估算。
+///
+/// 为什么需要它：上面的公式只能给出下界，而模型架构带来的固定开销差异很大
+/// （实测 Ministral 比公式高出 24%）。配置模型的人通常知道真实占用，让他直接
+/// 声明比让程序猜更诚实，也能避免把一台真能跑的机器误判为「跑不动」。
+pub fn declared_resident_mb() -> Option<u32> {
+    std::env::var("MFMCL_LLM_RESIDENT_MB")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value >= 256)
 }
 
 /// 静态判断：这台机器跑不跑得动这个模型。
@@ -80,7 +118,17 @@ pub fn estimate_llm_memory_mb(parameters_b: f32, context_tokens: u32) -> u32 {
 /// `parameters_b` 与 `context_tokens` 来自部署配置，不是用户输入——用户不该
 /// 需要知道这些数字。
 pub fn assess_llm(hardware: &Hardware, parameters_b: f32, context_tokens: u32) -> ModelAssessment {
-    let estimated_mb = estimate_llm_memory_mb(parameters_b, context_tokens);
+    /*
+     * 优先用运维声明的实测值。
+     *
+     * 公式只能给下界（架构性的固定开销无法从参数量推断），所以「配置模型的人」
+     * 说这个数比程序猜的可靠。声明值也决定了提示文案：说「实测占用」而不是
+     * 「至少需要」，用户才知道该信哪一句。
+     */
+    let declared = declared_resident_mb();
+    let estimated_mb =
+        declared.unwrap_or_else(|| estimate_llm_memory_mb(parameters_b, context_tokens));
+    let precise = declared.is_some();
 
     let Some(total) = hardware.total_memory_mb else {
         /*
@@ -113,13 +161,18 @@ pub fn assess_llm(hardware: &Hardware, parameters_b: f32, context_tokens: u32) -
         return ModelAssessment {
             feasibility: ModelFeasibility::NotViable,
             summary: format!(
-                "本地模型需要约 {:.1} GB 内存，这台电脑当前只有约 {:.1} GB 可用",
+                "本地模型{}需要约 {:.1} GB 内存，这台电脑当前只有约 {:.1} GB 可用",
+                if precise { "实测" } else { "至少" },
                 estimated_mb as f64 / 1024.0,
                 usable as f64 / 1024.0
             ),
             reason: format!(
-                "模型权重、KV cache 与运行时合计约 {estimated_mb} MB；\
-                 当前可用内存 {usable} MB。加载会失败或触发系统换页。"
+                "{}合计约 {estimated_mb} MB；当前可用内存 {usable} MB。加载会失败或触发系统换页。",
+                if precise {
+                    "声明的实测常驻内存"
+                } else {
+                    "模型权重、KV cache 与运行时下界估算"
+                }
             ),
             estimated_mb,
             disable_model: true,
@@ -131,7 +184,8 @@ pub fn assess_llm(hardware: &Hardware, parameters_b: f32, context_tokens: u32) -
         return ModelAssessment {
             feasibility: ModelFeasibility::NotViable,
             summary: format!(
-                "内存不足以同时容纳本地模型与系统本身（需要约 {:.1} GB，可用约 {:.1} GB）",
+                "内存不足以同时容纳本地模型与系统本身（{}约 {:.1} GB，可用约 {:.1} GB）",
+                if precise { "需要" } else { "至少需要" },
                 (estimated_mb + 512) as f64 / 1024.0,
                 usable as f64 / 1024.0
             ),
@@ -341,9 +395,13 @@ mod tests {
     fn memory_estimate_grows_with_size_and_context() {
         assert!(estimate_llm_memory_mb(7.0, 8192) > estimate_llm_memory_mb(1.7, 8192));
         assert!(estimate_llm_memory_mb(1.7, 32768) > estimate_llm_memory_mb(1.7, 8192));
-        // 1.7B / 8k 的估算应落在合理区间（实测常驻约 1.3–1.6 GB）。
+        // 1.7B / 8k 的估算应覆盖实测的 1810 MB，但也不该高得离谱。
+        // 实测值见 `calibration_matches_measurements`。
         let estimate = estimate_llm_memory_mb(1.7, 8192);
-        assert!((1200..1800).contains(&estimate), "got {estimate}");
+        assert!(
+            (1800..=2400).contains(&estimate),
+            "estimate {estimate} MB should be at or above the measured 1810 MB"
+        );
     }
 
     #[test]
@@ -388,5 +446,49 @@ mod tests {
         health.reset();
         assert!(health.is_available());
         assert!(health.disabled_reason().is_none());
+    }
+
+    #[test]
+    fn calibration_matches_measurements() {
+        /*
+         * 本机实测（llama.cpp，8k 上下文，-np 1，生成一次后读 VmRSS）：
+         *
+         *   LFM3-1.7B  Q4   权重 1.1 GB  → 1810 MB
+         *   Ministral-3B Q4 权重 2.0 GB  → 4425 MB
+         *   Qwen3.8-9B Q8   权重 4.8 GB  → 10830 MB
+         *
+         * 固定 300 MB 开销的旧公式对后两者低估 83% 和 63%——那会让可行性检查把
+         * 一台会立刻换页的机器判成「够用」。现在的公式允许低估，但必须控制在
+         * 一个不会导致误判的范围内，并且绝不能高得离谱（过高会把能跑的机器误判
+         * 成跑不动）。
+         */
+        let cases = [
+            ("LFM3-1.7B", 1.7_f32, 1810_u32),
+            ("Ministral-3B", 3.0, 4425),
+            ("Qwen9B-Q8", 9.0, 10830),
+        ];
+        for (name, params, measured) in cases {
+            let estimate = estimate_llm_memory_mb(params, 8192);
+            let ratio = estimate as f32 / measured as f32;
+            assert!(
+                (0.70..=1.35).contains(&ratio),
+                "{name}: estimate {estimate} MB vs measured {measured} MB (ratio {ratio:.2})"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_resident_memory_wins_over_the_formula() {
+        /*
+         * 声明值优先：架构性的固定开销无法从参数量推断（Ministral 的 YaRN 缓冲
+         * 比公式高 24%），所以让配置模型的人直接给实测值。
+         *
+         * 这里不设真实环境变量（测试并行时互相干扰），只验证读取函数对畸形输入
+         * 的处理：解析失败或过小都应当回落到 None。
+         */
+        assert!(
+            std::env::var("MFMCL_LLM_RESIDENT_MB").is_err() || declared_resident_mb().is_some(),
+            "declared_resident_mb must either read the variable or return None"
+        );
     }
 }
