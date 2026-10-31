@@ -329,32 +329,42 @@ fn open_instance_folder(
 /// 直接调用各平台的命令而不是引入 `tauri-plugin-opener`：只需要「打开目录」这一个
 /// 能力，引一个插件会顺带获得「打开任意路径/URL」的权限面，反而更难审计。
 fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    /*
+     * 按平台各写一个完整分支，而不是先建 `Command` 再统一 spawn。
+     *
+     * 之前的写法在 Windows 上无法编译：那个分支里 `return` 了，于是 `let mut
+     * command = { ... return ... }` 的初始化表达式类型被推断成 `!`（never），
+     * 后面那句 `command.spawn()` 就报 `no method named spawn found for type !`。
+     * Linux 上因为走的是另一个 cfg 分支，这个错误看不到——CI 的 Windows job
+     * 才暴露出来。
+     */
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new("explorer");
-        // explorer 对退出码不可靠（打开成功也可能返回非 0），所以忽略状态。
-        command.arg(path);
-        return command
+    {
+        // explorer 对退出码不可靠（打开成功也可能返回非 0），所以只看能否启动。
+        std::process::Command::new("explorer")
+            .arg(path)
             .spawn()
             .map(|_| ())
-            .map_err(|error| format!("无法打开文件管理器：{error}"));
-    };
+            .map_err(|error| format!("无法打开文件管理器：{error}"))
+    }
+
     #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = std::process::Command::new("open");
-        command.arg(path);
-        command
-    };
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开文件管理器（{error}）。可在设置里手动打开该目录。"))
+    }
+
     #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = {
-        let mut command = std::process::Command::new("xdg-open");
-        command.arg(path);
-        command
-    };
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("无法打开文件管理器（{error}）。可在设置里手动打开该目录。"))
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开文件管理器（{error}）。可在设置里手动打开该目录。"))
+    }
 }
 /// 在系统文件管理器中打开「直接下载」保存到的目录。
 ///
