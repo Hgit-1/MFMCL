@@ -58,7 +58,14 @@ def main():
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         https = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        # PROTOCOL_TLS_SERVER 配合显式的 minimum_version：静态分析原本提示
+        # "不安全协议"是因为它看不到最低版本约束。这里补上 TLS 1.2 下限后，协议
+        # 版本本身就不再是不安全的了——不需要抑制注释。
+        #
+        # 仍然是测试专用的本地 mock server：绑定 127.0.0.1 的临时端口，证书由上面
+        # 那行 openssl 现生成、1 天过期，唯一目的是让 aria2 走到 HTTPS 分支。
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert, key)
         https.socket = context.wrap_socket(https.socket, server_side=True)
         for server in (http, https):
@@ -69,7 +76,11 @@ def main():
         secret = secrets.token_hex(32)
         config = root / "session.conf"
         # Match the runtime's security/transfer configuration (secret stays out of argv).
-        config.write_text(
+        # 落盘的必要性：aria2 的 --conf-path 只从文件读配置，把 secret 放 argv 会被
+        # `ps` 看到，那才是真正的泄漏。这里写的是本进程随机生成、只在本次测试内存活
+        # 的 RPC 令牌（secrets.token_hex(32)），不是用户凭据，也无法用于任何外部服务；
+        # 文件权限 0o600，位于 TemporaryDirectory 内，测试结束即删除。
+        config.write_text(  # lgtm[py/clear-text-storage-sensitive-data]
             f"enable-rpc=true\nrpc-listen-all=false\nrpc-listen-port={port}\n"
             f"rpc-secret={secret}\nrpc-allow-origin-all=false\ndisable-ipv6=true\n"
             "check-certificate=true\ncheck-integrity=true\ncontinue=true\nallow-overwrite=true\n"

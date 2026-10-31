@@ -902,11 +902,13 @@ async fn launch_instance(
     let history_enabled = crate::plugin_runtime::is_enabled(&plugin_state, "launch-logger");
     let mut history_report = plan.report.clone();
     for failure in &backup_failures {
-        history_report.skipped.push(launcher_core::SkippedContribution {
-            plugin_id: failure.split(':').next().unwrap_or("plugin").to_owned(),
-            kind: launcher_core::ContributionKind::BackupBefore,
-            reason: "备份失败".into(),
-        });
+        history_report
+            .skipped
+            .push(launcher_core::SkippedContribution {
+                plugin_id: failure.split(':').next().unwrap_or("plugin").to_owned(),
+                kind: launcher_core::ContributionKind::BackupBefore,
+                reason: "备份失败".into(),
+            });
     }
     if history_enabled {
         let _ = store.record_launch_start(&launcher_core::LaunchHistoryEntry {
@@ -924,7 +926,11 @@ async fn launch_instance(
      * 历史被关掉时 `history_id` 是空串，`finish_launch` 不会命中任何行，等价于空操作。
      */
     let history_store = store.inner().clone();
-    let history_id_for_exit = if history_enabled { history_id } else { String::new() };
+    let history_id_for_exit = if history_enabled {
+        history_id
+    } else {
+        String::new()
+    };
     let stdout = child.stdout.take().ok_or("无法读取游戏输出。")?;
     let stderr = child.stderr.take().ok_or("无法读取游戏错误输出。")?;
     let stdout_task = tokio::spawn(consume_game_log(
@@ -981,7 +987,8 @@ async fn launch_instance(
         } else {
             "crashed"
         };
-        let _ = history_store.finish_launch(&history_id_for_exit, outcome, exit_code);        let _ = app.emit(
+        let _ = history_store.finish_launch(&history_id_for_exit, outcome, exit_code);
+        let _ = app.emit(
             "game-process",
             GameProcessEvent {
                 instance_id,

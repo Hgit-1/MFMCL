@@ -31,9 +31,9 @@
 //! 侧栏插槽）而不属于启动链路。它们**不应该**声明假的贡献，否则用户会看到一个
 //! 永远显示「已应用」却什么也没做的插件——那正是这次要修的问题。
 
-use launcher_core::plugins::{LaunchHistoryEntry, PluginDefinition, PluginState};
-use launcher_core::plugins as runtime;
 use launcher_core::LauncherStore;
+use launcher_core::plugins as runtime;
+use launcher_core::plugins::{LaunchHistoryEntry, PluginDefinition, PluginState};
 use tauri::State;
 
 /// 内置插件的贡献定义。
@@ -122,16 +122,15 @@ fn builtin_definitions(state: &PluginState) -> Vec<PluginDefinition> {
     };
 
     // 主题与界面类插件：效果在界面侧，启动链路里没有可执行的东西。
-    let presentation = |id: &str, version: &str, hooks: &[&str], permission: &str| {
-        PluginDefinition {
+    let presentation =
+        |id: &str, version: &str, hooks: &[&str], permission: &str| PluginDefinition {
             id: id.to_owned(),
             version: version.to_owned(),
             hooks: hooks.iter().map(|item| (*item).to_owned()).collect(),
             permissions: vec![permission.to_owned()],
             contributions: Vec::new(),
             incompatible: false,
-        }
-    };
+        };
 
     let _ = state;
     vec![
@@ -140,7 +139,12 @@ fn builtin_definitions(state: &PluginState) -> Vec<PluginDefinition> {
         conflict_detector,
         download_mirror,
         presentation("pink-theme", "1.0.0", &["theme"], "theme"),
-        presentation("performance-monitor", "1.1.2", &["launch", "sidebar"], "launchHook"),
+        presentation(
+            "performance-monitor",
+            "1.1.2",
+            &["launch", "sidebar"],
+            "launchHook",
+        ),
         /*
          * 旧版皮肤补丁：与当前启动器不兼容。
          *
@@ -234,12 +238,16 @@ pub fn plugin_save_state(
 /// 最近 200 次启动。
 #[tauri::command]
 pub fn launch_history(store: State<'_, LauncherStore>) -> Result<Vec<LaunchHistoryEntry>, String> {
-    store.list_launch_history().map_err(|error| error.to_string())
+    store
+        .list_launch_history()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub fn clear_launch_history(store: State<'_, LauncherStore>) -> Result<usize, String> {
-    store.clear_launch_history().map_err(|error| error.to_string())
+    store
+        .clear_launch_history()
+        .map_err(|error| error.to_string())
 }
 
 /**
@@ -261,7 +269,9 @@ pub fn plugin_preview(
     plugin_id: String,
     store: State<'_, LauncherStore>,
 ) -> Result<PluginPreview, String> {
-    let state = store.load_plugin_state().map_err(|error| error.to_string())?;
+    let state = store
+        .load_plugin_state()
+        .map_err(|error| error.to_string())?;
     let plugins = catalog(&state);
     let plugin = plugins
         .iter()

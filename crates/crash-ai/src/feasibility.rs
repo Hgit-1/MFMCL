@@ -104,7 +104,9 @@ pub fn assess_llm(hardware: &Hardware, parameters_b: f32, context_tokens: u32) -
      * 用「可用内存」而不是「总内存」比较：模型是在浏览器/游戏开着的时候跑的，
      * 那时候剩下的才是真实可用的。可用值读不到时退回总内存的 70%。
      */
-    let usable = hardware.available_memory_mb.unwrap_or((total as f64 * 0.7) as u32);
+    let usable = hardware
+        .available_memory_mb
+        .unwrap_or((total as f64 * 0.7) as u32);
 
     // 1. 内存明显不够：可用内存不到估算需求 → 跑不动。
     if usable < estimated_mb {
@@ -144,9 +146,7 @@ pub fn assess_llm(hardware: &Hardware, parameters_b: f32, context_tokens: u32) -
     if cores <= 2 {
         return ModelAssessment {
             feasibility: ModelFeasibility::NotViable,
-            summary: format!(
-                "这台电脑只有 {cores} 个 CPU 核心，本地模型推理会慢到不可用"
-            ),
+            summary: format!("这台电脑只有 {cores} 个 CPU 核心，本地模型推理会慢到不可用"),
             reason: format!(
                 "1.7B 模型在 2 核上约 3–6 token/秒，一段解释要几分钟；\
                  规则分析本身只要几毫秒。"
@@ -164,7 +164,11 @@ pub fn assess_llm(hardware: &Hardware, parameters_b: f32, context_tokens: u32) -
             summary: "本地模型可以运行，但在 CPU 上每次分析需要十几秒".into(),
             reason: format!(
                 "{cores} 个核心{}；1.7B 模型在 CPU 上约 20–30 token/秒。",
-                if has_gpu { "" } else { "，未检测到可用的 GPU 加速" }
+                if has_gpu {
+                    ""
+                } else {
+                    "，未检测到可用的 GPU 加速"
+                }
             ),
             estimated_mb,
             disable_model: false,
@@ -174,7 +178,11 @@ pub fn assess_llm(hardware: &Hardware, parameters_b: f32, context_tokens: u32) -
     ModelAssessment {
         feasibility: ModelFeasibility::Viable,
         summary: "本地模型可以正常运行".into(),
-        reason: format!("{} 核，约 {:.1} GB 可用内存。", cores, usable as f64 / 1024.0),
+        reason: format!(
+            "{} 核，约 {:.1} GB 可用内存。",
+            cores,
+            usable as f64 / 1024.0
+        ),
         estimated_mb,
         disable_model: false,
     }
@@ -300,7 +308,11 @@ mod tests {
 
     #[test]
     fn a_strong_machine_is_viable() {
-        let assessment = assess_llm(&hardware(32768, 24576, 16, Some("NVIDIA RTX 4090")), 1.7, 8192);
+        let assessment = assess_llm(
+            &hardware(32768, 24576, 16, Some("NVIDIA RTX 4090")),
+            1.7,
+            8192,
+        );
         assert_eq!(assessment.feasibility, ModelFeasibility::Viable);
         assert!(!assessment.disable_model);
     }
@@ -340,7 +352,10 @@ mod tests {
         assert!(health.is_available());
         assert!(!health.record_failure("连接被拒绝"));
         assert!(health.is_available(), "one failure may be a cold start");
-        assert!(health.record_failure("连接被拒绝"), "second failure trips it");
+        assert!(
+            health.record_failure("连接被拒绝"),
+            "second failure trips it"
+        );
         assert!(!health.is_available());
         assert!(health.disabled_reason().unwrap().contains("自动停用"));
     }

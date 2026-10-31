@@ -181,7 +181,11 @@ fn clip(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_owned();
     }
-    let cut = text.char_indices().nth(limit).map(|(i, _)| i).unwrap_or(text.len());
+    let cut = text
+        .char_indices()
+        .nth(limit)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
     format!("{}…", &text[..cut])
 }
 

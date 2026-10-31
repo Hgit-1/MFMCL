@@ -132,7 +132,10 @@ fn self_test() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("FAIL {}: expected no findings, got {codes:?}", fixture.name);
                 failures += 1;
             } else {
-                println!("ok   {} (no findings, {} lines)", fixture.name, facts.total_lines);
+                println!(
+                    "ok   {} (no findings, {} lines)",
+                    fixture.name, facts.total_lines
+                );
             }
             continue;
         }

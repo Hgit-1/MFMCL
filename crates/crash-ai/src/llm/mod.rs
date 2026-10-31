@@ -124,16 +124,16 @@ pub async fn narrate(
         .map_err(|error| LlmError::Unreachable(error.to_string()))?;
 
     let response = client
-        .post(format!("{}/v1/chat/completions", config.base_url.trim_end_matches('/')))
+        .post(format!(
+            "{}/v1/chat/completions",
+            config.base_url.trim_end_matches('/')
+        ))
         .json(&body)
         .send()
         .await
         .map_err(|error| {
             if error.is_connect() || error.is_timeout() {
-                LlmError::Unreachable(format!(
-                    "{}（模型可能没有启动）",
-                    error
-                ))
+                LlmError::Unreachable(format!("{}（模型可能没有启动）", error))
             } else {
                 LlmError::Unreachable(error.to_string())
             }
@@ -224,7 +224,10 @@ pub async fn probe(config: &LlmConfig) -> Result<Vec<String>, LlmError> {
         .build()
         .map_err(|error| LlmError::Unreachable(error.to_string()))?;
     let response = client
-        .get(format!("{}/v1/models", config.base_url.trim_end_matches('/')))
+        .get(format!(
+            "{}/v1/models",
+            config.base_url.trim_end_matches('/')
+        ))
         .send()
         .await
         .map_err(|error| LlmError::Unreachable(error.to_string()))?;
@@ -357,7 +360,9 @@ pub fn parse_answer(text: &str) -> (String, Vec<String>) {
         if in_steps {
             // Accept "1. text", "- text", or bare text under the header.
             let cleaned = trimmed
-                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == '•' || c == '-' || c == '*')
+                .trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || c == '.' || c == ')' || c == '•' || c == '-' || c == '*'
+                })
                 .trim();
             if !cleaned.is_empty() {
                 steps.push(cleaned.to_owned());
@@ -375,7 +380,10 @@ pub fn parse_answer(text: &str) -> (String, Vec<String>) {
         // something to show as the explanation.
         explanation = steps.remove(0);
     }
-    (explanation.trim().to_owned(), steps.into_iter().take(6).collect())
+    (
+        explanation.trim().to_owned(),
+        steps.into_iter().take(6).collect(),
+    )
 }
 
 /// Read the confidence the model claimed, if it stated one.
@@ -409,7 +417,11 @@ fn truncate(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_owned();
     }
-    let cut = text.char_indices().nth(limit).map(|(i, _)| i).unwrap_or(text.len());
+    let cut = text
+        .char_indices()
+        .nth(limit)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
     format!("{}…", &text[..cut])
 }
 
@@ -427,9 +439,8 @@ mod tests {
 
     #[test]
     fn answer_sections_are_split() {
-        let (explanation, steps) = parse_answer(
-            "说明：内存分配不足。\n步骤：\n1. 提高内存\n2. 减少模组\n",
-        );
+        let (explanation, steps) =
+            parse_answer("说明：内存分配不足。\n步骤：\n1. 提高内存\n2. 减少模组\n");
         assert_eq!(explanation, "内存分配不足。");
         assert_eq!(steps, vec!["提高内存", "减少模组"]);
     }
@@ -517,7 +528,10 @@ pub async fn narrate_streaming(
         .map_err(|error| LlmError::Unreachable(error.to_string()))?;
 
     let response = client
-        .post(format!("{}/v1/chat/completions", config.base_url.trim_end_matches('/')))
+        .post(format!(
+            "{}/v1/chat/completions",
+            config.base_url.trim_end_matches('/')
+        ))
         .json(&body)
         .send()
         .await
@@ -649,7 +663,8 @@ fn decide_steps(
         vec![
             "这份日志里没有足够的信息定位原因。".to_owned(),
             "把完整的 crash-report（在实例的 crash-reports 文件夹里）贴进来，\
-             或者提供 latest.log 的开头部分。".to_owned(),
+             或者提供 latest.log 的开头部分。"
+                .to_owned(),
         ],
         StepSource::Rules,
     )

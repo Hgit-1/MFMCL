@@ -163,7 +163,9 @@ pub fn analyse_trace(trace: &str) -> Option<Cause> {
     let text = trace;
     let chain = parse_chain(trace);
     let root = chain.last().cloned();
-    let root_exception = root.as_ref().map(|layer| format!("{}: {}", layer.exception_type, layer.message));
+    let root_exception = root
+        .as_ref()
+        .map(|layer| format!("{}: {}", layer.exception_type, layer.message));
 
     let (frames, instrumented) = parse_frames(trace);
     /*
@@ -182,7 +184,10 @@ pub fn analyse_trace(trace: &str) -> Option<Cause> {
     let reason = if mod_failures.is_empty() {
         reason_for(kind, root.as_ref(), &frames)
     } else {
-        let names: Vec<&str> = mod_failures.iter().map(|item| item.mod_id.as_str()).collect();
+        let names: Vec<&str> = mod_failures
+            .iter()
+            .map(|item| item.mod_id.as_str())
+            .collect();
         format!(
             "Forge 报告 {} 个模组加载失败：{}。具体原因见每条模组的说明。",
             mod_failures.len(),
@@ -314,7 +319,9 @@ fn parse_frames(trace: &str) -> (Vec<Frame>, usize) {
         let Some(dot) = signature.rfind('.') else {
             continue;
         };
-        let class = signature[..dot].trim_start_matches("TRANSFORMER/").to_owned();
+        let class = signature[..dot]
+            .trim_start_matches("TRANSFORMER/")
+            .to_owned();
         let method = signature[dot + 1..].to_owned();
         // Drop the `mod@version/` scoping some loaders prepend to the class name.
         let class = class.rsplit('/').next().unwrap_or(&class).to_owned();
@@ -412,7 +419,8 @@ fn classify(text: &str, root: Option<&ExceptionLayer>, frames: &[Frame]) -> Caus
     }
 
     // --- Java version ------------------------------------------------------
-    if text.contains("unsupportedclassversionerror") || text.contains("unsupported class file major version")
+    if text.contains("unsupportedclassversionerror")
+        || text.contains("unsupported class file major version")
     {
         return CauseKind::JavaVersion;
     }
@@ -431,24 +439,37 @@ fn classify(text: &str, root: Option<&ExceptionLayer>, frames: &[Frame]) -> Caus
     }
 
     // --- Display -----------------------------------------------------------
-    if text.contains("headlessexception") || text.contains("no display") || text.contains("can't connect to x11") {
+    if text.contains("headlessexception")
+        || text.contains("no display")
+        || text.contains("can't connect to x11")
+    {
         return CauseKind::NoDisplay;
     }
 
     // --- Graphics ----------------------------------------------------------
-    if text.contains("opengl") || text.contains("glfw") || text.contains("glx") || text.contains("egl") {
+    if text.contains("opengl")
+        || text.contains("glfw")
+        || text.contains("glx")
+        || text.contains("egl")
+    {
         return CauseKind::Graphics;
     }
     if text.contains("org.lwjgl") || frames_text.contains("org.lwjgl") {
         return CauseKind::Graphics;
     }
     // A native crash inside a GPU driver DLL/SO.
-    if text.contains("nvoglv") || text.contains("atio") || text.contains("ig") && text.contains("driver") {
+    if text.contains("nvoglv")
+        || text.contains("atio")
+        || text.contains("ig") && text.contains("driver")
+    {
         return CauseKind::Graphics;
     }
 
     // --- File access -------------------------------------------------------
-    if text.contains("accessdeniedexception") || text.contains("permission denied") || text.contains("read-only file system") {
+    if text.contains("accessdeniedexception")
+        || text.contains("permission denied")
+        || text.contains("read-only file system")
+    {
         return CauseKind::FileAccess;
     }
     if text.contains("filenotfoundexception") || text.contains("no such file") {
@@ -518,7 +539,11 @@ fn confidence_for(kind: CauseKind, root: Option<&ExceptionLayer>, frames: &[Fram
         CauseKind::NoDisplay => Confidence::High,
         CauseKind::NativeLibrary if text.contains("can't load library") => Confidence::High,
         CauseKind::NativeLibrary => Confidence::Medium,
-        CauseKind::Graphics if frames.iter().any(|frame| !frame.instrumented && frame.class.starts_with("org.lwjgl")) => {
+        CauseKind::Graphics
+            if frames
+                .iter()
+                .any(|frame| !frame.instrumented && frame.class.starts_with("org.lwjgl")) =>
+        {
             Confidence::High
         }
         CauseKind::Graphics => Confidence::Medium,
@@ -537,7 +562,13 @@ fn reason_for(kind: CauseKind, root: Option<&ExceptionLayer>, frames: &[Frame]) 
     let first_real = frames
         .iter()
         .find(|frame| !frame.instrumented)
-        .map(|frame| format!("{}#{}", frame.class.rsplit('.').next().unwrap_or(&frame.class), frame.method));
+        .map(|frame| {
+            format!(
+                "{}#{}",
+                frame.class.rsplit('.').next().unwrap_or(&frame.class),
+                frame.method
+            )
+        });
 
     match kind {
         CauseKind::SystemLimit => format!(
@@ -639,7 +670,11 @@ Caused by: java.lang.IllegalStateException: buffer exhausted
         // can show it. What matters here is that the chain is ordered outer→inner.
         assert_eq!(cause.chain.len(), 3);
         assert_eq!(cause.chain[0].exception_type, "java.lang.RuntimeException");
-        assert!(cause.chain[2].exception_type.contains("IllegalStateException"));
+        assert!(
+            cause.chain[2]
+                .exception_type
+                .contains("IllegalStateException")
+        );
     }
 
     #[test]
@@ -680,7 +715,8 @@ java.lang.UnsatisfiedLinkError: Can't load library: /home/u/.minecraft/mods/mcef
 
     #[test]
     fn frames_are_parsed_into_class_method_file_line() {
-        let (frames, _) = parse_frames("\tat net.minecraft.client.Minecraft.<init>(Minecraft.java:500)\n");
+        let (frames, _) =
+            parse_frames("\tat net.minecraft.client.Minecraft.<init>(Minecraft.java:500)\n");
         assert_eq!(frames[0].class, "net.minecraft.client.Minecraft");
         assert_eq!(frames[0].method, "<init>");
         assert_eq!(frames[0].file, "Minecraft.java");
@@ -689,7 +725,9 @@ java.lang.UnsatisfiedLinkError: Can't load library: /home/u/.minecraft/mods/mcef
 
     #[test]
     fn transformer_prefixed_classes_are_unwrapped() {
-        let (frames, _) = parse_frames("\tat TRANSFORMER/mcef@2.1.6/com.cinemamod.mcef.CefApp.startup(CefApp.java:452)\n");
+        let (frames, _) = parse_frames(
+            "\tat TRANSFORMER/mcef@2.1.6/com.cinemamod.mcef.CefApp.startup(CefApp.java:452)\n",
+        );
         assert_eq!(frames[0].class, "com.cinemamod.mcef.CefApp");
     }
 }
@@ -727,7 +765,9 @@ pub fn parse_mod_blocks(text: &str) -> Vec<ModFailure> {
             continue;
         }
 
-        let Some(mod_id) = current.clone() else { continue };
+        let Some(mod_id) = current.clone() else {
+            continue;
+        };
         let Some(message) = trimmed.strip_prefix("Failure message: ") else {
             continue;
         };
@@ -768,7 +808,11 @@ pub fn parse_requirement(message: &str) -> (Option<String>, Option<String>) {
     let version = parts
         .next()
         .filter(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))
-        .map(|token| token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-').to_owned());
+        .map(|token| {
+            token
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-')
+                .to_owned()
+        });
     (Some(name.to_owned()), version)
 }
 
@@ -830,7 +874,8 @@ fn classify_by_text(text: &str) -> CauseKind {
      * `Could not reserve enough space` 这类消息在 JVM 初始化阶段打印，没有异常
      * 行。它们属于参数/内存问题，而不是「未知」。
      */
-    if lower.contains("could not reserve enough space") || lower.contains("invalid maximum heap size")
+    if lower.contains("could not reserve enough space")
+        || lower.contains("invalid maximum heap size")
     {
         return CauseKind::JvmArguments;
     }

@@ -57,11 +57,8 @@ pub async fn crash_ai_status(state: State<'_, CrashAiState>) -> Result<CrashAiSt
     let hardware = tauri::async_runtime::spawn_blocking(crash_ai::hardware::detect)
         .await
         .unwrap_or_default();
-    let feasibility = crash_ai::feasibility::assess_llm(
-        &hardware,
-        config.parameters_b,
-        config.context_tokens,
-    );
+    let feasibility =
+        crash_ai::feasibility::assess_llm(&hardware, config.parameters_b, config.context_tokens);
     match crash_ai::llm::probe(&config).await {
         Ok(_) => Ok(CrashAiStatus {
             ok: true,
@@ -151,17 +148,20 @@ pub async fn crash_ai_analyse(
     .await;
 
     if let Some(reason) = &tripped {
-        analysis.warnings.retain(|warning| !warning.contains("按请求"));
         analysis
             .warnings
-            .push(format!("本地模型已自动停用（{reason}）。恢复模型服务后重启启动器即可重新启用。"));
+            .retain(|warning| !warning.contains("按请求"));
+        analysis.warnings.push(format!(
+            "本地模型已自动停用（{reason}）。恢复模型服务后重启启动器即可重新启用。"
+        ));
     }
 
     /*
      * 记录结果。只在「本该用模型」时统计：被硬件判断拦下的不算失败，
      * 否则一台内存不足的机器会把熔断也点上，而真正的原因已经由 `modelStatus` 说明。
      */
-    if want_model && !assessment.disable_model
+    if want_model
+        && !assessment.disable_model
         && let Ok(mut health) = state.health.lock()
     {
         if analysis.model_used {
@@ -217,12 +217,17 @@ pub async fn crash_ai_instance_report(
         if path.extension().and_then(|value| value.to_str()) != Some("txt") {
             continue;
         }
-        let Ok(metadata) = entry.metadata() else { continue };
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
         if !metadata.is_file() {
             continue;
         }
         let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
-        if newest.as_ref().is_none_or(|(current, _)| modified > *current) {
+        if newest
+            .as_ref()
+            .is_none_or(|(current, _)| modified > *current)
+        {
             newest = Some((modified, path));
         }
     }
@@ -243,7 +248,8 @@ pub async fn crash_ai_instance_report(
     if metadata.len() > crash_ai::MAX_LOG_BYTES as u64 * 2 {
         return Err("崩溃报告过大，无法读取。".into());
     }
-    let content = std::fs::read_to_string(&path).map_err(|error| format!("无法读取崩溃报告：{error}"))?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|error| format!("无法读取崩溃报告：{error}"))?;
 
     Ok(InstanceReport {
         found: true,
@@ -284,7 +290,11 @@ pub async fn crash_ai_local_reports(
     // 1. 启动器管理的实例。
     if let Ok(instances) = store.list_instances() {
         for instance in instances {
-            collect_reports(&instance.game_dir.join("crash-reports"), &instance.name, &mut reports);
+            collect_reports(
+                &instance.game_dir.join("crash-reports"),
+                &instance.name,
+                &mut reports,
+            );
         }
     }
 
@@ -296,7 +306,9 @@ pub async fn crash_ai_local_reports(
      */
     for root in extra_roots.unwrap_or_default().into_iter().take(4) {
         let versions = std::path::PathBuf::from(&root).join("versions");
-        let Ok(entries) = std::fs::read_dir(&versions) else { continue };
+        let Ok(entries) = std::fs::read_dir(&versions) else {
+            continue;
+        };
         for entry in entries.flatten() {
             if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
                 continue;
@@ -322,7 +334,9 @@ pub struct LocalReport {
 }
 
 fn collect_reports(directory: &std::path::Path, instance: &str, out: &mut Vec<LocalReport>) {
-    let Ok(entries) = std::fs::read_dir(directory) else { return };
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("txt") {
@@ -336,7 +350,9 @@ fn collect_reports(directory: &std::path::Path, instance: &str, out: &mut Vec<Lo
         if !name.starts_with("crash-") {
             continue;
         }
-        let Ok(metadata) = entry.metadata() else { continue };
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
         let modified = metadata
             .modified()
             .ok()

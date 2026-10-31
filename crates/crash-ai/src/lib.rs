@@ -317,7 +317,10 @@ fn extract_facts(log: &str, findings: &[Finding], environment: &Environment) -> 
      * Mods named by a rule outrank ones merely mentioned: a rule only extracts a
      * name when the surrounding text indicates it is the culprit.
      */
-    let mut ranked: Vec<String> = findings.iter().flat_map(|finding| finding.mods.clone()).collect();
+    let mut ranked: Vec<String> = findings
+        .iter()
+        .flat_map(|finding| finding.mods.clone())
+        .collect();
     for name in mods.iter() {
         if !ranked.contains(name) {
             ranked.push(name.clone());
@@ -348,7 +351,10 @@ fn extract_facts(log: &str, findings: &[Finding], environment: &Environment) -> 
     }
     if context.len() > MAX_CONTEXT_CHARS {
         // Keep the head: the excerpt begins at the exception.
-        let cut = context.char_indices().nth(MAX_CONTEXT_CHARS).map(|(i, _)| i);
+        let cut = context
+            .char_indices()
+            .nth(MAX_CONTEXT_CHARS)
+            .map(|(i, _)| i);
         context.truncate(cut.unwrap_or(context.len()));
         context.push_str("\n…（日志片段已截断）");
     }
@@ -390,7 +396,13 @@ pub async fn analyse(
 pub fn analyse_local(
     log: &str,
     environment: &Environment,
-) -> (Vec<Finding>, Option<causes::Cause>, Option<hardware::Capability>, LogFacts, Vec<String>) {
+) -> (
+    Vec<Finding>,
+    Option<causes::Cause>,
+    Option<hardware::Capability>,
+    LogFacts,
+    Vec<String>,
+) {
     let (findings, facts, mut warnings) = analyse_log(log, environment);
 
     let cause = causes::analyse_trace(log);
@@ -531,7 +543,13 @@ java.lang.OutOfMemoryError: Java heap space
 \tat net.fabricmc.loader.impl.launch.knot.Knot.init(Knot.java:160)
 ";
         let (_findings, facts, _warnings) = analyse_log(log, &environment());
-        assert!(facts.exception.as_deref().unwrap_or("").contains("OutOfMemoryError"));
+        assert!(
+            facts
+                .exception
+                .as_deref()
+                .unwrap_or("")
+                .contains("OutOfMemoryError")
+        );
         assert!(facts.context.contains("Minecraft.java:500"));
     }
 
@@ -572,7 +590,12 @@ java.lang.OutOfMemoryError: Java heap space
         assert!(result.model_used == false);
         assert_eq!(result.findings[0].code, "runtime.outofmemory");
         // The skipped-model notice must be visible, not silent.
-        assert!(result.warnings.iter().any(|warning| warning.contains("跳过")));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("跳过"))
+        );
     }
 }
 
@@ -624,7 +647,10 @@ pub fn finding_from_cause(cause: &causes::Cause) -> Finding {
         K::ExternalKill => (
             "runtime.killed",
             "进程被外部终止",
-            vec!["降低内存分配或关闭其他大内存程序后重试", "检查系统日志里是否有 OOM killer 记录"],
+            vec![
+                "降低内存分配或关闭其他大内存程序后重试",
+                "检查系统日志里是否有 OOM killer 记录",
+            ],
         ),
         K::FileAccess => (
             "files.access.denied",
@@ -736,8 +762,7 @@ java.lang.UnsatisfiedLinkError: Can't load library: /home/u/.minecraft/mods/mcef
 
     #[test]
     fn real_inotify_report_is_not_blamed_on_mixins() {
-        let (findings, _facts, _warnings) =
-            analyse_log(INOTIFY_REPORT, &Environment::default());
+        let (findings, _facts, _warnings) = analyse_log(INOTIFY_REPORT, &Environment::default());
         let codes: Vec<&str> = findings.iter().map(|item| item.code.as_str()).collect();
 
         assert!(
@@ -754,13 +779,17 @@ java.lang.UnsatisfiedLinkError: Can't load library: /home/u/.minecraft/mods/mcef
             .find(|item| item.code == "system.inotify")
             .unwrap();
         // 建议必须指向系统限制，而不是「禁用模组」。
-        assert!(finding.suggestions.iter().any(|s| s.contains("sysctl") || s.contains("限制")));
+        assert!(
+            finding
+                .suggestions
+                .iter()
+                .any(|s| s.contains("sysctl") || s.contains("限制"))
+        );
     }
 
     #[test]
     fn real_native_library_report_is_not_blamed_on_mods() {
-        let (findings, _facts, _warnings) =
-            analyse_log(NATIVE_LIB_REPORT, &Environment::default());
+        let (findings, _facts, _warnings) = analyse_log(NATIVE_LIB_REPORT, &Environment::default());
         let codes: Vec<&str> = findings.iter().map(|item| item.code.as_str()).collect();
         assert!(
             !codes.contains(&"mods.mixin"),

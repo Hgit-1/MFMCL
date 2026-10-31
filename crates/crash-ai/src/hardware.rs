@@ -262,7 +262,8 @@ pub fn assess(hardware: &Hardware, workload: &Workload) -> Capability {
     }
 
     // --- Allocated heap ----------------------------------------------------
-    if let (Some(allocated), Some(total)) = (workload.allocated_memory_mb, hardware.total_memory_mb) {
+    if let (Some(allocated), Some(total)) = (workload.allocated_memory_mb, hardware.total_memory_mb)
+    {
         detected = true;
         /*
          * The JVM cannot take essentially all of the machine: the OS, the launcher
@@ -484,7 +485,8 @@ fn to_mb(bytes: u64) -> u32 {
 /// 与容器里没有，那是一个与「性能不足」完全不同的失败原因。
 #[cfg(target_os = "linux")]
 fn detect_display() -> Option<bool> {
-    let has = std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let has =
+        std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
     Some(has)
 }
 
@@ -586,8 +588,14 @@ mod tests {
 
     #[test]
     fn single_core_is_hopeless_but_two_cores_is_not() {
-        assert_eq!(assess(&hw(8192, 1), &workload(0, "1.21.1", 2048)).verdict, Verdict::Hopeless);
-        assert_eq!(assess(&hw(8192, 2), &workload(0, "1.21.1", 2048)).verdict, Verdict::Tight);
+        assert_eq!(
+            assess(&hw(8192, 1), &workload(0, "1.21.1", 2048)).verdict,
+            Verdict::Hopeless
+        );
+        assert_eq!(
+            assess(&hw(8192, 2), &workload(0, "1.21.1", 2048)).verdict,
+            Verdict::Tight
+        );
     }
 
     #[test]
@@ -613,7 +621,10 @@ mod tests {
         // 8 GB machine told to give the JVM 8 GB: a settings bug, not old hardware.
         let assessment = assess(&hw(8192, 8), &workload(10, "1.21.1", 8192));
         assert!(
-            assessment.assessments.iter().any(|item| item.resource == "heap"),
+            assessment
+                .assessments
+                .iter()
+                .any(|item| item.resource == "heap"),
             "heap overcommit must be reported"
         );
         assert_ne!(
@@ -632,7 +643,13 @@ mod tests {
 
     #[test]
     fn requirement_scales_with_mod_count_and_version() {
-        assert!(required_memory_mb(&workload(200, "1.21.1", 0)) > required_memory_mb(&workload(0, "1.21.1", 0)));
-        assert!(required_memory_mb(&workload(0, "1.21.1", 0)) > required_memory_mb(&workload(0, "1.8.9", 0)));
+        assert!(
+            required_memory_mb(&workload(200, "1.21.1", 0))
+                > required_memory_mb(&workload(0, "1.21.1", 0))
+        );
+        assert!(
+            required_memory_mb(&workload(0, "1.21.1", 0))
+                > required_memory_mb(&workload(0, "1.8.9", 0))
+        );
     }
 }

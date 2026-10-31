@@ -408,19 +408,27 @@ pub fn prepare_backup(
     let mut seen = HashSet::new();
     for i in 0..archive.len() {
         let entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        /*
+         * zip 9 起 `name()` 返回 `Result<Cow<str>>`：非 UTF-8 文件名不再 panic，
+         * 而是变成错误。这里把无法解码的名字当作「不可信条目」拒绝——备份是我们
+         * 自己写的，出现无法解码的名字说明归档被改过。
+         */
+        let entry_name = entry
+            .name()
+            .map_err(|_| "备份条目名无法解码。".to_owned())?
+            .into_owned();
         if entry.is_dir()
             || entry
                 .unix_mode()
                 .is_some_and(|mode| mode & 0o170000 == 0o120000)
-            || !seen.insert(entry.name().to_owned())
+            || !seen.insert(entry_name.clone())
         {
             return Err("备份包含目录、符号链接或重复条目。".into());
         }
-        if entry.name() == INDEX {
+        if entry_name == INDEX {
             continue;
         }
-        let name = entry
-            .name()
+        let name = entry_name
             .strip_prefix("game/")
             .ok_or("备份条目不在游戏目录。")?;
         let expected = manifest.files.get(name).ok_or("备份条目未在索引中声明。")?;

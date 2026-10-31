@@ -52,8 +52,7 @@ pub static RULES: &[Rule] = &[
         unless: &[],
         title: "内存上限参数无效",
         confidence: Confidence::High,
-        explanation:
-            "JVM 拒绝了 -Xmx 的取值。通常是数字写错、带了单位以外的字符，或这个值超过了当前 Java 能分配的上限。",
+        explanation: "JVM 拒绝了 -Xmx 的取值。通常是数字写错、带了单位以外的字符，或这个值超过了当前 Java 能分配的上限。",
         suggestions: &[
             "在实例设置里把最大内存改回 2048–4096 MB 之间再试",
             "确认最大内存不小于初始内存",
@@ -66,8 +65,7 @@ pub static RULES: &[Rule] = &[
         unless: &["invalid maximum heap size"],
         title: "无法申请到设定内存",
         confidence: Confidence::High,
-        explanation:
-            "系统没有足够的连续内存给 JVM。可能是设定的值接近物理内存总量，也可能是用了 32 位 Java（最多约 1.5 GB）。",
+        explanation: "系统没有足够的连续内存给 JVM。可能是设定的值接近物理内存总量，也可能是用了 32 位 Java（最多约 1.5 GB）。",
         suggestions: &[
             "降低分配的内存，或先关掉占用内存较多的程序",
             "如果分配值很小仍然失败，检查是否误用了 32 位 Java",
@@ -104,8 +102,7 @@ pub static RULES: &[Rule] = &[
         unless: &[],
         title: "Java 版本过低",
         confidence: Confidence::High,
-        explanation:
-            "有类文件是更高版本的 Java 编译的，当前 Java 读不了。Minecraft 1.18+ 需要 Java 17，1.20.5+ 需要 Java 21。",
+        explanation: "有类文件是更高版本的 Java 编译的，当前 Java 读不了。Minecraft 1.18+ 需要 Java 17，1.20.5+ 需要 Java 21。",
         suggestions: &[
             "为这个实例换用更高版本的 Java（1.18+ → 17，1.20.5+ → 21）",
             "确认没有混入为更新的游戏版本编译的模组",
@@ -128,8 +125,7 @@ pub static RULES: &[Rule] = &[
         unless: &[],
         title: "Java 版本过高",
         confidence: Confidence::High,
-        explanation:
-            "模组或加载器访问了被新版 Java 收紧的模块。它们是为更旧的 Java 编写的，在 Java 17+ 上常需要加 --add-opens。",
+        explanation: "模组或加载器访问了被新版 Java 收紧的模块。它们是为更旧的 Java 编写的，在 Java 17+ 上常需要加 --add-opens。",
         suggestions: &[
             "把这个实例换成较低版本的 Java",
             "或升级模组/加载器到支持当前 Java 的版本",
@@ -173,8 +169,7 @@ pub static RULES: &[Rule] = &[
         unless: &[],
         title: "缺少必需的类",
         confidence: Confidence::Medium,
-        explanation:
-            "某个类在类路径上找不到。可能是模组文件缺失、加载器安装不完整，或模组与游戏版本不对应。",
+        explanation: "某个类在类路径上找不到。可能是模组文件缺失、加载器安装不完整，或模组与游戏版本不对应。",
         suggestions: &[
             "对实例执行「修复」，确认加载器与官方文件齐全",
             "检查是否有模组要求的前置库没有安装",
@@ -197,8 +192,7 @@ pub static RULES: &[Rule] = &[
         unless: &[],
         title: "文件访问被拒绝",
         confidence: Confidence::Medium,
-        explanation:
-            "游戏无法写入某个文件。可能是文件被其他程序占用，或当前用户对游戏目录没有写权限。",
+        explanation: "游戏无法写入某个文件。可能是文件被其他程序占用，或当前用户对游戏目录没有写权限。",
         suggestions: &[
             "关闭可能正在占用这些文件的程序（云同步盘、杀毒软件、另一个启动器）",
             "确认游戏目录不在需要管理员权限的位置",
@@ -212,8 +206,7 @@ pub static RULES: &[Rule] = &[
         unless: &[],
         title: "显卡/OpenGL 初始化失败",
         confidence: Confidence::High,
-        explanation:
-            "创建 OpenGL 上下文失败。常见原因是显卡驱动过旧、没有可用的显示设备，或在远程桌面/无头环境里启动。",
+        explanation: "创建 OpenGL 上下文失败。常见原因是显卡驱动过旧、没有可用的显示设备，或在远程桌面/无头环境里启动。",
         suggestions: &[
             "更新显卡驱动",
             "如果在远程桌面或虚拟机里运行，改用本机桌面会话",
@@ -264,8 +257,7 @@ pub static RULES: &[Rule] = &[
         unless: &["mixin subsystem version"],
         title: "Mixin 注入失败",
         confidence: Confidence::Medium,
-        explanation:
-            "有模组通过 Mixin 修改游戏代码时失败。原因可能是该模组与当前游戏/加载器版本不兼容，或两个模组改写了同一处。",
+        explanation: "有模组通过 Mixin 修改游戏代码时失败。原因可能是该模组与当前游戏/加载器版本不兼容，或两个模组改写了同一处。",
         suggestions: &[
             "确认失败的这个模组与游戏版本、加载器版本匹配",
             "逐个禁用最近安装的模组以定位冲突",
@@ -289,7 +281,10 @@ pub static RULES: &[Rule] = &[
         title: "缺少模组前置",
         confidence: Confidence::High,
         explanation: "某个模组要求另一个模组，但它不在 mods 目录里。",
-        suggestions: &["按提示安装缺失的前置模组", "确认前置模组与本模组的游戏版本一致"],
+        suggestions: &[
+            "按提示安装缺失的前置模组",
+            "确认前置模组与本模组的游戏版本一致",
+        ],
         mod_pattern: None,
     },
     Rule {
@@ -299,7 +294,10 @@ pub static RULES: &[Rule] = &[
         title: "模组集合不兼容",
         confidence: Confidence::High,
         explanation: "加载器检出了互相排斥的模组，或模组声明的版本范围互不重叠。",
-        suggestions: &["按报错里列出的模组逐个排查", "在实例的模组管理里查看冲突提示"],
+        suggestions: &[
+            "按报错里列出的模组逐个排查",
+            "在实例的模组管理里查看冲突提示",
+        ],
         mod_pattern: None,
     },
     Rule {
@@ -309,7 +307,10 @@ pub static RULES: &[Rule] = &[
         title: "Forge 模组加载失败",
         confidence: Confidence::Medium,
         explanation: "Forge 在加载阶段报告了模组错误。具体原因通常在日志更早的位置列出。",
-        suggestions: &["查看崩溃报告里第一个 ERROR 级别的模组条目", "逐个禁用可疑模组验证"],
+        suggestions: &[
+            "查看崩溃报告里第一个 ERROR 级别的模组条目",
+            "逐个禁用可疑模组验证",
+        ],
         mod_pattern: None,
     },
     // --- Killed from outside ------------------------------------------------
@@ -319,8 +320,7 @@ pub static RULES: &[Rule] = &[
         unless: &[],
         title: "进程被外部终止",
         confidence: Confidence::Low,
-        explanation:
-            "游戏进程收到了终止信号。可能是系统的内存不足保护（OOM killer）杀掉了它，也可能是被其他程序结束。",
+        explanation: "游戏进程收到了终止信号。可能是系统的内存不足保护（OOM killer）杀掉了它，也可能是被其他程序结束。",
         suggestions: &[
             "降低内存分配或关闭其他大内存程序后重试",
             "检查系统日志里是否有 OOM killer 的记录",
@@ -370,7 +370,9 @@ pub fn is_primary_exception(line: &str) -> bool {
         "A fatal error has been detected",
         "Uncaught exception",
     ];
-    MARKERS.iter().any(|marker| line.starts_with(marker) || line.contains(marker))
+    MARKERS
+        .iter()
+        .any(|marker| line.starts_with(marker) || line.contains(marker))
         && !line.contains("Catching exception")
 }
 
@@ -387,14 +389,18 @@ pub fn mods_in_line(line: &str) -> Vec<String> {
     if let Some(index) = lower.find("mod file:") {
         let rest = line[index + "mod file:".len()..].trim();
         if let Some(name) = rest.split_whitespace().next() {
-            found.push(name.trim_matches(|c| c == '「' || c == '」' || c == '"').to_owned());
+            found.push(
+                name.trim_matches(|c| c == '「' || c == '」' || c == '"')
+                    .to_owned(),
+            );
         }
     }
     for marker in ["modid:", "mod id:"] {
         if let Some(index) = lower.find(marker) {
             let rest = line[index + marker.len()..].trim();
             if let Some(name) = rest.split_whitespace().next() {
-                let name = name.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
+                let name =
+                    name.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
                 if !name.is_empty() {
                     found.push(name.to_owned());
                 }
@@ -421,7 +427,9 @@ pub fn mods_in_line(line: &str) -> Vec<String> {
     found.retain(|item| {
         item.len() >= 2
             && item.len() <= 64
-            && item.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+            && item
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
     });
     found.sort();
     found.dedup();
@@ -493,7 +501,11 @@ pub fn evaluate(log: &str) -> Vec<Finding> {
             title: rule.title.to_owned(),
             confidence: rule.confidence,
             explanation: rule.explanation.to_owned(),
-            suggestions: rule.suggestions.iter().map(|item| (*item).to_owned()).collect(),
+            suggestions: rule
+                .suggestions
+                .iter()
+                .map(|item| (*item).to_owned())
+                .collect(),
             evidence,
             mods,
         });
@@ -515,7 +527,11 @@ fn evidence_lines(log: &str, rule: &Rule) -> Vec<String> {
                 continue;
             }
             let clipped = if trimmed.chars().count() > 300 {
-                let cut = trimmed.char_indices().nth(300).map(|(i, _)| i).unwrap_or(trimmed.len());
+                let cut = trimmed
+                    .char_indices()
+                    .nth(300)
+                    .map(|(i, _)| i)
+                    .unwrap_or(trimmed.len());
                 format!("{}…", &trimmed[..cut])
             } else {
                 trimmed.to_owned()
@@ -607,8 +623,12 @@ mod tests {
 
     #[test]
     fn benign_exception_mentions_are_not_primary() {
-        assert!(!is_primary_exception("Catching exception from worker thread"));
-        assert!(is_primary_exception("java.lang.OutOfMemoryError: Java heap space"));
+        assert!(!is_primary_exception(
+            "Catching exception from worker thread"
+        ));
+        assert!(is_primary_exception(
+            "java.lang.OutOfMemoryError: Java heap space"
+        ));
     }
 
     #[test]
@@ -654,7 +674,12 @@ pub fn related_to(kind: crate::causes::CauseKind) -> &'static [&'static str] {
         K::SystemLimit => &["heap.reserve", "heap.invalid"],
         K::OutOfMemory => &["runtime.outofmemory", "heap.reserve", "heap.invalid"],
         K::JvmArguments => &["heap.invalid", "jvm.option.invalid", "jvm.option.space"],
-        K::JavaVersion => &["java.class.version", "java.class.version.mismatch", "java.too.new", "java.openj9"],
+        K::JavaVersion => &[
+            "java.class.version",
+            "java.class.version.mismatch",
+            "java.too.new",
+            "java.openj9",
+        ],
         K::GameFiles => &[
             "files.missing.assets",
             "files.corrupt.jar",

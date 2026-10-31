@@ -63,7 +63,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = Arc::new(AppState {
         config: Arc::new(config),
-        health: Arc::new(std::sync::Mutex::new(crash_ai::feasibility::LlmHealth::new())),
+        health: Arc::new(std::sync::Mutex::new(
+            crash_ai::feasibility::LlmHealth::new(),
+        )),
     });
     let listener = TcpListener::bind(&address).await?;
     loop {
@@ -388,9 +390,14 @@ async fn analyse(request: &Request, state: &AppState) -> Response {
     let want_model = parsed.use_model && tripped.is_none();
 
     let started = std::time::Instant::now();
-    let mut analysis =
-        crash_ai::analyse_with_status(&parsed.log, &environment, &state.config, want_model, assessment.clone())
-            .await;
+    let mut analysis = crash_ai::analyse_with_status(
+        &parsed.log,
+        &environment,
+        &state.config,
+        want_model,
+        assessment.clone(),
+    )
+    .await;
 
     /*
      * 熔断已被触发过：把那条误导性的「按请求跳过」换掉。
@@ -403,9 +410,9 @@ async fn analyse(request: &Request, state: &AppState) -> Response {
         analysis
             .warnings
             .retain(|warning| !warning.contains("按请求"));
-        analysis
-            .warnings
-            .push(format!("本地模型已自动停用（{reason}）。恢复模型服务后重启本程序即可重新启用。"));
+        analysis.warnings.push(format!(
+            "本地模型已自动停用（{reason}）。恢复模型服务后重启本程序即可重新启用。"
+        ));
     }
 
     /*
@@ -414,7 +421,11 @@ async fn analyse(request: &Request, state: &AppState) -> Response {
      * 只看「请求了模型但没拿到结果」：模型本来就被硬件判断拦下时不算失败，
      * 否则一台 2 GB 的机器会把熔断也点上，而真正的原因已经由 `modelStatus` 说明。
      */
-    if want_model && assessment.as_ref().is_none_or(|status| !status.disable_model) {
+    if want_model
+        && assessment
+            .as_ref()
+            .is_none_or(|status| !status.disable_model)
+    {
         let failed = !analysis.model_used;
         if let Ok(mut health) = state.health.lock() {
             if failed {
@@ -506,7 +517,11 @@ fn resolve_allowed(path: &str) -> Result<std::path::PathBuf, String> {
     if !roots.iter().any(|root| real.starts_with(root)) {
         return Err(format!(
             "拒绝读取该路径：它不在允许的范围内（{}）",
-            roots.iter().map(|root| root.display().to_string()).collect::<Vec<_>>().join("、")
+            roots
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect::<Vec<_>>()
+                .join("、")
         ));
     }
     if !real.is_file() {
@@ -522,16 +537,23 @@ async fn sources() -> Response {
     let mut found: Vec<serde_json::Value> = Vec::new();
     for root in allowed_roots() {
         let versions = root.join("versions");
-        let Ok(entries) = std::fs::read_dir(&versions) else { continue };
+        let Ok(entries) = std::fs::read_dir(&versions) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let reports = entry.path().join("crash-reports");
-            let Ok(files) = std::fs::read_dir(&reports) else { continue };
+            let Ok(files) = std::fs::read_dir(&reports) else {
+                continue;
+            };
             for file in files.flatten() {
                 let path = file.path();
                 if path.extension().and_then(|value| value.to_str()) != Some("txt") {
                     continue;
                 }
-                let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
+                let name = path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("");
                 if !name.starts_with("crash-") {
                     continue;
                 }
@@ -644,7 +666,11 @@ async fn analyse_stream(
     let parsed: AnalyseRequest = match serde_json::from_slice(&request.body) {
         Ok(value) => value,
         Err(error) => {
-            return write_response(stream, Response::error(400, &format!("请求格式无效：{error}"))).await;
+            return write_response(
+                stream,
+                Response::error(400, &format!("请求格式无效：{error}")),
+            )
+            .await;
         }
     };
     if parsed.log.trim().is_empty() {
@@ -698,7 +724,10 @@ async fn analyse_stream(
     stream.flush().await?;
 
     if let Some(reason) = &tripped {
-        let event = sse_event("status", &serde_json::json!({ "disabled": true, "reason": reason }));
+        let event = sse_event(
+            "status",
+            &serde_json::json!({ "disabled": true, "reason": reason }),
+        );
         stream.write_all(event.as_bytes()).await?;
         stream.flush().await?;
     }
@@ -751,7 +780,10 @@ async fn analyse_stream(
         let result = match worker.await {
             Ok(value) => value,
             Err(_) => {
-                let event = sse_event("error", &serde_json::json!({ "error": "模型任务异常终止", "modelUsed": false }));
+                let event = sse_event(
+                    "error",
+                    &serde_json::json!({ "error": "模型任务异常终止", "modelUsed": false }),
+                );
                 let _ = stream.write_all(event.as_bytes()).await;
                 return Ok(());
             }
@@ -762,20 +794,29 @@ async fn analyse_stream(
                 if let Ok(mut health) = state.health.lock() {
                     health.record_success();
                 }
-                let event = sse_event("done", &serde_json::json!({ "narrative": narrative, "modelUsed": true }));
+                let event = sse_event(
+                    "done",
+                    &serde_json::json!({ "narrative": narrative, "modelUsed": true }),
+                );
                 let _ = stream.write_all(event.as_bytes()).await;
             }
             Err(error) => {
                 if let Ok(mut health) = state.health.lock() {
                     health.record_failure(&error.to_string());
                 }
-                let event = sse_event("error", &serde_json::json!({ "error": error.to_string(), "modelUsed": false }));
+                let event = sse_event(
+                    "error",
+                    &serde_json::json!({ "error": error.to_string(), "modelUsed": false }),
+                );
                 let _ = stream.write_all(event.as_bytes()).await;
             }
         }
         let _ = stream.flush().await;
     } else {
-        let event = sse_event("done", &serde_json::json!({ "narrative": null, "modelUsed": false }));
+        let event = sse_event(
+            "done",
+            &serde_json::json!({ "narrative": null, "modelUsed": false }),
+        );
         let _ = stream.write_all(event.as_bytes()).await;
         let _ = stream.flush().await;
     }

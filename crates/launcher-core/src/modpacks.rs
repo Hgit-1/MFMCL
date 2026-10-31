@@ -880,13 +880,24 @@ fn scan_archive(
     let mut indices = Vec::with_capacity(archive.len());
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(|e| e.to_string())?;
-        indices.push((entry.name().starts_with("client-overrides/"), index));
+        /*
+         * zip 9 起 `name()` 返回 `Result`：非 UTF-8 名字不再 panic。整合包里的
+         * 名字必须是 UTF-8（否则我们无法安全地映射成本地路径），所以这里直接拒绝。
+         */
+        let name = entry
+            .name()
+            .map_err(|_| "整合包包含无法解码的文件名。".to_owned())?
+            .into_owned();
+        indices.push((name.starts_with("client-overrides/"), index));
     }
     indices.sort_unstable();
 
     for (_, index) in indices {
         let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .map_err(|_| "整合包包含无法解码的文件名。".to_owned())?
+            .into_owned();
         let is_dir = entry.is_dir();
         let normalized_name = if is_dir {
             name.strip_suffix('/').unwrap_or(&name)
@@ -1497,6 +1508,11 @@ mod tests {
                 .by_name("overrides/config/test.txt")
                 .unwrap()
                 .data_start()
+                /*
+                 * zip 9 把 `data_start` 改成 `Option<u64>`：数据描述符缺失时无法
+                 * 定位内容起点。测试里这个归档是我们自己写的，位置必然存在。
+                 */
+                .expect("test archive must have a data offset")
         };
         let mut archive_file = OpenOptions::new().write(true).open(&path).unwrap();
         archive_file.seek(SeekFrom::Start(offset)).unwrap();

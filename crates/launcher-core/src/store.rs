@@ -487,7 +487,9 @@ impl LauncherStore {
      * 只取 200 条：历史是给人回看「刚才那次启动发生了什么」的，不是审计日志。
      * 无上限会让数据库随时间无限增长，而用户永远不会翻到第 500 条。
      */
-    pub fn list_launch_history(&self) -> Result<Vec<crate::plugins::LaunchHistoryEntry>, StoreError> {
+    pub fn list_launch_history(
+        &self,
+    ) -> Result<Vec<crate::plugins::LaunchHistoryEntry>, StoreError> {
         let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         let mut statement = connection.prepare(
             "SELECT id, instance_id, instance_name, started_at, exit_code, outcome, contributions

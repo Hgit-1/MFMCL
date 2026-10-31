@@ -618,7 +618,17 @@ mod tests {
                 .build()
                 .unwrap();
             client.endpoints = MicrosoftEndpoints {
-                oauth_token: format!("{base}/0"),
+                /*
+                 * CodeQL 报 `rust/cleartext-transmission`（「OAuth 令牌通过 HTTP 发送」）。
+                 * 这是误报，且只发生在测试里：`base` 来自 `mock_server`，绑定
+                 * 127.0.0.1 的临时端口，且这些断言用的是假凭据。生产路径的端点由
+                 * 上面的 `TOKEN_URL` 固定为 HTTPS，`MicrosoftEndpoints` 是私有类型，
+                 * 外部无法改写。
+                 *
+                 * 用 `lgtm` 按规则 id 精确抑制，而不是整段忽略——同文件里将来真的
+                 * 引入明文传输时仍然会报。
+                 */
+                oauth_token: format!("{base}/0"), // lgtm[rust/cleartext-transmission]
                 xbox: format!("{base}/1"),
                 xsts: format!("{base}/2"),
                 minecraft_login: format!("{base}/3"),
