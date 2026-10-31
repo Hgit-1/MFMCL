@@ -23,6 +23,7 @@ impl Fixture {
             isolated: true,
             state: crate::InstanceState::Ready,
             created_at: String::new(),
+            last_launched_at: None,
         };
         Self { root, instance }
     }

@@ -23,6 +23,7 @@ fn instance(root: &Path, id: &str) -> InstanceRecord {
         isolated: true,
         state: InstanceState::NotInstalled,
         created_at: String::new(),
+        last_launched_at: None,
     }
 }
 fn archive(path: &Path, files: &[(&str, &[u8])], expected: &[(&str, &[u8])]) {

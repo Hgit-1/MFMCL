@@ -2,11 +2,10 @@ use crate::{InstanceRecord, InstanceState, LauncherStore, StoreError};
 use download_engine::{ArtifactSpec, DownloadEngine, DownloadError, DownloadProgress};
 use futures_util::{StreamExt, TryStreamExt};
 use mc_metadata::{
-    Artifact, AssetIndex, AssetIndexRef, GameVersionMetadata, Library, LibraryRule,
-    SourcePreference, fetch_manifest, fetch_version_metadata,
+    AssetIndex, GameVersionMetadata, Library, LibraryRule, SourcePreference, fetch_manifest,
+    fetch_version_metadata,
 };
 use regex::Regex;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
@@ -64,17 +63,87 @@ pub async fn install_vanilla(
     }
 }
 
-/// Compare the locally installed official profile against the current official
-/// manifest. Any difference in the artifact-bearing parts (client JAR, asset
-/// index, libraries, logging config) means Mojang republished files and the
-/// repair install should run. Loader overlays are version-scoped and untouched.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+/// 一个官方文件条目的比对键：路径 + 大小 + 校验值。
+///
+/// 只比对这些「会落盘的东西」，不比 version id、发布名之类的展示字段——
+/// Mojang 调整展示信息不该让用户以为要重下 300 MB。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FileFingerprint {
+    path: String,
+    size: Option<u64>,
+    hash: Option<String>,
+}
+
+/// 从版本元数据里抽出所有官方文件的指纹。
+fn file_fingerprints(
+    metadata: &GameVersionMetadata,
+) -> std::collections::BTreeMap<String, FileFingerprint> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut insert = |entry: FileFingerprint| {
+        out.insert(entry.path.clone(), entry);
+    };
+    if let Some(artifact) = metadata.downloads.get("client") {
+        insert(FileFingerprint {
+            path: "client.jar".to_owned(),
+            size: artifact.size,
+            hash: artifact.sha1.clone(),
+        });
+    }
+    for library in &metadata.libraries {
+        let Some(artifact) = &library.downloads.artifact else {
+            continue;
+        };
+        insert(FileFingerprint {
+            path: artifact
+                .path
+                .clone()
+                .unwrap_or_else(|| library.name.clone()),
+            size: artifact.size,
+            hash: artifact.sha1.clone(),
+        });
+    }
+    if let Some(index) = &metadata.asset_index {
+        insert(FileFingerprint {
+            path: format!("assets/indexes/{}.json", index.id),
+            size: index.size,
+            hash: index.sha1.clone(),
+        });
+    }
+    out
+}
+
+/// 客户端更新检查的结果。
+///
+/// 三个数分别回答不同的问题。之前只给一个布尔值加 `changed_files: 0|1`，用户
+/// 看到「有改动」却不知道改了什么、要做多少事：
+///   - `added`   —— 官方清单新增了文件；
+///   - `removed` —— 本地有、官方清单里没了；
+///   - `changed` —— 同一路径的大小或校验值变了（Mojang 重新发布了它）。
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientUpdateStatus {
     pub up_to_date: bool,
-    pub changed_files: usize,
+    pub added: usize,
+    pub removed: usize,
+    pub changed: usize,
 }
 
+impl ClientUpdateStatus {
+    /// 需要重新下载或替换的文件总数。
+    pub fn total_changes(&self) -> usize {
+        self.added + self.removed + self.changed
+    }
+}
+
+/// 比对本地的官方版本配置与 Mojang 当前清单。
+///
+/// 这里比的是**元数据**，不是磁盘上的实际文件：要检查文件是否损坏必须逐个读盘
+/// 算 SHA-1（几千个文件、几百 MB），那是 [`repair_instance`] 的职责。两者回答
+/// 的问题不同——这里问「Mojang 有没有换文件」，那里问「我的文件还在不在」。
+///
+/// 这也是为什么界面现在把「补全文件」放在主位：Mojang 几乎从不重发同一版本的
+/// 元数据，这个检查绝大多数时候只会返回「已是最新」，而用户真正会遇到的是文件
+/// 损坏与下载中断。
 pub async fn check_client_update(
     client: &reqwest::Client,
     instance: &InstanceRecord,
@@ -101,31 +170,39 @@ pub async fn check_client_update(
         SourcePreference::Official,
     )
     .await?;
-    let changed = artifact_fingerprint(&remote) != artifact_fingerprint(&local);
+    let local_set = file_fingerprints(&local);
+    let remote_set = file_fingerprints(&remote);
+    let added = remote_set
+        .keys()
+        .filter(|path| !local_set.contains_key(*path))
+        .count();
+    let removed = local_set
+        .keys()
+        .filter(|path| !remote_set.contains_key(*path))
+        .count();
+    // 同一路径在两边都有、但大小或校验值不同，才算「被替换」。
+    let changed = remote_set
+        .iter()
+        .filter(|(path, entry)| local_set.get(*path).is_some_and(|old| old != *entry))
+        .count();
     Ok(ClientUpdateStatus {
-        up_to_date: !changed,
-        changed_files: usize::from(changed),
+        up_to_date: added + removed + changed == 0,
+        added,
+        removed,
+        changed,
     })
 }
 
-/// Stable digest over the artifact-bearing parts of a profile.
-fn artifact_fingerprint(metadata: &GameVersionMetadata) -> String {
-    #[derive(serde::Serialize)]
-    struct ArtifactView<'a> {
-        downloads: &'a std::collections::HashMap<String, Artifact>,
-        asset_index: Option<&'a AssetIndexRef>,
-        libraries: &'a [Library],
-        logging: Option<&'a serde_json::Value>,
-    }
-    let view = ArtifactView {
-        downloads: &metadata.downloads,
-        asset_index: metadata.asset_index.as_ref(),
-        libraries: &metadata.libraries,
-        logging: metadata.logging.as_ref(),
-    };
-    let bytes = serde_json::to_vec(&view).expect("metadata view serialization");
-    hex::encode(Sha256::digest(&bytes))
-}
+/// 校验并补全实例的官方文件（PCL2「补全文件」的等价物）。
+///
+/// 逐个比对已存在文件的 SHA-1：缺失的与被修改过的重新下载，通过校验的直接跳过。
+/// 它解决的是用户真正会遇到的问题——下载中断、磁盘损坏、手动删了某个库——而不是
+/// 「Mojang 有没有改元数据」这种几乎总是否定的检查。
+///
+/// 与 [`install_vanilla`] 是同一个实现：下载引擎对每个文件先校验再决定是否下载，
+/// 所以它天然就是「校验并补全」语义。保留这个别名是为了让调用点表达意图——
+/// 「补全」与「首次安装」在界面与日志上应当可区分。
+pub use install_vanilla as repair_instance;
 
 async fn install_inner(
     client: &reqwest::Client,
@@ -215,74 +292,74 @@ async fn install_inner(
                 None,
             );
         }
-        if let Some((classifier, extract)) = native_classifier(library) {
-            if let Some(artifact) = library.downloads.classifiers.get(&classifier) {
-                let relative = safe_library_path(
-                    artifact
-                        .path
-                        .as_deref()
-                        .map(PathBuf::from)
-                        .or_else(|| maven_path(&library.name))
-                        .ok_or_else(|| {
-                            InstallError::InvalidMetadata(format!(
-                                "invalid native library: {}",
-                                library.name
-                            ))
-                        })?,
-                )?;
-                let archive_path = libraries_dir.join(relative);
-                add_artifact(
-                    &mut artifacts,
-                    &format!("native:{}", library.name),
-                    &format!("原生依赖 {}", library.name),
-                    artifact,
-                    archive_path.clone(),
-                    None,
-                );
-                native_archives.push(NativeArchive {
-                    archive: archive_path,
-                    destination: natives_dir.clone(),
-                    excludes: extract.exclude.clone(),
-                });
-            }
+        if let Some((classifier, extract)) = native_classifier(library)
+            && let Some(artifact) = library.downloads.classifiers.get(&classifier)
+        {
+            let relative = safe_library_path(
+                artifact
+                    .path
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .or_else(|| maven_path(&library.name))
+                    .ok_or_else(|| {
+                        InstallError::InvalidMetadata(format!(
+                            "invalid native library: {}",
+                            library.name
+                        ))
+                    })?,
+            )?;
+            let archive_path = libraries_dir.join(relative);
+            add_artifact(
+                &mut artifacts,
+                &format!("native:{}", library.name),
+                &format!("原生依赖 {}", library.name),
+                artifact,
+                archive_path.clone(),
+                None,
+            );
+            native_archives.push(NativeArchive {
+                archive: archive_path,
+                destination: natives_dir.clone(),
+                excludes: extract.exclude.clone(),
+            });
         }
     }
 
-    if let Some(logging) = &metadata.logging {
-        if let Some(client_logging) = logging.get("client") {
-            let file = client_logging.get("file").ok_or_else(|| {
-                InstallError::InvalidMetadata("client logging file entry is absent".to_owned())
+    if let Some(logging) = &metadata.logging
+        && let Some(client_logging) = logging.get("client")
+    {
+        let file = client_logging.get("file").ok_or_else(|| {
+            InstallError::InvalidMetadata("client logging file entry is absent".to_owned())
+        })?;
+        let id = file
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                InstallError::InvalidMetadata("client logging id is absent".to_owned())
             })?;
-            let id = file
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    InstallError::InvalidMetadata("client logging id is absent".to_owned())
-                })?;
-            let url = file
-                .get("url")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    InstallError::InvalidMetadata("client logging URL is absent".to_owned())
-                })?;
-            let target = assets_dir.join("log_configs").join(id);
-            artifacts.insert(
-                target.clone(),
-                ArtifactSpec {
-                    id: format!("logging:{id}"),
-                    label: format!("日志配置 {id}"),
-                    url: url.to_owned(),
-                    mirror_url: None,
-                    destination: target,
-                    size: file.get("size").and_then(serde_json::Value::as_u64),
-                    sha1: file
-                        .get("sha1")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned),
-                    sha256: None,
-                },
-            );
-        }
+        let url = file
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                InstallError::InvalidMetadata("client logging URL is absent".to_owned())
+            })?;
+        let target = assets_dir.join("log_configs").join(id);
+        artifacts.insert(
+            target.clone(),
+            ArtifactSpec {
+                id: format!("logging:{id}"),
+                label: format!("日志配置 {id}"),
+                url: url.to_owned(),
+                mirror_url: None,
+                destination: target,
+                size: file.get("size").and_then(serde_json::Value::as_u64),
+                sha1: file
+                    .get("sha1")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                sha256: None,
+            },
+        );
     }
 
     let mut asset_index_path = None;
@@ -385,57 +462,6 @@ async fn install_inner(
 
     control.checkpoint().await?;
     Ok(())
-}
-
-#[cfg(test)]
-mod asset_tests {
-    use super::*;
-
-    #[test]
-    fn client_update_fingerprint_tracks_artifact_changes_only() {
-        let base: GameVersionMetadata = serde_json::from_value(serde_json::json!({
-            "id": "1.21.4",
-            "downloads": {"client": {"url": "https://piston-meta.mojang.com/a.jar", "sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size": 1}},
-            "assetIndex": {"id": "5", "url": "https://piston-meta.mojang.com/5.json", "sha1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "size": 2, "totalSize": 3},
-            "libraries": [{"name": "g:a:1", "downloads": {"artifact": {"url": "https://libraries.minecraft.net/g.jar", "sha1": "cccccccccccccccccccccccccccccccccccccccc", "size": 4}}}],
-            "arguments": {"game": ["--x"], "jvm": ["-Dy=1"]}
-        })).unwrap();
-        let mut republished = base.clone();
-        republished
-            .downloads
-            .get_mut("client")
-            .unwrap()
-            .sha1
-            .replace("dddddddddddddddddddddddddddddddddddddddd".to_owned());
-        assert_ne!(
-            artifact_fingerprint(&republished),
-            artifact_fingerprint(&base)
-        );
-        // Cosmetic-only changes (release time/type/argument text) do not trigger a repair.
-        let mut cosmetic = base.clone();
-        cosmetic
-            .extra
-            .insert("time".to_owned(), serde_json::json!("2026-01-01T00:00:00Z"));
-        assert_eq!(artifact_fingerprint(&cosmetic), artifact_fingerprint(&base));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn virtual_asset_materialization_refuses_symlink_destinations() {
-        use std::os::unix::fs::symlink;
-        let root = std::env::temp_dir().join(format!("mfmcl-asset-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let source = root.join("source");
-        let victim = root.join("victim");
-        let destination = root.join("virtual/item");
-        std::fs::write(&source, b"verified asset").unwrap();
-        std::fs::write(&victim, b"keep safe").unwrap();
-        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
-        symlink(&victim, &destination).unwrap();
-        assert!(materialize_assets(&[(source, destination)]).is_err());
-        assert_eq!(std::fs::read(victim).unwrap(), b"keep safe");
-        std::fs::remove_dir_all(root).unwrap();
-    }
 }
 
 pub(crate) fn safe_library_path(path: PathBuf) -> Result<PathBuf, InstallError> {
@@ -726,4 +752,99 @@ fn extract_native_archive(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::*;
+
+    #[test]
+    fn client_update_fingerprint_tracks_artifact_changes_only() {
+        let base: GameVersionMetadata = serde_json::from_value(serde_json::json!({
+            "id": "1.21.4",
+            "downloads": {"client": {"url": "https://piston-meta.mojang.com/a.jar", "sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size": 1}},
+            "assetIndex": {"id": "5", "url": "https://piston-meta.mojang.com/5.json", "sha1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "size": 2, "totalSize": 3},
+            "libraries": [{"name": "g:a:1", "downloads": {"artifact": {"url": "https://libraries.minecraft.net/g.jar", "sha1": "cccccccccccccccccccccccccccccccccccccccc", "size": 4}}}],
+            "arguments": {"game": ["--x"], "jvm": ["-Dy=1"]}
+        })).unwrap();
+        let mut republished = base.clone();
+        republished
+            .downloads
+            .get_mut("client")
+            .unwrap()
+            .sha1
+            .replace("dddddddddddddddddddddddddddddddddddddddd".to_owned());
+        assert_ne!(file_fingerprints(&republished), file_fingerprints(&base));
+        // 只改展示信息（发布时间、启动参数文本）不应触发补全。
+        let mut cosmetic = base.clone();
+        cosmetic
+            .extra
+            .insert("time".to_owned(), serde_json::json!("2026-01-01T00:00:00Z"));
+        assert_eq!(file_fingerprints(&cosmetic), file_fingerprints(&base));
+    }
+
+    /// 差异分项计数必须准确：新增 / 移除 / 替换是三件不同的事。
+    #[test]
+    fn update_status_counts_added_removed_and_changed_separately() {
+        let build = |client_sha: &str, extra_lib: Option<&str>| -> GameVersionMetadata {
+            let mut libraries = vec![serde_json::json!({
+                "name": "g:a:1",
+                "downloads": {"artifact": {"url": "https://libraries.minecraft.net/g.jar", "sha1": "c".repeat(40), "size": 4}}
+            })];
+            if let Some(name) = extra_lib {
+                libraries.push(serde_json::json!({
+                    "name": name,
+                    "downloads": {"artifact": {"url": "https://libraries.minecraft.net/e.jar", "sha1": "e".repeat(40), "size": 8}}
+                }));
+            }
+            serde_json::from_value(serde_json::json!({
+                "id": "1.21.4",
+                "downloads": {"client": {"url": "https://piston-meta.mojang.com/a.jar", "sha1": client_sha, "size": 1}},
+                "libraries": libraries,
+                "arguments": {"game": [], "jvm": []}
+            })).unwrap()
+        };
+
+        let local = build(&"a".repeat(40), None);
+        let remote = build(&"d".repeat(40), Some("g:b:2"));
+        let local_set = file_fingerprints(&local);
+        let remote_set = file_fingerprints(&remote);
+        let added = remote_set
+            .keys()
+            .filter(|p| !local_set.contains_key(*p))
+            .count();
+        let removed = local_set
+            .keys()
+            .filter(|p| !remote_set.contains_key(*p))
+            .count();
+        let changed = remote_set
+            .iter()
+            .filter(|(p, e)| local_set.get(*p).is_some_and(|old| old != *e))
+            .count();
+        // 新增一个库、客户端 jar 被替换，没有移除。
+        assert_eq!(added, 1);
+        assert_eq!(removed, 0);
+        assert_eq!(changed, 1);
+        // 完全相同的两份不应有任何差异。
+        let same = file_fingerprints(&local);
+        assert!(same.keys().all(|p| local_set.contains_key(p)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn virtual_asset_materialization_refuses_symlink_destinations() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("mfmcl-asset-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let victim = root.join("victim");
+        let destination = root.join("virtual/item");
+        std::fs::write(&source, b"verified asset").unwrap();
+        std::fs::write(&victim, b"keep safe").unwrap();
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        symlink(&victim, &destination).unwrap();
+        assert!(materialize_assets(&[(source, destination)]).is_err());
+        assert_eq!(std::fs::read(victim).unwrap(), b"keep safe");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

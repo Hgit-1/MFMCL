@@ -14,7 +14,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
-fn task_progress(
+pub(crate) fn task_progress(
     id: &str,
     app: &AppHandle,
     store: &LauncherStore,
@@ -63,7 +63,7 @@ impl Drop for Guard {
     }
 }
 
-fn instance(store: &LauncherStore, id: &str) -> Result<InstanceRecord, String> {
+pub(crate) fn instance(store: &LauncherStore, id: &str) -> Result<InstanceRecord, String> {
     store
         .list_instances()
         .map_err(|e| e.to_string())?
@@ -71,7 +71,7 @@ fn instance(store: &LauncherStore, id: &str) -> Result<InstanceRecord, String> {
         .find(|i| i.id == id)
         .ok_or("找不到实例。".into())
 }
-fn engine(store: &LauncherStore) -> Result<DownloadEngine, String> {
+pub(crate) fn engine(store: &LauncherStore) -> Result<DownloadEngine, String> {
     let settings = store.load_settings().map_err(|e| e.to_string())?;
     DownloadEngine::new(DownloadSettings {
         source: settings.download.source,
@@ -244,12 +244,11 @@ pub async fn delete_instance(
         .await
         .ok()
         .filter(|game| game.starts_with(&instances_real))
+        && !game_real.starts_with(&target_real)
     {
-        if !game_real.starts_with(&target_real) {
-            // Isolated instances keep their game dir inside the instance dir; if
-            // anything points outside, leave the parent removal to the user.
-            return Err("已删除实例记录；游戏目录在实例目录之外，请手动确认后删除。".into());
-        }
+        // Isolated instances keep their game dir inside the instance dir; if
+        // anything points outside, leave the parent removal to the user.
+        return Err("已删除实例记录；游戏目录在实例目录之外，请手动确认后删除。".into());
     }
     tokio::fs::remove_dir_all(&removed.instance_dir)
         .await
@@ -259,33 +258,50 @@ pub async fn delete_instance(
 #[tauri::command]
 pub async fn search_mods(
     instance_id: String,
-    query: String,
+    request: launcher_core::catalog::ModQuery,
     store: State<'_, LauncherStore>,
     operations: State<'_, Operations>,
 ) -> Result<Vec<launcher_core::CatalogMod>, String> {
     let _guard = operations.acquire(&instance_id)?;
     let target = instance(&store, &instance_id)?;
     let client = launcher_core::catalog::catalog_client()?;
-    launcher_core::catalog::search_mods(&client, &target, &query).await
+    launcher_core::catalog::search_mods(&client, &target, &request).await
 }
 
 #[tauri::command]
 pub async fn list_mod_versions(
     instance_id: String,
     project_id: String,
+    project_type: Option<String>,
     store: State<'_, LauncherStore>,
     operations: State<'_, Operations>,
 ) -> Result<Vec<launcher_core::CatalogVersion>, String> {
     let _guard = operations.acquire(&instance_id)?;
     let target = instance(&store, &instance_id)?;
     let client = launcher_core::catalog::catalog_client()?;
-    launcher_core::catalog::mod_versions(&client, &target, &project_id).await
+    let kind = project_type.unwrap_or_default();
+    launcher_core::catalog::mod_versions_of(&client, &target, &project_id, &kind).await
+}
+
+/// 内容类型 → 实例内的安装目录。
+///
+/// 资源包与光影包**不装进 `mods/`**：游戏只从 `resourcepacks/` 与 `shaderpacks/`
+/// 读取它们，放错目录的结果是「装成功了但游戏里看不到」，比报错更难排查。
+fn content_dir(project_type: &str) -> Result<&'static str, String> {
+    match launcher_core::catalog::normalize_project_type(project_type)? {
+        "resourcepack" => Ok("resourcepacks"),
+        "shader" => Ok("shaderpacks"),
+        "datapack" => Ok("datapacks"),
+        // 模组与整合包的文件都落到 mods/（整合包走另一条导入路径，不经过这里）。
+        _ => Ok("mods"),
+    }
 }
 
 #[tauri::command]
 pub async fn install_mod_version(
     instance_id: String,
     version: launcher_core::CatalogVersion,
+    project_type: Option<String>,
     app: AppHandle,
     store: State<'_, LauncherStore>,
     operations: State<'_, Operations>,
@@ -293,9 +309,17 @@ pub async fn install_mod_version(
 ) -> Result<String, String> {
     let _guard = operations.acquire(&instance_id)?;
     let target = instance(&store, &instance_id)?;
+    let kind = project_type.unwrap_or_default();
+    let dir_name = content_dir(&kind)?;
+    let label = match dir_name {
+        "resourcepacks" => "资源包",
+        "shaderpacks" => "光影包",
+        "datapacks" => "数据包",
+        _ => "模组",
+    };
     let control = downloads.start(
         &instance_id,
-        &format!("安装模组 {}", version.file_name),
+        &format!("安装{label} {}", version.file_name),
         &store,
         &app,
     )?;
@@ -303,10 +327,40 @@ pub async fn install_mod_version(
     let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
     let result = launcher_core::catalog::install_mod_version(
         &version,
-        &target.game_dir.join("mods"),
+        &target.game_dir.join(dir_name),
         &engine,
     )
     .await;
+    drop(tx);
+    let _ = progress_task.await;
+    downloads.finish(&instance_id, result.is_ok(), &store, &app)?;
+    result
+}
+
+#[tauri::command]
+pub async fn download_mod_version(
+    instance_id: String,
+    version: launcher_core::CatalogVersion,
+    directory: String,
+    app: AppHandle,
+    store: State<'_, LauncherStore>,
+    operations: State<'_, Operations>,
+    downloads: State<'_, Arc<crate::downloads::Downloads>>,
+) -> Result<String, String> {
+    let _guard = operations.acquire(&instance_id)?;
+    let target = std::path::PathBuf::from(directory);
+    if target.as_os_str().is_empty() {
+        return Err("请选择下载目录。".into());
+    }
+    let control = downloads.start(
+        &instance_id,
+        &format!("下载模组 {}", version.file_name),
+        &store,
+        &app,
+    )?;
+    let engine = engine(&store)?.with_control(control);
+    let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
+    let result = launcher_core::catalog::download_mod_version_to(&version, &target, &engine).await;
     drop(tx);
     let _ = progress_task.await;
     downloads.finish(&instance_id, result.is_ok(), &store, &app)?;
@@ -325,13 +379,70 @@ pub async fn import_modpack(
     operations: State<'_, Operations>,
     downloads: State<'_, Arc<crate::downloads::Downloads>>,
 ) -> Result<InstanceRecord, String> {
+    import_modpack_inner(
+        PathBuf::from(path),
+        &app,
+        store.inner(),
+        &operations,
+        downloads.inner(),
+    )
+    .await
+}
+
+/// 导入一个已在本地的整合包文件。
+///
+/// 拆出内核是为了让「下载并导入」能复用同一套事务，而不必经过 Tauri 的
+/// `State` 包装——命令函数之间不能直接互相调用，`State` 只由框架注入。
+async fn import_modpack_inner(
+    path: PathBuf,
+    app: &AppHandle,
+    store: &LauncherStore,
+    operations: &Operations,
+    downloads: &Arc<crate::downloads::Downloads>,
+) -> Result<InstanceRecord, String> {
     let _guard = operations.acquire("modpack-import")?;
-    let path = PathBuf::from(path);
-    let prepared = modpacks::prepare_pack(&path)?;
+    let prepared = match modpacks::prepare_pack(&path)? {
+        modpacks::PackPreparation::Ready(prepared) => prepared,
+        modpacks::PackPreparation::NeedsOnlineLookup {
+            path: pack_path,
+            manifest,
+        } => {
+            /*
+             * CurseForge 格式：清单只给 fileID，下载地址与哈希必须联网查。
+             *
+             * 这里就地补全，而不是把「待补全」状态抛给前端：补全需要 CurseForge key，
+             * 而 key 只存在于后端；让前端拿到 fileID 再去另一次 IPC 换地址，等于把
+             * 一个本该原子的步骤拆成两段，中间任何一步失败都会留下半完成状态。
+             */
+            let key = crate::curseforge::read_key_for_internal()
+                .await
+                .ok_or_else(|| {
+                    "这个整合包是 CurseForge 格式，导入需要查询文件下载地址；\
+                     请先在设置里配置 CurseForge API Key。"
+                        .to_owned()
+                })?;
+            let ids = manifest.file_ids();
+            let details = launcher_core::curseforge::files_by_ids(&key, &ids).await?;
+            let (files, skipped) = modpacks::curseforge_files_to_pack_files(&manifest, &details);
+            if files.is_empty() {
+                return Err(
+                    "这个整合包里的文件都无法自动下载（可能都被作者限制为第三方分发）。\
+                     请到 CurseForge 网页手动下载。"
+                        .into(),
+                );
+            }
+            if skipped > 0 {
+                // 跳过是允许的（受限文件、无法归类的资源包），但必须让用户知道数量。
+                eprintln!("整合包导入：跳过 {skipped} 个无法自动下载或无法归类的文件");
+            }
+            let index = manifest.to_pack_index(files);
+            modpacks::prepare_from_completed_index(&pack_path, index)?
+        }
+    };
     let preview = prepared.preview().clone();
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     // Construct the engine before creating a persistent instance, so initialization failures leave no row.
-    let engine = engine(&store)?;
+    let engine = engine(store)?;
     let target = store
         .create_instance(
             &CreateInstanceInput {
@@ -342,7 +453,7 @@ pub async fn import_modpack(
         )
         .map_err(|e| e.to_string())?;
     let _instance_guard = operations.acquire(&target.id)?;
-    let control = match downloads.start(&target.id, &format!("导入 {}", preview.name), &store, &app)
+    let control = match downloads.start(&target.id, &format!("导入 {}", preview.name), store, app)
     {
         Ok(control) => control,
         Err(error) => {
@@ -351,7 +462,7 @@ pub async fn import_modpack(
         }
     };
     let engine = engine.with_control(control);
-    let (tx, progress_task) = task_progress(&target.id, &app, &store, &downloads);
+    let (tx, progress_task) = task_progress(&target.id, app, store, downloads);
     let result = async {
         modpacks::import_prepared_pack(prepared, &target, &engine, Some(tx)).await?;
         // The pending request participates in the import transaction, including rollback on write failure.
@@ -360,7 +471,7 @@ pub async fn import_modpack(
     }
     .await;
     let _ = progress_task.await;
-    let task_saved = downloads.finish(&target.id, result.is_ok(), &store, &app);
+    let task_saved = downloads.finish(&target.id, result.is_ok(), store, app);
     if let Err(mut error) = result {
         match std::fs::remove_dir_all(&target.instance_dir) {
             Ok(()) => {}
@@ -378,6 +489,89 @@ pub async fn import_modpack(
     task_saved?;
     Ok(target)
 }
+
+/// 从网络下载一个整合包文件，然后走与本地导入完全相同的流程。
+///
+/// 为什么不直接让前端「先下载到某个目录、再调用 import_modpack」：
+/// 中间文件的位置、校验、失败后的清理都该由后端一次性负责。前端只描述「要哪个
+/// 版本」，不接触临时文件路径，也就不会出现「下载到了但导入路径写错」这种跨 IPC
+/// 的协调问题。
+///
+/// 下载下来的文件按其在服务器上的扩展名命名（`.mrpack` / `.zip`），
+/// `prepare_pack` 依靠容器内容而不是扩展名判断格式，所以命名只影响可读性。
+#[tauri::command]
+pub async fn download_and_import_modpack(
+    instance_hint: Option<String>,
+    version: launcher_core::curseforge::CurseForgeVersion,
+    app: AppHandle,
+    store: State<'_, LauncherStore>,
+    operations: State<'_, Operations>,
+    downloads: State<'_, Arc<crate::downloads::Downloads>>,
+) -> Result<InstanceRecord, String> {
+    /*
+     * `instance_hint` 只用于给下载任务挂一个可见的归属。
+     *
+     * 整合包会创建**新**实例，所以这里没有真正意义上的「当前实例」；但下载任务
+     * 需要一个 instance_id 才能出现在下载页。用调用方给的 id 是一个折中：任务
+     * 会显示在用户当前正在看的实例下面，导入完成后新实例才出现。
+     */
+    let task_owner = instance_hint.unwrap_or_else(|| "modpack-download".to_owned());
+
+    // 文件名与扩展名的校验都在 `download_to` 内部按内容类型完成（整合包允许
+    // `.zip`/`.mrpack`），这里不再重复——重复一份规则只会在两处漂移。
+
+    // 下载到一个独立的临时目录：导入成功后整个目录删掉，失败也不留垃圾。
+    let staging = std::env::temp_dir().join(format!("mfmcl-pack-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&staging).map_err(|e| format!("无法创建下载目录：{e}"))?;
+
+    let result = async {
+        // 下载阶段不获取 operations 锁：真正需要串行化的是导入（创建实例、写文件），
+        // 那是 import_modpack_inner 自己的责任。外层若也去 acquire，同一个 key 会让
+        // 被调用的函数直接报「已有任务在运行」——虽然不会卡死，但功能永远失败。
+        //
+        // engine 必须在 downloads.start 之前构造：先 start 后建 engine 的话，一旦
+        // engine 失败（设置读取失败、并发数非法），那条下载任务会永远停在 Running，
+        // 之后同一个 instance 的下载都会被拒绝。
+        let engine = engine(store.inner())?;
+        let control = downloads.start(
+            &task_owner,
+            &format!("下载整合包 {}", version.file_name),
+            store.inner(),
+            &app,
+        )?;
+        let engine = engine.with_control(control);
+        let (tx, progress_task) =
+            task_progress(&task_owner, &app, store.inner(), downloads.inner());
+
+        let downloaded = launcher_core::curseforge::download_to(
+            &engine,
+            &version,
+            launcher_core::curseforge::ContentKind::Modpack,
+            &staging,
+        )
+        .await;
+        drop(tx);
+        let _ = progress_task.await;
+        downloads.finish(&task_owner, downloaded.is_ok(), store.inner(), &app)?;
+        let path = downloaded?;
+
+        // 与本地导入共用同一套事务：校验包结构 → 创建实例 → 下载文件 → 失败回滚。
+        import_modpack_inner(
+            path.into(),
+            &app,
+            store.inner(),
+            &operations,
+            downloads.inner(),
+        )
+        .await
+    }
+    .await;
+
+    // 无论成败都清理暂存目录。导入流程已经把需要的文件读进内存/实例目录了。
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
 #[tauri::command]
 pub fn export_modpack(
     instance_id: String,
@@ -479,6 +673,41 @@ pub async fn install_pending_pack_loader(
     tokio::fs::remove_file(path)
         .await
         .map_err(|e| format!("加载器已处理，但请求标记无法移除：{e}"))
+}
+
+/// 重装实例上记录的那个加载器，用于修复损坏的加载器文件。
+///
+/// 只在 [`launcher_core::loaders::diagnose_loader`] 报 `Broken` 时调用。
+/// 它复用正常的安装流程，只是允许覆盖同一个加载器：
+///   - Fabric / Quilt 会重新下载 loader 的库并重写 `launch.json`；
+///   - Forge / NeoForge 会重跑整套 processor（这也是修复被打补丁客户端唯一的办法）。
+///
+/// 需要临时把实例状态当成 `Ready`：`install_loader` 会拒绝非就绪实例，而调用点
+/// 可能是 `failed` 的实例（补全正是在这种实例上最有用）。状态不会写回数据库——
+/// 外层拿到成功结果后会由 `install_vanilla` 设成 `Ready`。
+pub async fn repair_loader(
+    root: &std::path::Path,
+    instance: &InstanceRecord,
+    store: &LauncherStore,
+    engine: &DownloadEngine,
+) -> Result<(), String> {
+    let Some((name, version)) = instance.loader.split_once('@') else {
+        return Err(format!("加载器记录格式无效：{}", instance.loader));
+    };
+    let Some(kind) = launcher_core::loaders::LoaderKind::from_name(name) else {
+        return Err(format!("未识别的加载器：{name}"));
+    };
+    // 从数据库重读一次：调用点手里的记录可能是补全前的快照。
+    let latest = store
+        .list_instances()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|record| record.id == instance.id)
+        .ok_or("找不到实例。")?;
+    let mut target = latest;
+    target.state = InstanceState::Ready;
+    launcher_core::loaders::reinstall_loader(root, &target, store, engine, kind, version, None)
+        .await
 }
 
 #[cfg(test)]

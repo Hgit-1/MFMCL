@@ -3,12 +3,12 @@ import { Activity, Download, Gamepad2, HardDrive, Palette, RotateCcw, Search, Se
 import type { GameInstance } from '../types';
 import { applyAccent as applyAccentRamp } from '../utils/accent';
 import { JavaSettingsSection } from './JavaSettingsSection';
-import { autoAllocateMb, deviceMemoryMbSync, lastKnownUsedMb } from '../utils/memory';
 import { MemorySection } from './MemorySection';
 import { DEFAULT_PREFS, SETTINGS_STORAGE_KEY, readPrefs, type LauncherPrefs, type ThemeMode } from '../utils/launcherPrefs';
 import { LanguageSection } from './LanguageSection';
 import { SkinSection } from './SkinSection';
 import { useI18n } from '../utils/i18n';
+import { aria2Status, errorText, type Aria2Availability } from '../utils/native';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
 import { loc, type Localized } from '../utils/i18n/localized';
 import {
@@ -22,6 +22,10 @@ import {
   type JavaRuntime,
 } from '../utils/java';
 import { detectJavaRuntimes, importJavaRuntime, revealJavaFolder } from '../utils/javaBridge';
+import { LauncherUpdateCard } from './LauncherUpdateCard';
+import { BackgroundSection } from './BackgroundSection';
+import { CurseForgeKeyCard } from './CurseForgeKeyCard';
+import { readBackgroundSetting, saveBackgroundSetting, type BackgroundSetting } from '../utils/background';
 import styles from './SettingsPanel.module.css';
 
 type TabId = 'general' | 'game' | 'java' | 'download' | 'appearance' | 'advanced';
@@ -48,10 +52,23 @@ type SettingsPanelProps = {
   onJavaRuntimesChange?: (runtimes: JavaRuntime[]) => void;
   onGlobalJavaChange?: (path: string) => void;
   onInstanceJavaChange?: (instanceId: string, setting: InstanceJavaSetting) => void;
+  /** 把界面偏好交给上层写入后端 `LauncherSettings`；失败时抛错以阻止「已保存」状态。 */
+  onSaveSettings?: (prefs: LauncherPrefs) => Promise<void>;
+  /**
+   * 背景设置变化。
+   *
+   * 与 `onSaveSettings` 分开：背景的二进制在 IndexedDB 里，元数据在 localStorage
+   * 里，两者都不经过后端。而且它需要**即时生效**——用户拖一下遮罩滑条就该看到
+   * 效果，不能等到点保存。
+   */
+  onBackgroundChange?: (setting: BackgroundSetting) => void;
+  onNotice?: (message: string) => void;
+  /** 当前解析出的主题，供背景预览选底色。 */
+  dark: boolean;
 };
 
-export function SettingsPanel({ theme, onThemeChange, onClose, instance, initialTab, onJavaRuntimesChange, onGlobalJavaChange, onInstanceJavaChange }: SettingsPanelProps) {
-  const { t, language, preference } = useI18n();
+export function SettingsPanel({ theme, onThemeChange, onClose, instance, initialTab, onJavaRuntimesChange, onGlobalJavaChange, onInstanceJavaChange, onSaveSettings, onBackgroundChange, onNotice, dark }: SettingsPanelProps) {
+  const { t, language } = useI18n();
   const [prefs, setPrefs] = useState<LauncherPrefs>(() => {
     // 从未保存过强调色时，回落到屏幕上实际生效的值，而不是硬编码的默认色。
     const currentAccent = getComputedStyle(document.documentElement).getPropertyValue('--color-primary-500').trim();
@@ -64,11 +81,64 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
   });
   const [javaBusy, setJavaBusy] = useState(false);
   const [tab, setTab] = useState<TabId>(initialTab ?? (instance ? 'java' : 'general'));
+  /**
+   * 背景设置。
+   *
+   * 独立于 `prefs`：`prefs` 是一个整体提交给后端的表单，而背景需要即时生效。
+   * 混在一起会导致「拖遮罩滑条 → 背景变了 → 点关闭 → 背景没变回去」这种
+   * 半保存状态，而这正是设置面板已经为强调色避免过的坑。
+   */
+  const [background, setBackground] = useState<BackgroundSetting>(readBackgroundSetting);
+
+  /**
+   * 背景变化：立即落盘并通知外层。
+   *
+   * 不等待「保存」按钮：背景是一眼可见的东西，用户拖滑条的时候就应该看到结果。
+   * 这一步也不可能失败到需要回滚——最坏情况是隐私模式下本次会话有效。
+   */
+  const changeBackground = (next: BackgroundSetting) => {
+    setBackground(next);
+    saveBackgroundSetting(next);
+    onBackgroundChange?.(next);
+  };
+
+  /**
+   * 切换页签时把内容区滚回顶部。
+   *
+   * 为什么必须显式做：React 复用同一个 DOM 节点时，滚动位置会被保留。用户在
+   * 「游戏」页签滚到中间，切到「下载」后会停在另一页的同一个像素位置——而两组
+   * 内容的长度与顺序完全不同，于是落点往往是某个不相干条目的中段（实测停在
+   * 「内容来源」，页首的「游戏窗口」反而看不到）。
+   *
+   * 这不会丢失用户的位置感：页签是并列的目的地，不是同一条长列表的分段，
+   * 用户期望的是「打开这一页并从头看」。
+   *
+   * 依赖 `tab` 而不是在 onClick 里调用：页签也可能由搜索路由（openSearchResult）
+   * 改变，放在 effect 里两条路径都能覆盖。
+   */
+  useEffect(() => {
+    bodyRef.current?.scrollTo({ top: 0 });
+  }, [tab]);
   const [query, setQuery] = useState('');
   const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void aria2Status()
+      .then(result => { if (alive) setAria2(result); })
+      .catch(() => { if (alive) setAria2(null); });
+    return () => { alive = false; };
+  }, []);
+  /** 正在等待后端确认。用于禁用保存按钮，避免连点产生并发写入。 */
+  const [saving, setSaving] = useState(false);
+  /** aria2 实际可用性。开关打开但二进制缺失/校验失败时，必须让用户看见。 */
+  const [aria2, setAria2] = useState<Aria2Availability | null>(null);
+  /** 后端拒绝保存的原因（例如内存超上限），显示在页脚上方。 */
+  const [saveError, setSaveError] = useState('');
   const [javaStatus, setJavaStatus] = useState<Localized>(loc('java.detectIdle'));
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const panelRef = useRef<HTMLDivElement>(null);
+  /** 可滚动的内容区。切换页签时要把它的滚动位置归零。 */
+  const bodyRef = useRef<HTMLDivElement>(null);
   const dragState = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   // Snapshot the values that are actually persisted. Closing without saving
   // restores them instead of leaving live-preview changes behind.
@@ -105,7 +175,18 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
     ];
     setTab(routes.find(([key]) => t(key).split(/\s+/).some(term => term && text.includes(term)))?.[1] ?? 'general');
   };
-  const save = () => {
+  /**
+   * 保存设置。
+   *
+   * 关键的一步是 `onSaveSettings`：它把界面偏好翻译成后端 `LauncherSettings`
+   * 并真正落库。之前这里只写 localStorage，还往 localStorage 塞了一份没人读的
+   * 「原生设置草稿」——界面显示「已保存」，而启动器实际使用的仍是旧值，
+   * 用户只有在下次启动发现设置没生效时才会察觉。
+   *
+   * 顺序上先等后端成功再标记「已保存」：后端会做范围校验，失败时必须让用户
+   * 看到失败，而不是看到一个绿色的成功状态。
+   */
+  const save = async () => {
     const nextPrefs = { ...prefs };
     setPrefs(nextPrefs);
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(nextPrefs));
@@ -118,16 +199,39 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
       saveInstanceJavaSettings(all);
       onInstanceJavaChange?.(instance.id, instanceJavaSetting);
     }
-    // Keep the native command payload aligned with LauncherSettings in the Rust backend.
-    localStorage.setItem('mfmcl-native-settings-draft', JSON.stringify({ schemaVersion: 3, themeMode: nextPrefs.theme, themePreset: nextPrefs.themePreset, customAccent: nextPrefs.customAccent, customBackground: nextPrefs.backgroundImage || null, beginnerMode: false, showGameLog: nextPrefs.showGameLog, javaPath: nextPrefs.javaPath || null, memoryMb: nextPrefs.memoryMode === 'auto' ? autoAllocateMb({ totalMb: deviceMemoryMbSync(), modCount: instance?.modCount, usedMb: lastKnownUsedMb() }) : nextPrefs.memoryMb, windowWidth: nextPrefs.windowWidth, windowHeight: nextPrefs.windowHeight, extraJvmArgs: nextPrefs.extraJvmArgs, gameArgs: nextPrefs.gameArgs, preLaunchCommand: nextPrefs.preLaunchCommand, memoryMode: nextPrefs.memoryMode, optimizeMemory: nextPrefs.optimizeMemory, processPriority: 'normal', fullscreen: nextPrefs.fullscreen, launcherVisibility: nextPrefs.launcherVisibility === 'hide' ? 'hide' : 'keep', defaultIsolated: nextPrefs.defaultVersionIsolation, closeAfterLaunch: nextPrefs.closeAfterLaunch, speedLimitKbps: nextPrefs.speedLimitKbps, downloadDirectory: nextPrefs.downloadDirectory || null, verifySsl: nextPrefs.verifySsl, communitySource: nextPrefs.communitySource, modpackFilenameFormat: nextPrefs.modpackFilenameFormat, modpackMergeMode: nextPrefs.modpackMergeMode, showGameHints: nextPrefs.showGameHints, showDebugHints: nextPrefs.showDebugHints, autoLanguage: preference === 'system', announcementPolicy: nextPrefs.announcementPolicy, cacheDirectory: nextPrefs.cacheDirectory || null, anonymousUsage: nextPrefs.anonymousUsage, opacity: nextPrefs.opacity, hiddenTheme: nextPrefs.hiddenTheme, showLauncherLogo: nextPrefs.showLauncherLogo, backgroundImage: nextPrefs.backgroundImage || null, backgroundMusic: nextPrefs.backgroundMusic, titleBar: nextPrefs.titleBar, homeSource: nextPrefs.homeSource, garbageCollector: 'auto', updatePolicy: 'notify', download: { source: nextPrefs.downloadSource === 'auto' ? 'mixed' : nextPrefs.downloadSource, maxConcurrentDownloads: nextPrefs.maxConcurrentDownloads, connectionsPerFile: nextPrefs.connectionsPerFile, aria2Enabled: nextPrefs.aria2Enabled } }));
-    savedThemeRef.current = nextPrefs.theme;
-    savedAccentRef.current = nextPrefs.customAccent;
-    setSaved(true); window.setTimeout(() => setSaved(false), 2400);
+
+    setSaving(true);
+    try {
+      await onSaveSettings?.(nextPrefs);
+      savedThemeRef.current = nextPrefs.theme;
+      savedAccentRef.current = nextPrefs.customAccent;
+      setSaveError('');
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 2400);
+    } catch (error) {
+      // 保留面板打开，并把后端拒绝的原因显示出来——例如内存超过本机上限。
+      setSaveError(errorText(error, '保存设置失败。'));
+    } finally {
+      setSaving(false);
+    }
   };
   const close = () => {
-    // "关闭" discards unsaved live previews (theme + accent).
-    applyAccent(savedAccentRef.current);
+    /*
+     * 关闭时撤销「未保存」的主题与强调色预览。
+     *
+     * 但「跟随背景配色」是个例外：那个强调色不是面板里的临时预览，而是背景带的
+     * 属性，关掉面板它也该继续生效。只在手动配色时才还原到打开面板时的值。
+     */
+    const autoAccentActive = background.accentMode === 'auto';
+    if (!autoAccentActive) applyAccent(savedAccentRef.current);
     if (theme !== savedThemeRef.current) onThemeChange(savedThemeRef.current);
+    /*
+     * 背景本身不回滚：它已经落盘了。
+     *
+     * 这是它与主题/强调色的关键区别——后两者是为了「先看看效果」才做实时预览，
+     * 关闭即撤销；背景的选择（选哪张图、遮罩多厚）是一次明确的操作，用户不会
+     * 期望关掉面板就丢失。
+     */
     onClose();
   };
   const clampOffset = (value: number, max: number) => Math.max(-max, Math.min(max, value));
@@ -157,6 +261,12 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
     window.addEventListener('resize', resetPosition);
     return () => window.removeEventListener('resize', resetPosition);
   }, []);
+  /*
+   * 恢复默认设置。
+   *
+   * 只重置表单字段，不动背景：背景有自己的「清空」按钮，而且它的素材是几十 MB
+   * 的二进制，混进这个按钮里会让「恢复默认」变成一次不可预期的磁盘清理。
+   */
   const reset = () => { setPrefs(DEFAULT_PREFS); onThemeChange(DEFAULT_PREFS.theme); setSaved(false); };
   const persistRuntimes = (next: JavaRuntime[]) => {
     setJavaRuntimes(next);
@@ -314,9 +424,14 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         <h3>{t('settings.contentSource')}</h3>
         {field(t('settings.downloadSource'), t('settings.downloadSourceHint'),
           <select value={prefs.downloadSource} onChange={e => update('downloadSource', e.target.value)}>
+            {/*
+              「自动」排在第一位并作为默认值：它对应后端的镜像优先 + 官方回退，
+              是唯一会根据网络状况自动选择快的那条路的方式。另外两项是用户明确
+              要求只走某一边时才需要的，排在后面。
+            */}
+            <option value="auto">{t('settings.sourceAuto')}</option>
             <option value="official">{t('settings.sourceOfficial')}</option>
             <option value="bmclapi">{t('settings.sourceBmclapi')}</option>
-            <option value="auto">{t('settings.sourceAuto')}</option>
           </select>)}
         {field(t('settings.proxyMode'), t('settings.proxyModeHint'),
           <select value={prefs.proxyMode} onChange={e => update('proxyMode', e.target.value as LauncherPrefs['proxyMode'])}>
@@ -360,7 +475,35 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
             <small>{t('settings.connectionsUnit')}</small>
           </div>)}
         {toggle(t('settings.aria2'), t('settings.aria2Hint'), prefs.aria2Enabled, v => update('aria2Enabled', v))}
+        {/*
+          aria2 的真实状态。
+          只在开关打开时显示「不可用」的原因：用户没启用加速时，附带与否与他无关，
+          把一个红条常驻在那里只会造成困扰。
+        */}
+        {prefs.aria2Enabled && aria2 && !aria2.bundled && (
+          <div className={styles.inlineNote} role="status">
+            <strong>{t('settings.aria2Unavailable')}</strong>
+            <span>{aria2.problem ?? t('settings.aria2Fallback')}</span>
+          </div>
+        )}
+        {prefs.aria2Enabled && aria2?.bundled && (
+          <div className={styles.inlineNoteOk} role="status">
+            <span>{t('settings.aria2Ready', { values: { version: aria2.version ?? '1.37.0' } })}</span>
+          </div>
+        )}
       </section>
+      {/*
+        CurseForge 的 Key。
+
+        放在「下载」页：「从哪拿到内容」与上面的下载源、代理、并发是同一类设置。
+
+        这一块补的是一个真实的缺口。之前配置入口只在资源包/地图分类里出现（那两类
+        只走 CurseForge，没 key 就整页是表单）；模组分类只在**没有** key 时显示
+        入口。内置 key 随构建发行之后，「已可用」成了默认状态，于是模组页永远不显示
+        配置入口——内置 key 配额耗尽或被轮换时，用户在那里找不到任何能操作的东西，
+        只能等新版本。设置里有一处常驻入口才是正确的兜底。
+      */}
+      <CurseForgeKeyCard onNotice={onNotice} />
       <section className={styles.group}>
         <h3>{t('settings.community')}</h3>
         {field(t('settings.communitySource'), t('settings.communitySourceHint'),
@@ -385,6 +528,16 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
   const appearancePage = (
     <>
       <LanguageSection />
+      {/*
+        背景排在最前：它是「外观」页里最重的一项，用户在别的页签翻来翻去之后
+        回到这里，最先要找的多半是它。
+      */}
+      <BackgroundSection
+        setting={background}
+        onChange={changeBackground}
+        onNotice={onNotice ?? (() => undefined)}
+        dark={dark}
+      />
       <section className={styles.group}>
         <h3>{t('settings.display')}</h3>
         {field(t('settings.opacity'), t('settings.opacityHint'),
@@ -454,6 +607,7 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
           </div>)}
         {field(t('settings.cacheDir'), t('settings.cacheDirHint'),
           <input value={prefs.cacheDirectory} onChange={e => update('cacheDirectory', e.target.value)} placeholder={t('settings.useDefaultDir')} />)}
+        <LauncherUpdateCard />
         {field(t('settings.updatePolicy'), t('settings.updatePolicyHint'),
           <select value={prefs.announcementPolicy} onChange={e => update('announcementPolicy', e.target.value as LauncherPrefs['announcementPolicy'])}>
             <option value="notify">{t('settings.updateNotify')}</option>
@@ -521,14 +675,29 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         </div>
         <button className={styles.close} onClick={close} aria-label={t('settings.closeAria')}><X size={19} /></button>
       </header>
-      <div className={styles.body} tabIndex={0} aria-label={t('settings.bodyAria')}>
+      <div className={styles.body} tabIndex={0} aria-label={t('settings.bodyAria')} ref={bodyRef}>
+        {/*
+          保存失败的横幅放在正文末尾而不是弹一条提示：设置面板是多页签的长表单，
+          用户在最后一页点保存，如果错误只出现在一闪而过的 toast 里，很容易错过，
+          然后以为已经保存成功。这里把后端拒绝的原因留在页面上，直到下次保存。
+        */}
+        {saveError && (
+          <div className={styles.saveError} role="alert">
+            <strong>{t('settings.saveFailed')}</strong>
+            <span>{saveError}</span>
+          </div>
+        )}
         {pages[tab]}
       </div>
       <footer className={styles.footer}>
-        <span className={saved ? styles.saved : ''}>{saved ? t('settings.saved') : t('settings.unsaved')}</span>
+        <span className={saved ? styles.saved : ''}>
+          {saving ? t('settings.saving') : saved ? t('settings.saved') : t('settings.unsaved')}
+        </span>
         <div>
           <button className={styles.cancel} onClick={close}>{t('settings.closeButton')}</button>
-          <button className={styles.save} onClick={save}>{saved ? t('settings.savedButton') : t('settings.saveButton')}</button>
+          <button className={styles.save} onClick={() => void save()} disabled={saving}>
+            {saved ? t('settings.savedButton') : t('settings.saveButton')}
+          </button>
         </div>
       </footer>
     </section>

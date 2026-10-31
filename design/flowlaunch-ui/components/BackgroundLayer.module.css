@@ -1,0 +1,92 @@
+/*
+ * 背景图层。
+ *
+ * 它是 `.app` 的第一个子元素，绝对定位铺满整个窗口，`z-index: 0`；侧栏与内容区
+ * 在它之上（`z-index: 1`）。用绝对定位而不是 `position: fixed`：fixed 会无视
+ * 父级的圆角与裁剪，将来如果给整个窗口加圆角，背景会从角上漏出去。
+ */
+.layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  /*
+   * 独立合成层。视频背景在这里是逐帧重绘的，不给它自己的层会让每次重绘都牵连
+   * 整页的文字与列表。
+   */
+  contain: strict;
+  background: var(--color-bg-primary);
+  animation: fadeIn var(--duration-slow) var(--ease);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/*
+ * 媒体层。
+ *
+ * 模糊做在这一层而不是逐张图上：模糊 `img` 会让图片自身的边界变糊并露出底色，
+ * 用 `transform: scale` 把边缘推出可视区之外就没有这个问题。
+ */
+.image,
+.video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /*
+   * 图片边缘的抗锯齿在放大后会出现一圈细亮线；轻微的放大把它推出画面外。
+   * 不用 `filter: brightness` 之类——可读性交给遮罩控制，用户能自己调浓度。
+   */
+  transform: scale(1.02);
+  user-select: none;
+  pointer-events: none;
+}
+
+/* 竖图或宽高比不匹配时，用户可以选择完整显示（两侧留白）而不是裁切。 */
+.layer[data-fit='contain'] .image,
+.layer[data-fit='contain'] .video {
+  object-fit: contain;
+  background: var(--color-bg-primary);
+}
+
+/* 后层：等 `onLoad` 之后由 JS 翻到前面，所以这里只负责待命，不做过渡。 */
+.imageBack {
+  opacity: 1;
+}
+
+/*
+ * 模糊。
+ *
+ * `blur` 在 `inset: 0` 的元素上会把四周的像素算成透明，边缘出现一圈暗边，
+ * 所以同时放大 6%，把模糊后的边缘推到可视区外。放大倍数与模糊半径成正比：
+ * 半径 24px 时 6% 在 1080p 上约 64px，刚好够。
+ */
+.layer[data-blur='true'] .image,
+.layer[data-blur='true'] .video {
+  filter: blur(24px) saturate(1.1);
+  transform: scale(1.06);
+}
+
+/*
+ * 遮罩层。
+ *
+ * 颜色与浓度由内联样式给出（`veilColor`），这里只管铺满与层级。遮罩挡在所有
+ * 媒体之上、所有前景之下，因此它不需要 `pointer-events: none`——整层已经是
+ * `aria-hidden` 且没有交互元素。
+ */
+.veil {
+  position: absolute;
+  inset: 0;
+}
+
+/*
+ * 减少动态效果：去掉淡入，视频由 JS 暂停。模糊保持——它不是动效，而是视觉
+ * 样式，去掉会让用户设的「毛玻璃」失效。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .layer { animation: none; }
+}

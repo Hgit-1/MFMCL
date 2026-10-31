@@ -118,10 +118,10 @@ fn cgroup_memory_limit_bytes() -> Option<u64> {
         "/sys/fs/cgroup/memory.max",
         "/sys/fs/cgroup/memory/memory.limit_in_bytes",
     ] {
-        if let Ok(value) = std::fs::read_to_string(path) {
-            if let Ok(limit) = value.trim().parse::<u64>() {
-                return Some(limit);
-            }
+        if let Ok(value) = std::fs::read_to_string(path)
+            && let Ok(limit) = value.trim().parse::<u64>()
+        {
+            return Some(limit);
         }
     }
     None
@@ -133,10 +133,10 @@ fn cgroup_memory_current_bytes() -> Option<u64> {
         "/sys/fs/cgroup/memory.current",
         "/sys/fs/cgroup/memory/memory.usage_in_bytes",
     ] {
-        if let Ok(value) = std::fs::read_to_string(path) {
-            if let Ok(used) = value.trim().parse::<u64>() {
-                return Some(used);
-            }
+        if let Ok(value) = std::fs::read_to_string(path)
+            && let Ok(used) = value.trim().parse::<u64>()
+        {
+            return Some(used);
         }
     }
     None
@@ -288,14 +288,13 @@ fn prepare_with_runtime(
         .java_version
         .as_ref()
         .map(|value| value.major_version)
+        && detected_java < required
     {
-        if detected_java < required {
-            return Err(LaunchError::JavaVersion {
-                version: metadata.id.clone(),
-                required,
-                detected: detected_java,
-            });
-        }
+        return Err(LaunchError::JavaVersion {
+            version: metadata.id.clone(),
+            required,
+            detected: detected_java,
+        });
     }
 
     crate::loaders::safe_version(&metadata.id).map_err(LaunchError::InvalidMetadata)?;
@@ -441,7 +440,7 @@ fn prepare_with_runtime(
     if let Some(launch_arguments) = &metadata.arguments {
         for entry in &launch_arguments.jvm {
             for argument in expand_argument(entry, &variables) {
-                if argument == classpath || argument == format!("{}", variables["${classpath}"]) {
+                if argument == classpath || argument == variables["${classpath}"] {
                     classpath_supplied = true;
                 }
                 args.push(argument);
@@ -786,6 +785,7 @@ mod tests {
             isolated: true,
             state: InstanceState::Ready,
             created_at: String::new(),
+            last_launched_at: None,
         };
         let dir = instance.instance_dir.join("versions/1.21.4");
         std::fs::create_dir_all(&dir).unwrap();

@@ -4,9 +4,12 @@
 // 版本类型（正式版草方块、快照命令方块、远古圆石、彩蛋金块），启动器玩家一眼
 // 就能认出来。
 //
-// 贴图来源与授权见 public/textures/blocks/SOURCES.md。四个 PNG 都是 16×16
+// 贴图来源与授权见 public/textures/blocks/SOURCES.md。所有 PNG 都是 16×16
 // 的原始贴图（命令方块已从 16×64 的动画条带裁出首帧），渲染时必须用
 // image-rendering: pixelated 放大，且**不加边框、圆角、底板或阴影**。
+//
+// 本文件只负责内容商店的版本类型图标。游戏库的实例图标按「加载器」区分，用的是
+// 各加载器的官方标志，见 `loaders.ts`——两者素材不同，不共用映射。
 
 import type { VersionKind } from './types';
 import type { MessageKey } from '../i18n/messages/zh-CN';

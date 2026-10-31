@@ -17,12 +17,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: ui/package-lock.json
-      - run: npm ci --prefix ui
-      - run: npm run lint --prefix ui
-      - run: npm run build --prefix ui
-      - run: npx --prefix ui playwright install --with-deps chromium
-      - run: npm run test --prefix ui
+          cache-dependency-path: design/flowlaunch-ui/package-lock.json
+      - run: npm ci --prefix design/flowlaunch-ui
+      - run: npm run typecheck --prefix design/flowlaunch-ui
+      - run: npm run build --prefix design/flowlaunch-ui
 
   rust-tests:
     runs-on: ubuntu-24.04
@@ -56,5 +54,5 @@ jobs:
           node-version: 22
       - run: ${{ matrix.deps }}
         shell: bash
-      - run: npm ci --prefix ui
+      - run: npm ci --prefix design/flowlaunch-ui
       - run: cargo check -p mfmcl-desktop

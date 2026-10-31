@@ -34,7 +34,16 @@ pub struct DownloadSettings {
 impl Default for DownloadSettings {
     fn default() -> Self {
         Self {
-            source: SourcePreference::Official,
+            /*
+             * 默认镜像优先、官方回退。
+             *
+             * 为什么不是 Official：官方 CDN 在部分地区很慢，而镜像只在**校验值可用**
+             * 时才会被优先使用（`source_candidates` 里以 `checksum_available` 为前提），
+             * 所以走镜像不会牺牲完整性——文件下载后仍按官方清单里的 SHA-1 校验。
+             * 版本清单本身始终从官方获取（它是哈希的信任根），因此镜像优先只影响
+             * 体积最大的那一批文件，正是用户感知最明显的地方。
+             */
+            source: SourcePreference::Mixed,
             max_concurrent_downloads: 4,
             connections_per_file: 4,
             aria2_enabled: true,
@@ -301,6 +310,54 @@ pub struct InstanceRecord {
     pub isolated: bool,
     pub state: InstanceState,
     pub created_at: String,
+    /// 上次成功启动的时间（RFC 3339）。`None` 表示从未启动过。
+    ///
+    /// 用于两处：内容商店的「目标实例」默认为最近玩过的实例；实例列表按此排序，
+    /// 让最常玩的排在前面。用 `Option` 而不是给个默认时间戳，是因为「从未启动」
+    /// 和「很久以前启动」是两件不同的事。
+    #[serde(default)]
+    pub last_launched_at: Option<String>,
+}
+
+/// Per-instance overrides of the global launcher settings.
+///
+/// Every field is optional and `None` means "inherit the global value". That is
+/// deliberate: a new instance must start out behaving exactly like the global
+/// configuration, and only diverge where the user explicitly chose to. Modelling
+/// inheritance as presence/absence (instead of a competing default value) is what
+/// makes "did I change this, or is it just the global value?" answerable later.
+///
+/// The set of overridable fields is intentionally small: only values that change
+/// how this specific game process runs. Theme, language, download concurrency and
+/// similar launcher-wide concerns are excluded because a per-instance copy would
+/// be meaningless or actively confusing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct InstanceOverrides {
+    /// Memory allocation mode; `None` inherits the global mode.
+    pub memory_mode: Option<MemoryMode>,
+    /// Maximum heap in MB. Only meaningful together with `MemoryMode::Custom`.
+    pub memory_mb: Option<u32>,
+    /// Enable the launcher's memory optimisation for this instance.
+    ///
+    /// Added so the per-instance page can actually change it: the UI has exposed
+    /// this switch since the override model was written, but without a field
+    /// here the value was silently dropped on save and the launch used the
+    /// global setting.
+    pub optimize_memory: Option<bool>,
+    /// Launch the game fullscreen.
+    pub fullscreen: Option<bool>,
+    /// Stream game log lines into the launcher.
+    pub show_game_log: Option<bool>,
+    /// Initial window size; both dimensions must be overridden together to be valid.
+    pub window_width: Option<u32>,
+    pub window_height: Option<u32>,
+    /// Extra JVM arguments appended after the launcher-managed ones.
+    pub extra_jvm_args: Option<String>,
+    /// Extra arguments passed to the game itself.
+    pub game_args: Option<String>,
+    /// Command run before the game process starts.
+    pub pre_launch_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

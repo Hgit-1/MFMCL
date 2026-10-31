@@ -1,0 +1,154 @@
+/* 实例文件面板。 */
+
+/*
+ * 用网格而不是竖排列表。
+ *
+ * 这些入口之间没有先后依赖，用户是「找一个」而不是「按顺序走一遍」；两列网格
+ * 让全部八项在一屏内可见，竖排列表会拖成很长一条，需要滚动才能看到日志入口。
+ */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  gap: 8px;
+}
+
+.tile {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .16s var(--ease), background .16s var(--ease), transform .14s var(--ease);
+}
+
+.tile:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary-500) 5%, var(--color-bg-primary));
+}
+
+.tile:active:not(:disabled) { transform: scale(.99); }
+
+.tile:disabled { opacity: .55; cursor: not-allowed; }
+
+/* 高频目录（模组 / 存档 / 资源包）左缘加一条主色竖线：
+   不改变布局，只在扫视时提供「这三项最常用」的暗示。 */
+.tileFrequent {
+  border-left: 2px solid color-mix(in srgb, var(--color-primary-500) 55%, transparent);
+}
+
+.tileIcon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--color-bg-secondary);
+  color: var(--color-primary-text);
+}
+
+.tileCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tileCopy strong {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.tileCopy small {
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* 打开中的转圈：只占一小块，不挤压文字。 */
+.tileSpinner {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  margin-left: auto;
+  border: 2px solid color-mix(in srgb, var(--color-primary-500) 30%, transparent);
+  border-top-color: var(--color-primary-500);
+  border-radius: 50%;
+  animation: files-spin .7s linear infinite;
+}
+
+@keyframes files-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tileSpinner { animation-duration: 2s; }
+}
+
+/* --- 导出整合包 --------------------------------------------------------- */
+
+/*
+ * 导出卡片与目录网格分开呈现：上面都是「去看」，这里会写出一个文件，
+ * 需要显式确认。视觉上给一层独立的浅底，表明它是一件不同性质的事。
+ */
+.exportCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+
+.exportHead {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.exportHead strong {
+  display: block;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.exportHead small {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.55;
+  cursor: pointer;
+}
+
+.confirm input {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin: 2px 0 0;
+  accent-color: var(--color-primary-500);
+}
+
+.exportActions {
+  display: flex;
+  justify-content: flex-end;
+}

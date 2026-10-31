@@ -14,3 +14,27 @@
 .footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 30px;border-top:1px solid var(--color-border);background:var(--color-bg-elevated)}.footer>span{color:var(--color-text-disabled);font-size:10px}.footer .saved{color: var(--color-primary-text)}.footer>div{display:flex;gap:8px}.cancel,.save{min-height:34px;padding:0 13px;border:1px solid var(--color-border);border-radius:8px;background:var(--color-bg-primary);color:var(--color-text-secondary);font:inherit;font-size:11px;cursor:pointer}.save{border-color:var(--color-primary-solid);background:var(--color-primary-solid);color:var(--color-on-primary);font-weight:600}.save:hover{border-color:var(--color-primary-solid-hover);background:var(--color-primary-solid-hover)}
 @media(max-width:700px){.settings{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr);height:calc(100dvh - 100px);min-height:0}.rail{gap:10px;padding:12px;border-right:0;border-bottom:1px solid var(--color-border)}.railBrand{display:none}.rail nav{flex-direction:row;overflow-x:auto}.navItem{justify-content:center;flex:0 0 auto;width:auto;height:38px;padding:0 11px}.navItem>i{display:none}.railFoot{display:none}.search{height:32px}.header{padding:16px 18px 12px}.header h2{font-size:20px}.body{padding:15px 18px}.footer{padding:12px 18px}.control{min-width:145px;max-width:58%}}
 @media(max-width:480px){.navItem{gap:7px;padding:0 9px;font-size:11px}.navItem svg{width:15px}.field,.row{gap:10px}.field{align-items:flex-start;flex-direction:column}.control{width:100%;max-width:none}.presets{grid-template-columns:1fr 1fr}.dimensions input{flex:1;width:0!important}}
+
+/*
+ * 保存失败横幅。
+ *
+ * 用整块浅红底而不是一行红字：后端拒绝的原因可能较长（例如「内存上限超出本机
+ * 可用量」，还带具体数字），一行红字在多页签布局里很容易被当成说明文字略过。
+ */
+.saveError{display:flex;flex-direction:column;gap:3px;margin:0 0 14px;padding:10px 12px;border:1px solid color-mix(in srgb, var(--color-danger-500) 42%, var(--color-border));border-radius:8px;background:color-mix(in srgb, var(--color-danger-500) 9%, transparent)}
+.saveError strong{color:var(--color-danger-500);font-size:11px;font-weight:700}
+.saveError span{color:var(--color-text-secondary);font-size:11px;line-height:1.55}
+
+/*
+ * aria2 状态提示。
+ *
+ * 分两档：不可用是警告色（下载仍会进行，只是没有加速），就绪是低饱和的成功色
+ * （这是正常状态，不该抢视线）。都不做成弹窗——它不是一次性的操作反馈，而是
+ * 用户可能随时想确认的当前状态。
+ */
+.inlineNote{display:flex;flex-direction:column;gap:3px;margin:8px 0 0;padding:9px 12px;border:1px solid color-mix(in srgb, var(--color-warning-500, #F59E0B) 40%, var(--color-border));border-radius:8px;background:color-mix(in srgb, var(--color-warning-500, #F59E0B) 9%, transparent)}
+.inlineNote strong{color:var(--color-warning-500, #F59E0B);font-size:11px;font-weight:700}
+.inlineNote span{color:var(--color-text-secondary);font-size:11px;line-height:1.55}
+
+.inlineNoteOk{margin:8px 0 0;padding:7px 12px;border:1px solid color-mix(in srgb, var(--color-primary-500) 28%, var(--color-border));border-radius:8px;background:color-mix(in srgb, var(--color-primary-500) 7%, transparent)}
+.inlineNoteOk span{color:var(--color-text-secondary);font-size:11px;line-height:1.5}

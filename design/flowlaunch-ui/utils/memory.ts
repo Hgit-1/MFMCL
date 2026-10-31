@@ -18,6 +18,7 @@
 //    （PCL: RamMininum / RamTarget1..3）。模组越多，目标值越高。
 
 import { loc, type Localized } from './i18n/localized';
+import { getSystemMemory as nativeGetSystemMemory, isDesktopShell } from './native';
 
 /** 滑条位置与 GB 的换算。index 是 PCL 的 SliderRamCustom.Value。 */
 
@@ -150,12 +151,6 @@ export function autoAllocateMb({ totalMb, modCount = 0, hasOptiFine = false, use
 
 export const DEVICE_MEMORY_OVERRIDE_KEY = 'flowlaunch-device-memory-mb';
 
-interface TauriMemoryBridge {
-  __TAURI__?: {
-    core?: { invoke: <T>(command: string, args?: unknown) => Promise<T> };
-  };
-}
-
 export interface DeviceMemory {
   totalMb: number;
   /**
@@ -229,27 +224,33 @@ export async function detectDeviceMemory(): Promise<DeviceMemory> {
     return { totalMb: override, exact: true, source: 'manual', note: loc('memory.detectedManual', { size: `${(override / 1024).toFixed(1)} GB` }) };
   }
 
-  const invoke = (window as Window & TauriMemoryBridge).__TAURI__?.core?.invoke;
-  if (invoke) {
-    try {
-      const info = await invoke<{ totalMb: number; usedMb?: number; availableMb?: number }>('get_system_memory');
-      if (info && Number.isFinite(info.totalMb) && info.totalMb > 0) {
-        // usedMb 可能是 null（后端 JSON 里 Option::None）。这里归一化成
-        // undefined，避免下游把 null 当数字用。
-        const usedMb = typeof info.usedMb === 'number' && Number.isFinite(info.usedMb) && info.usedMb >= 0
-          ? Math.min(info.usedMb, info.totalMb)
-          : undefined;
-        cachedUsedMb = usedMb;
-        return {
-          totalMb: info.totalMb,
-          usedMb,
-          exact: true,
-          source: 'desktop',
-          note: loc('memory.detectedDesktop', { size: `${(info.totalMb / 1024).toFixed(1)} GB` }),
-        };
-      }
-    } catch { /* fall through to the browser estimate */ }
-  }
+  /*
+   * 桌面版：读后端 `get_system_memory`。
+   *
+   * 走 `native.ts` 的封装而不是自己读 `window.__TAURI__`：项目里曾经有三份各自
+   * 判断「是否桌面版」的桥接（native / javaBridge / 这里），任意两份得出不同
+   * 结论时，界面就会自相矛盾。`getSystemMemory` 在预览模式下返回带估算标记的
+   * 占位值，所以这里不需要再判断平台。
+   */
+  try {
+    const info = await nativeGetSystemMemory();
+    if (info && Number.isFinite(info.totalMb) && info.totalMb > 0) {
+      // usedMb 可能是 null（后端 JSON 里 Option::None）。这里归一化成
+      // undefined，避免下游把 null 当数字用。
+      const usedMb = typeof info.usedMb === 'number' && Number.isFinite(info.usedMb) && info.usedMb >= 0
+        ? Math.min(info.usedMb, info.totalMb)
+        : undefined;
+      cachedUsedMb = usedMb;
+      return {
+        totalMb: info.totalMb,
+        usedMb,
+        // 预览模式的占位值不该被标成精确值。
+        exact: isDesktopShell(),
+        source: isDesktopShell() ? 'desktop' : 'browser',
+        note: loc('memory.detectedDesktop', { size: `${(info.totalMb / 1024).toFixed(1)} GB` }),
+      };
+    }
+  } catch { /* fall through to the browser estimate */ }
 
   const reported = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
   if (typeof reported === 'number' && Number.isFinite(reported) && reported > 0) {

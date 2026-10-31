@@ -1,0 +1,114 @@
+/* 启动器更新卡片。 */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-secondary);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.head strong {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.head p {
+  margin: 3px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.status {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--color-border);
+}
+
+.facts {
+  display: flex;
+  gap: 22px;
+  margin: 0;
+}
+
+.facts dt {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.facts dd {
+  margin: 1px 0 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.notes {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.note,
+.upToDate,
+.error,
+.done {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.note {
+  color: var(--color-text-disabled);
+}
+
+.upToDate {
+  color: var(--color-text-secondary);
+}
+
+.error {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-danger-500) 35%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-danger-500) 9%, transparent);
+  color: var(--color-danger-500);
+}
+
+.done {
+  color: var(--color-success-500);
+  word-break: break-all;
+}

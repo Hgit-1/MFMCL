@@ -27,6 +27,8 @@ Android, iOS, and HarmonyOS local game execution remain documentation-only in [`
 
 See [`docs/BUILDING.md`](docs/BUILDING.md) for prerequisites, frontend preview, tests, and native desktop builds. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for module and trust boundaries, and [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) for distribution constraints.
 
+UI work starts with a browser preview: run `npm run dev` and open `http://127.0.0.1:5173/`, then adjust the visuals in Design mode. The full convention is in [`UI_WORKFLOW.md`](UI_WORKFLOW.md).
+
 The root Git repository excludes the nested `/PCL/` reference checkout. Reference observations are abstracted in [`docs/REFERENCE_NOTES.md`](docs/REFERENCE_NOTES.md); no reference implementation or assets are copied.
 
 ## Accounts and game content

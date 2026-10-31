@@ -1,0 +1,186 @@
+/* 模组管理页。 */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.summary {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/*
+ * 隐私披露条。用中性色而不是警告色：这不是错误，只是需要用户知情。
+ * 警告色会让人以为出了问题，进而跳过阅读。
+ */
+.consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.consent svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.issueBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-warning-500) 38%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-warning-500) 8%, transparent);
+}
+
+.issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.issue svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.severityError { color: var(--color-danger-500); }
+.severityWarn { color: var(--color-warning-500); }
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/*
+ * 一行一个模组。用 grid 而不是 flex-wrap：文件名长度差异很大，
+ * flex 会让「大小」和「更新按钮」在不同行之间左右跳动，扫读时很难对齐。
+ */
+.row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-elevated);
+}
+
+/* 停用的模组整行降饱和，与开关状态一致；但仍保持可读，不是禁用态。 */
+.rowDisabled {
+  background: var(--color-bg-secondary);
+}
+
+.rowDisabled .name {
+  color: var(--color-text-secondary);
+}
+
+.toggle {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.toggle:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.toggleOn { color: var(--color-primary-500); }
+.toggleOff { color: var(--color-text-disabled); }
+
+.name {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.size {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.badges {
+  display: flex;
+  gap: 5px;
+}
+
+.badgeMuted,
+.badgeWarn {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.badgeMuted {
+  background: color-mix(in srgb, var(--color-text-secondary) 16%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.badgeWarn {
+  background: color-mix(in srgb, var(--color-warning-500) 18%, transparent);
+  color: color-mix(in srgb, var(--color-warning-500) 85%, var(--color-text-primary));
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 36px 20px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.empty p {
+  margin: 0;
+}
+
+.hint {
+  color: var(--color-text-disabled);
+}
