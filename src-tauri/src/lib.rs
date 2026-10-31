@@ -1,5 +1,6 @@
 mod authentication;
 mod backup_management;
+mod crash_ai;
 mod curseforge;
 mod downloads;
 mod management;
@@ -1072,6 +1073,7 @@ pub fn run() {
             app.manage(management::Operations::default());
             app.manage(Arc::new(downloads::Downloads::default()));
             app.manage(authentication::AuthState::default());
+            app.manage(crash_ai::CrashAiState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1140,6 +1142,10 @@ pub fn run() {
             plugin_runtime::plugin_preview,
             plugin_runtime::launch_history,
             plugin_runtime::clear_launch_history,
+            crash_ai::crash_ai_status,
+            crash_ai::crash_ai_analyse,
+            crash_ai::crash_ai_instance_report,
+            crash_ai::crash_ai_local_reports,
         ])
         .run(tauri::generate_context!())
         .expect("MFMCL desktop application failed");
