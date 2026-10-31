@@ -16,6 +16,7 @@
 
 import type { MessageKey } from './i18n/messages/zh-CN';
 import { loc, type Localized } from './i18n/localized';
+import type { PluginContribution, PluginDefinition, PluginStatePayload } from './native';
 
 export const PLUGIN_STORAGE_KEY = 'flowlaunch-plugins';
 
@@ -91,6 +92,27 @@ export interface LauncherPlugin {
   statusTone?: 'info' | 'warn' | 'error';
   /** 与当前启动器版本不兼容：开关置灰，也不计入已启用数量。 */
   incompatible?: boolean;
+  /**
+   * 有新版本可用。
+   *
+   * 为什么单独建模而不是复用 `statusTone: 'warn'`：侧栏徽章需要区分「需要更新」
+   * 与其他「需要注意」。前者是可执行的待办（装个新版本就好），后者（实验性提示、
+   * 不兼容、待重启）性质不同，用户看到红色数字时的预期也不同。
+   *
+   * 当前没有在线插件源，这个字段由内置清单或本地清单自行声明；接入更新检查后
+   * 会由检查结果填充。
+   */
+  updateAvailable?: string;
+  /**
+   * 插件声明要贡献的动作。
+   *
+   * 这是「插件能不能真的做事」的入口：只有这里的条目会进入启动链路。内置插件的
+   * 贡献定义在后端（`src-tauri/src/plugin_runtime.rs`），用户安装的插件可以把
+   * 它们写在清单里——后端会逐条校验，非法的整份拒绝保存。
+   *
+   * 界面不执行这些条目，所以这里只做「有/没有」的展示（例如详情里列出会应用几条）。
+   */
+  contributions?: PluginContribution[];
 }
 
 /** 保存在 localStorage 里的全部插件状态。 */
@@ -101,9 +123,21 @@ export interface PluginStore {
   enabled: Record<string, boolean>;
   /** 每个插件的选项值；缺省时用选项定义里的默认值。 */
   options: Record<string, Record<string, boolean | number>>;
+  /**
+   * 用户已采纳的更新：插件 id → 已采纳到的版本号。
+   *
+   * 为什么需要这一层：内置插件的清单是代码里的常量，改了不会持久。如果只把
+   * 新版本写进 `custom`，内置条目仍会带着 `updateAvailable` 出现在列表里，
+   * 徽章数字也就降不下来——那会变成「点了更新但红点还在」的假成功。
+   *
+   * 所以单独记录「用户已经接受过这个版本」，`allPlugins` 组装清单时据此清掉
+   * 内置插件的待更新标记。这是离线环境下能做到的诚实语义：不下载任何文件，
+   * 只记录用户的选择。
+   */
+  acknowledgedUpdates: Record<string, string>;
 }
 
-export const EMPTY_PLUGIN_STORE: PluginStore = { custom: [], enabled: {}, options: {} };
+export const EMPTY_PLUGIN_STORE: PluginStore = { custom: [], enabled: {}, options: {}, acknowledgedUpdates: {} };
 
 // ---------------------------------------------------------------------------
 // 内置插件目录
@@ -209,6 +243,8 @@ export const BUILTIN_PLUGINS: LauncherPlugin[] = [
     builtin: true,
     status: loc('plugin.conflictDetector.status'),
     statusTone: 'info',
+    // 模拟一次可用更新：这是内置清单里的示例，用于演示徽章与更新按钮。
+    updateAvailable: '1.0.0',
   },
   {
     id: 'download-mirror',
@@ -350,6 +386,11 @@ export function normalizePlugin(raw: unknown): LauncherPlugin | null {
     : undefined;
   const glyph = GLYPHS.includes(raw.glyph as PluginGlyph) ? (raw.glyph as PluginGlyph) : 'plug';
   const status = normalizeLocalized(raw.status);
+  const contributions = Array.isArray(raw.contributions)
+    ? raw.contributions
+        .map(normalizeContribution)
+        .filter((item): item is PluginContribution => item !== null)
+    : undefined;
 
   return {
     id,
@@ -362,11 +403,31 @@ export function normalizePlugin(raw: unknown): LauncherPlugin | null {
     hooks,
     permissions,
     ...(options?.length ? { options } : {}),
+    ...(contributions?.length ? { contributions } : {}),
     enabledByDefault: raw.enabledByDefault !== false,
     builtin: false,
     requiresRestart: raw.requiresRestart === true,
     ...(status ? { status, statusTone: raw.statusTone === 'warn' || raw.statusTone === 'error' ? raw.statusTone : 'info' } : {}),
   };
+}
+
+/**
+ * 归一化一条贡献。
+ *
+ * 这里只保证形状（`kind` 是已知枚举、`value` 是字符串），**不做内容校验**——
+ * 真正的校验在后端（`launcher_core::plugins::validate_contribution`），它掌握
+ * 被禁止的参数形态。前端复制一份规则只会分叉。
+ *
+ * 空值丢弃：一条没有内容的贡献不会做任何事，留下来只会让「贡献 1 条」的计数说谎。
+ */
+function normalizeContribution(raw: unknown): PluginContribution | null {
+  if (!isPlainObject(raw)) return null;
+  const kind = raw.kind;
+  if (kind !== 'jvmArgs' && kind !== 'env' && kind !== 'preLaunch' && kind !== 'backupBefore') return null;
+  if (typeof raw.value !== 'string') return null;
+  const value = raw.value.trim();
+  if (!value) return null;
+  return { kind, value: value.slice(0, 2048) };
 }
 
 export function loadPluginStore(): PluginStore {
@@ -394,7 +455,13 @@ export function loadPluginStore(): PluginStore {
         options[id] = entry;
       });
     }
-    return { custom, enabled, options };
+    const acknowledgedUpdates: Record<string, string> = {};
+    if (isPlainObject(parsed.acknowledgedUpdates)) {
+      Object.entries(parsed.acknowledgedUpdates).forEach(([id, value]) => {
+        if (typeof value === 'string') acknowledgedUpdates[id] = value;
+      });
+    }
+    return { custom, enabled, options, acknowledgedUpdates };
   } catch {
     return EMPTY_PLUGIN_STORE;
   }
@@ -406,9 +473,21 @@ export function savePluginStore(store: PluginStore): void {
   } catch { /* storage full or blocked */ }
 }
 
-/** 全部插件：内置清单在前，手动安装的在后。 */
+/**
+ * 全部插件：内置清单在前，手动安装的在后。
+ *
+ * 组装时把「已采纳的更新」应用到内置条目上：版本号换成新值、清掉待更新标记。
+ * 这样徽章、卡片与「需要注意」筛选读到的都是同一份已更新的清单，
+ * 不会出现各处判断不一致。
+ */
 export function allPlugins(store: PluginStore): LauncherPlugin[] {
-  return [...BUILTIN_PLUGINS, ...store.custom];
+  const acknowledged = store.acknowledgedUpdates ?? {};
+  const builtin = BUILTIN_PLUGINS.map(plugin => {
+    const accepted = acknowledged[plugin.id];
+    if (!accepted || !plugin.updateAvailable) return plugin;
+    return { ...plugin, version: accepted, updateAvailable: undefined };
+  });
+  return [...builtin, ...store.custom];
 }
 
 /** 插件当前是否启用。不兼容的插件永远视为未启用。 */
@@ -432,8 +511,21 @@ export function enabledPluginCount(store: PluginStore): number {
  */
 export function pluginNeedsAttention(plugin: LauncherPlugin, pendingRestart: string[] = []): boolean {
   if (plugin.incompatible) return true;
+  if (plugin.updateAvailable) return true;
   if (plugin.statusTone === 'warn' || plugin.statusTone === 'error') return true;
   return pendingRestart.includes(plugin.id);
+}
+
+/**
+ * 有几个插件可以更新。
+ *
+ * 侧栏红色徽章用它，而不是用 `pluginNeedsAttention` 的总数：那个总数里混着
+ * 「实验性提示」「不兼容」「待重启」，只有「可更新」是用户点进插件页就能立刻
+ * 解决的事。红色数字应该指向可执行的动作，否则用户点进去发现没有「更新」按钮，
+ * 下次就会忽略这个提示。
+ */
+export function updatablePluginCount(store: PluginStore): number {
+  return allPlugins(store).filter(plugin => Boolean(plugin.updateAvailable)).length;
 }
 
 /** 读一个选项的当前值，缺省时回落到定义里的默认值。 */
@@ -447,4 +539,42 @@ export function optionValue(plugin: LauncherPlugin, optionId: string, store: Plu
   const fallback = option.defaultNumber ?? option.min ?? 0;
   if (typeof stored !== 'number') return fallback;
   return Math.min(option.max ?? 9999, Math.max(option.min ?? 0, stored));
+}
+
+// ---------------------------------------------------------------------------
+// 与后端运行时的同步
+// ---------------------------------------------------------------------------
+
+/**
+ * 把界面状态翻译成后端认识的形状。
+ *
+ * ## 为什么不再只是一份本地 JSON 草稿
+ *
+ * 之前插件的启用状态只写在 localStorage 里，后端完全不知道——插件页显示「已启用」，
+ * 启动时却没有任何东西被应用。现在后端读自己的 `plugin_state` 表，界面这里负责
+ * 把用户的操作同步过去。
+ *
+ * 只同步两样东西：**启用了哪些**，以及**自定义插件的贡献定义**。文案、图标、
+ * 品牌色是纯展示，后端用不上。
+ */
+export function toPluginStatePayload(store: PluginStore): PluginStatePayload {
+  const custom: PluginDefinition[] = [];
+  for (const plugin of store.custom) {
+    custom.push({
+      id: plugin.id,
+      version: plugin.version,
+      hooks: [...plugin.hooks],
+      permissions: [...plugin.permissions],
+      contributions: (plugin.contributions ?? []).map(item => ({ kind: item.kind, value: item.value })),
+      incompatible: plugin.incompatible === true,
+    });
+  }
+  /*
+   * 启用状态整份写入。
+   *
+   * 后端对未出现的 id 回退「默认启用」，与 `isPluginEnabled` 的规则一致。不能只
+   * 写差异：前端不知道后端内置清单的默认值，省掉任何一项都可能让一个本应启用的
+   * 插件变成启用（或反之）。整份写入最直白，也不会有一致性缺口。
+   */
+  return { custom, enabled: { ...store.enabled } };
 }

@@ -610,3 +610,158 @@ async fn stable_partial_survives_cancel_and_new_engine() {
     engine().download(&a, None).await.unwrap();
     assert_eq!(fs::read(a.destination).await.unwrap(), b"hello world");
 }
+
+// ---------------------------------------------------------------------------
+// 单文件分段并发
+// ---------------------------------------------------------------------------
+
+/// 支持 Range 的服务端：按请求头里的 `bytes=start-end` 返回对应切片。
+async fn range_mock(body: Vec<u8>, honour_ranges: bool) -> Mock {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/artifact", listener.local_addr().unwrap());
+    let requests = Arc::new(StdMutex::new(Vec::new()));
+    let seen = requests.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let body = body.clone();
+            let seen = seen.clone();
+            tokio::spawn(async move {
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 1024];
+                while !bytes.ends_with(b"\r\n\r\n") && bytes.len() < 65536 {
+                    let n = socket.read(&mut buffer).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    bytes.extend_from_slice(&buffer[..n]);
+                }
+                let request = String::from_utf8_lossy(&bytes).to_string();
+                seen.lock().unwrap().push(request.clone());
+                let lower = request.to_ascii_lowercase();
+                let range = lower
+                    .lines()
+                    .find_map(|line| line.strip_prefix("range: bytes="))
+                    .and_then(|value| value.trim().split_once('-'))
+                    .and_then(|(start, end)| {
+                        Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+                    });
+                let (head, payload) = match range.filter(|_| honour_ranges) {
+                    Some((start, end)) => {
+                        let end = end.min(body.len() - 1);
+                        let slice = body[start..=end].to_vec();
+                        (
+                            format!(
+                                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
+                                slice.len(),
+                                start,
+                                end,
+                                body.len()
+                            ),
+                            slice,
+                        )
+                    }
+                    None => (
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        ),
+                        body.clone(),
+                    ),
+                };
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(&payload).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    Mock {
+        url,
+        requests,
+        task,
+    }
+}
+
+fn segment_engine(connections: u8) -> DownloadEngine {
+    DownloadEngine::new(DownloadSettings {
+        aria2_enabled: false,
+        connections_per_file: connections,
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn segments_split_the_file_across_parallel_connections() {
+    let dir = TestDir::new();
+    // 4 个分片 × 至少 256 KiB，确保真的会切分。
+    let body: Vec<u8> = (0..=(1024 * 1024)).map(|i| (i % 251) as u8).collect();
+    let server = range_mock(body.clone(), true).await;
+    let a = artifact(&dir, &server.url, &body);
+    segment_engine(4).download(&a, None).await.unwrap();
+    assert_eq!(fs::read(a.destination).await.unwrap(), body);
+    let requests = server.requests.lock().unwrap();
+    let ranged = requests
+        .iter()
+        .filter(|r| r.to_ascii_lowercase().contains("range: bytes="))
+        .count();
+    assert_eq!(ranged, 4, "expected one request per segment: {requests:?}");
+}
+
+#[tokio::test]
+async fn server_without_range_support_falls_back_to_one_connection() {
+    let dir = TestDir::new();
+    let body: Vec<u8> = (0..=(1024 * 1024)).map(|i| (i % 97) as u8).collect();
+    let server = range_mock(body.clone(), false).await;
+    let a = artifact(&dir, &server.url, &body);
+    segment_engine(4).download(&a, None).await.unwrap();
+    // 用 `&a.destination` 而不是 `a.destination`：下面还要用 `&a` 查临时文件，
+    // 移出字段会让 `a` 处于部分移动状态，无法再整体借用。
+    assert_eq!(fs::read(&a.destination).await.unwrap(), body);
+    /*
+     * 4 个分片各探测一次（服务端都回 200），然后退回单连接再请求一次，共 5 次。
+     * 分片之间通过 abort 标志互相叫停，因此不会出现「每个分片都把整份文件收完」
+     * 的情况；这条断言把请求数量钉住，防止退回路径变成重复下载。
+     */
+    let requests = server.requests.lock().unwrap().len();
+    assert_eq!(requests, 5, "expected 4 range probes plus 1 fallback fetch");
+    assert!(
+        !partial_path(&a).exists(),
+        "fallback should clean up the partial file"
+    );
+}
+
+#[tokio::test]
+async fn small_files_and_single_connection_skip_segmentation() {
+    let dir = TestDir::new();
+    let body = vec![7u8; 64 * 1024];
+    let server = range_mock(body.clone(), true).await;
+    let a = artifact(&dir, &server.url, &body);
+    segment_engine(4).download(&a, None).await.unwrap();
+    assert_eq!(fs::read(a.destination).await.unwrap(), body);
+    let requests = server.requests.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|r| !r.to_ascii_lowercase().contains("range: bytes=")),
+        "small file should not be split: {requests:?}"
+    );
+}
+
+#[test]
+fn segment_ranges_cover_the_whole_file_without_gaps() {
+    for size in [1u64, 1024, 300 * 1024, 1024 * 1024 + 1, 5 * 1024 * 1024] {
+        for segments in [1usize, 2, 4, 16] {
+            let ranges = segment_ranges(size, segments);
+            assert!(!ranges.is_empty(), "size {size} segments {segments}");
+            assert_eq!(ranges[0].0, 0);
+            assert_eq!(ranges.last().unwrap().1, size - 1);
+            for pair in ranges.windows(2) {
+                assert_eq!(pair[1].0, pair[0].1 + 1, "gap at size {size}");
+            }
+            for (start, end) in &ranges {
+                assert!(start <= end);
+            }
+        }
+    }
+}

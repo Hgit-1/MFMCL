@@ -1,0 +1,516 @@
+/*
+ * 「背景」设置区块。
+ *
+ * 与 SettingsPanel 里其它区块共用 `--color-*` 变量与同一套字号（13px 标题、
+ * 12px 主文案、10px 说明），但控件是自定义的：模式选择、缩略图网格、预览框
+ * 在通用 `.field` 的两列布局里放不下。
+ */
+
+.group {
+  margin: 0 0 23px;
+}
+
+.group h3 {
+  margin: 0 0 9px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.lead {
+  margin: 0 0 12px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+/* --- 模式选择 -------------------------------------------------------- */
+/*
+ * 四个并列的模式按钮。做成一行而不是下拉：选项少，且「现在是哪种」这件事
+ * 每时每刻都该可见——用户看到背景在动时，要能立刻确认那是不是自己选的轮播。
+ */
+.modes {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.mode {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color .16s, background .16s, color .16s;
+}
+
+.mode:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+  color: var(--color-text-primary);
+}
+
+.mode:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/*
+ * 选中态用色调底 + 强调色文字，与侧栏导航一致。
+ * 不用实色填充：这一行有四个按钮，其中一个是实色会让另外三个看起来像禁用。
+ */
+.modeActive,
+.modeActive:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary-500) 55%, var(--color-border));
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+  font-weight: 600;
+}
+
+/* --- 素材块 ---------------------------------------------------------- */
+.mediaBlock {
+  margin-bottom: 14px;
+  padding: 11px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-elevated);
+}
+
+.mediaHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rowCopy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rowCopy strong {
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.rowCopy span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.mediaActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+}
+
+.button:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+/*
+ * 危险动作用文字按钮而不是实色红块：清空背景不是破坏性操作（素材可以重新选），
+ * 但它会丢掉一批用户挑过的图，值得一点区别——用红色文字足够，不必染一整块。
+ */
+.linkDanger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-danger-text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.linkDanger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger-500) 10%, transparent);
+}
+
+.linkDanger:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.hiddenInput {
+  display: none;
+}
+
+/* 空状态：一块可点的区域，而不是一个「选择文件」按钮——点哪儿都能选。 */
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 92px;
+  margin-top: 11px;
+  border: 1px dashed color-mix(in srgb, var(--color-border) 90%, var(--color-text-secondary));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 55%, transparent);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color .16s, background .16s;
+}
+
+.dropzone:hover:not(:disabled) {
+  border-color: var(--color-primary-500);
+  background: color-mix(in srgb, var(--color-primary-500) 6%, transparent);
+  color: var(--color-text-primary);
+}
+
+/* --- 缩略图 ---------------------------------------------------------- */
+.thumbs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 8px;
+  margin-top: 11px;
+  padding: 0;
+  list-style: none;
+}
+
+.thumb {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.thumbImage {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg-secondary);
+}
+
+.thumbImage img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 序号：轮播顺序就是播放顺序，标出来用户才知道 ↑↓ 在调什么。 */
+.thumbIndex {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 58%);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.thumbFoot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.thumbName {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thumbActions {
+  display: flex;
+  flex: none;
+  gap: 1px;
+}
+
+.thumbActions button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.thumbActions button:hover:not(:disabled) {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+.thumbActions button:disabled {
+  opacity: .3;
+  cursor: default;
+}
+
+/* --- 视频 ------------------------------------------------------------ */
+.videoRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 11px;
+  min-width: 0;
+}
+
+.videoPreview {
+  overflow: hidden;
+  display: grid;
+  flex: 0 0 108px;
+  place-items: center;
+  height: 60px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg-secondary);
+}
+
+.videoPreview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* --- 通用行 ---------------------------------------------------------- */
+.field,
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 62px;
+  padding: 11px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+}
+
+.slider {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  width: 180px;
+}
+
+.slider input {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--color-primary-500);
+}
+
+.slider output {
+  min-width: 42px;
+  color: var(--color-primary-text);
+  font-size: 11px;
+  font-weight: 650;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.segmented {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-secondary);
+}
+
+.segmented button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.segmentActive {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: none;
+  padding: 3px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--color-border);
+  cursor: pointer;
+  transition: background .18s;
+}
+
+.switch i {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 20%);
+  transition: transform .18s;
+}
+
+.switchOn {
+  background: var(--color-primary-500);
+}
+
+.switchOn i {
+  transform: translateX(16px);
+}
+
+/* --- 自动配色说明 ---------------------------------------------------- */
+.accentNote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 8px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-primary-500) 28%, var(--color-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-primary-500) 7%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.accentSwatch {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: 4px;
+}
+
+/* --- 预览 ------------------------------------------------------------ */
+/*
+ * 预览框只回答一个问题：这个遮罩浓度下，前景文字还看得清吗。
+ * 所以里面放的是真实遮罩 + 一行示例标题，而不是一个缩小的背景缩略图。
+ */
+.preview {
+  position: relative;
+  overflow: hidden;
+  margin-top: 14px;
+  height: 104px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-primary);
+}
+
+.previewMedia,
+.previewVeil {
+  position: absolute;
+  inset: 0;
+}
+
+.previewMedia img,
+.previewMedia video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.previewLabel {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  color: var(--color-text-primary);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+}
+
+/* 窄屏：模式按钮换成两列，滑条不再挤在一行右侧。 */
+@media (max-width: 480px) {
+  .modes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .field,
+  .row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .slider {
+    width: 100%;
+  }
+
+  .mediaHead {
+    flex-direction: column;
+  }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin .9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+}

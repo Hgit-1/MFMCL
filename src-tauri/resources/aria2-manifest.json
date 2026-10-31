@@ -1,5 +1,9 @@
 {
-  "version": "1.37.0",
-  "platforms": {},
-  "note": "Source development build: native HTTP downloads are used until release-reviewed, SHA-256-pinned platform binaries are supplied. Never populate a hash from an untrusted download."
+  "note": "Generated from reviewed official-source builds. See each platform distribution directory for source, licenses and audit records.",
+  "platforms": {
+    "linux-x86_64": {
+      "sha256": "15f705d894305d4894accf7cb745f85c57c5a82cbf79dbbc4ae7fba5aff50d38"
+    }
+  },
+  "version": "1.37.0"
 }

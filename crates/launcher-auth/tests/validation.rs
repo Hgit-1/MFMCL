@@ -58,7 +58,7 @@ fn public_pkce_api_produces_rfc_challenge() {
 #[tokio::test]
 async fn invalid_stored_credentials_are_rejected_without_network() {
     let server = Url::parse("https://auth.example/authserver/").unwrap();
-    let yggdrasil = YggdrasilClient::new(server.clone(), &[server.clone()]).unwrap();
+    let yggdrasil = YggdrasilClient::new(server.clone(), std::slice::from_ref(&server)).unwrap();
     let credentials = Credentials::Yggdrasil {
         server,
         access_token: "secret\ninvalid".into(),

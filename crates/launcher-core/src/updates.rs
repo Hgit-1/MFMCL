@@ -102,16 +102,7 @@ impl Version {
 }
 
 pub fn platform_key(os: &str, arch: &str) -> String {
-    let os = match os {
-        "macos" => "macos",
-        "windows" => "windows",
-        other => other,
-    };
-    let arch = match arch {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => other,
-    };
+    // Keys use the raw OS/architecture names from the manifest; no aliasing is applied.
     format!("{os}-{arch}")
 }
 

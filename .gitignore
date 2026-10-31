@@ -36,3 +36,4 @@ src-tauri/resources/aria2/*
 Thumbs.db
 .idea/
 .vscode/
+.audit/

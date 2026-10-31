@@ -1,0 +1,264 @@
+/*
+ * 主页：实例信息居中，启动按钮在右下角。
+ *
+ * 布局上刻意留白：这一页只有一件事可做，把实例信息放到页面中央、按钮固定贴在
+ * 右下角的操作区，视线落点不随实例数量或名称长度漂移。游戏库那页是信息密集的
+ * 卡片网格，两页的疏密对比本身就是分工提示。
+ */
+.page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 实例信息：占满按钮区以上的全部空间，内容垂直居中。 */
+.stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: clamp(20px, 4vw, 48px);
+  overflow-y: auto;
+}
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: min(460px, 100%);
+  text-align: center;
+}
+
+.heroIcon {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 6px;
+}
+
+.heroName {
+  margin: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: var(--text-2xl);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.heroMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+/* 元信息之间的分隔点：用伪元素而不是真字符，换行时不会在行首留一个孤立的分隔符。 */
+.heroMeta > span + span::before {
+  content: '·';
+  margin-right: 8px;
+  opacity: 0.6;
+}
+
+.heroAccount {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 实例未就绪时的说明：与禁用的启动按钮配套，先解释再阻止。 */
+.blockedHint {
+  max-width: 420px;
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-warning-500, #f59e0b) 35%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-warning-500, #f59e0b) 10%, transparent);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/* --- 启动进度 -------------------------------------------------------- */
+/*
+ * 贴在底部操作区正上方，而不是另起一个浮层：用户点了按钮，视线就在右下角，
+ * 把阶段放在这里不用移动视线。App 底部那条全局细条仍然保留，用于切页之后。
+ */
+.progressRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin: 0 clamp(14px, 2vw, 24px);
+  padding-bottom: var(--space-md);
+}
+
+.progressTrack {
+  flex: 1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--color-bg-secondary);
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary-500);
+  transition: width var(--duration-base, 240ms) var(--ease, ease);
+}
+
+.progressStage {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+/* --- 底部操作区 ------------------------------------------------------ */
+/*
+ * 启动按钮所在的一行。左边是「启动什么」（图标 + 名称），右边是按钮——按钮落在
+ * 右下角，读起来是「启动这个实例」。用上边框把它与信息区分开，也让这一行看起来
+ * 是一个固定的操作条，而不是页面内容的一部分。
+ */
+.dock {
+  display: flex;
+  align-items: center;
+  gap: var(--space-base);
+  padding: var(--space-md) clamp(14px, 2vw, 24px);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+}
+
+/* 默认实例下拉：靠左，「启动什么」先于「按下去」。 */
+.dockPicker {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.dockPicker label {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.dockPicker select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 320px;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  outline: none;
+}
+
+.dockPicker select:focus {
+  border-color: var(--color-primary-500);
+}
+
+.dockActions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: var(--space-sm);
+  margin-left: auto;
+}
+
+/*
+ * 主按钮：整页唯一的高强调色块。高度 52 与 PCL2 的启动按钮（54）接近，
+ * 宽度够写下一个实例名也不至于在窗口变窄时把左侧信息挤没。
+ */
+.launchButton {
+  min-width: 148px;
+  min-height: 52px;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+/* --- 空状态 --- */
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 420px;
+  text-align: center;
+}
+
+.emptyState h1 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-xl);
+}
+
+.emptyState p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.emptyActions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+/*
+ * 窄窗口：操作区换成两行——先选「启动什么」（下拉独占一行），按钮在下一行靠右。
+ * 挤成一行会让下拉被压成省略号；顺序也按阅读顺序排，先宾语后动作。
+ */
+@media (max-width: 760px) {
+  .dock {
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+  }
+
+  .dockPicker {
+    flex-basis: 100%;
+    order: 1;
+  }
+
+  .dockPicker select {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  /* 提示条在窄窗口下贴满宽度（见 App.module.css），抬高量也随操作区折行变化。 */
+  .dockActions {
+    flex-basis: 100%;
+    order: 2;
+    justify-content: flex-end;
+  }
+
+  /* 两个按钮平分一行：只让主按钮撑满会把「管理」挤成左侧一个孤零零的短词。 */
+  .dockActions button {
+    flex: 1 1 0;
+  }
+
+  .launchButton {
+    min-width: 0;
+  }
+}
+
+/* 减少动态效果时不做进度过渡。 */
+@media (prefers-reduced-motion: reduce) {
+  .progressFill { transition: none; }
+}

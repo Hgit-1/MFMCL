@@ -1,0 +1,83 @@
+/* 实例维护：检查客户端更新、导出整合包。 */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/*
+ * 每一项是一行「说明 + 操作按钮」。
+ *
+ * 用两列而不是上下堆叠：说明可能很长，按钮始终贴右，视线不用在句尾找按钮。
+ * `align-items: flex-start` 让按钮与标题对齐而不是与整段文字垂直居中——后者在
+ * 多行说明下会让按钮浮到中间，看起来像属于正文。
+ */
+.row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.rowMain {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rowMain strong {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.rowMain > span {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+/* 检查结果：已是最新用成功色，有改动用警告色。 */
+.ok {
+  color: var(--color-success-500, #22C55E);
+  font-size: var(--text-sm);
+}
+
+.warn {
+  color: var(--color-warning-500, #F59E0B);
+  font-size: var(--text-sm);
+}
+
+/*
+ * 再分发确认。
+ *
+ * 做成常驻可见的复选框而不是弹窗确认：导出按钮在未勾选时保持禁用，用户一眼能
+ * 看出「要先确认才能导出」。用弹窗的话，按钮看起来可点，点下去才被告知不可用。
+ */
+.confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.confirm input {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin: 2px 0 0;
+  accent-color: var(--color-primary-500);
+}
+
+@media (max-width: 640px) {
+  .row {
+    flex-direction: column;
+    gap: 10px;
+  }
+}

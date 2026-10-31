@@ -120,7 +120,99 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-  margin: auto 2px 0;
+  margin: 0 2px;
+}
+
+/*
+ * 侧栏底部的两组设置：安装目标 / 直接下载目录。
+ *
+ * 不用 `margin-top: auto` 贴底——侧栏 `align-self: stretch` 会被右侧长列表拉到
+ * 同等高度，贴底会留出几百像素空白。这些是筛选条件，应该紧跟在「当前在下载
+ * 什么」下面，与结果区一起从顶部读下来。
+ */
+.navFooter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin: 0;
+}
+
+/* 组标题：比字段 label 略重，表明它是一组设置而不是单个字段。 */
+.blockHeading {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+/* 组说明：一句话解释这一组影响什么。 */
+.blockHint {
+  margin: -4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+/*
+ * 「直接下载」独立成组，用分隔线断开。
+ *
+ * 它和「目标实例」不是同一个设置的子项：实例决定「安装」装到哪，这个目录只影响
+ * 「直接下载」。没有分隔时两块紧挨着，容易被读成「改了目录就会改安装位置」。
+ */
+.directBlock {
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--color-border);
+  gap: 0;
+}
+
+/*
+ * 「直接下载」的折叠标题。
+ *
+ * 整行可点：左侧是标题，中间是当前状态摘要（已设的目录名或「未设置」），
+ * 右侧箭头指示可展开。收起时只占一行，侧栏不再被三行说明加一个整宽按钮占满。
+ */
+.directToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.directToggle:hover .blockHeading { color: var(--color-primary-text); }
+
+/* 状态摘要：靠右、次要色、单行省略。 */
+.directSummary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directChevron {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+  transition: transform var(--duration-fast) var(--ease, ease);
+}
+
+/* 展开时箭头转向，与抽屉菜单的同一手法保持一致。 */
+.directChevronOpen { transform: rotate(180deg); }
+
+.directBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
 }
 
 .targetBlock label {
@@ -144,6 +236,147 @@
 
 .targetBlock select:focus {
   border-color: var(--color-primary-500);
+}
+
+/*
+ * 下载目录选择器：外观与上面的实例下拉保持一致，但它是按钮而不是 select
+ * ——点击要拉起系统文件夹对话框，不能是一个下拉列表。
+ */
+.dirPicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.dirPicker:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 55%, var(--color-border));
+}
+
+.dirPicker:focus-visible {
+  border-color: var(--color-primary-500);
+  outline: none;
+}
+
+.dirPicker svg {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+}
+
+/* 目录路径通常很长：单行省略，完整路径放在 title 里。 */
+.dirPath {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 已选目录那一行：路径按钮 + 右侧「更改」。 */
+.dirRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dirRow .dirPicker { flex: 1 1 auto; min-width: 0; }
+
+.dirChange {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.dirChange:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 55%, var(--color-border));
+  color: var(--color-text-primary);
+}
+
+/*
+ * 未选目录时的引导。
+ *
+ * 之前只显示「未选择（点击选择）」，是个死状态：用户不知道这一步是下载的前置条件。
+ * 现在给一句说明 + 一个明确的按钮，把「必须先选」这件事说出来。
+ */
+.dirEmptyHint {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.dirPickCta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  border: 1px dashed color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-primary-500) 6%, transparent);
+  color: var(--color-primary-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.dirPickCta:hover {
+  background: color-mix(in srgb, var(--color-primary-500) 12%, transparent);
+}
+
+/* 「刚刚保存」那一行：整行可点，点了打开目录。 */
+.lastSaved {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  margin-top: 2px;
+  padding: 6px 8px;
+  border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--color-success-600, #16a34a) 60%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-success-600, #16a34a) 6%, transparent);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.lastSaved:hover {
+  background: color-mix(in srgb, var(--color-success-600, #16a34a) 12%, transparent);
+}
+
+.lastSavedLabel {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+/* 文件名通常较长：单行省略，完整值在行级 title 里。 */
+.lastSavedName {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* --- 右侧面板 ------------------------------------------------------------ */
@@ -193,6 +426,29 @@
   margin-top: 20px;
 }
 
+/*
+ * 搜索条件行：版本 / 加载器 / 类型 / 排序。
+ * 与上面的「名称」行分开成独立容器，避免挤进同一个 3 列模板后一行塞 4 个。
+ *
+ * 用 `auto-fit` 而不是固定 4 列 + 断点：四个下拉框里放的都是可能较长的选项文字
+ * （「跟随实例 · 1.21.1」），而这段文字的长度随语言变化（中文约 145px，英文与
+ * 日文接近 200px）。固定列数要么在宽屏下挤窄、要么在窄屏下留白，无论断点放在
+ * 哪里都会有一段宽度区间放不下。
+ *
+ * `minmax(220px, 1fr)` 让浏览器按可用宽度自己决定列数：够宽时一行四个，变窄时
+ * 自动落到三个、两个，每一列都不会低于 220px——这个下限不是拍脑袋定的：实测
+ * 中文的「跟随实例 · 1.21.1」约 142px，英文 `Follow instance · 1.21.1` 约
+ * 197px，日文 `インスタンス準拠 · 1.21.1` 约 208px。取下限 220px 是为了给最长
+ * 的那条留出约 12px 余量：刚好卡在 208px 时，换个字体度量或版本号变长就会重新
+ * 被裁。下限设小（例如 180px）会让列数在某个宽度刚跳到更多列时每列反而变窄，
+ * 出现「断点前后都放不下」的区间。
+ *
+ * 配合 `.field select` 的省略号，极端窄的窗口下也只是省略而不是硬裁。
+ */
+.filterGridEven {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
 .field {
   display: flex;
   min-width: 0;
@@ -202,6 +458,16 @@
 
 .fieldWide {
   grid-column: span 1;
+}
+
+/*
+ * 版本列加宽。
+ *
+ * 版本选择器里的输入框要同时容纳「跟随实例 1.21.1」与用户手输的版本号，比旁边
+ * 的加载器/类型下拉需要更多横向空间；`≥1.2fr` 让它在该行里拿到更大的份量。
+ */
+.fieldVersion {
+  min-width: 0;
 }
 
 .field > span {
@@ -220,6 +486,18 @@
   color: var(--color-text-primary);
   font: inherit;
   outline: none;
+}
+
+/*
+ * 下拉框放不下长选项时省略，而不是把字裁在半截。
+ *
+ * `<select>` 的选中项文字由浏览器绘制，默认会被硬裁（截图里看到的就是
+ * 「跟随实例（1.」）。`text-overflow: ellipsis` 在多数浏览器里对 select 的
+ * 选中项有效，配合 `min-width: 0` 让它能在栅格列里正常收缩。
+ */
+.field select {
+  min-width: 0;
+  text-overflow: ellipsis;
 }
 
 .field select:focus,
@@ -493,6 +771,24 @@
   gap: 12px;
 }
 
+/*
+ * 失败时的排查提示。
+ *
+ * 只有一条错误文案时，用户看不出「该等一等还是改设置」。这两行给出具体方向，
+ * 并且明确说明自动重试已经做过——否则用户会以为点一次 Retry 就是第一次尝试。
+ */
+.errorHints {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  list-style: disc;
+}
+
 .skeletonList {
   display: flex;
   flex-direction: column;
@@ -594,6 +890,18 @@
   border-color: color-mix(in srgb, var(--color-primary-500) 55%, var(--color-border));
   background: var(--color-bg-secondary);
   transform: translateY(-1px);
+}
+
+/*
+ * 版本行的操作区：安装与「直接下载」并排。窄屏时整体换成整行宽度，
+ * 避免两个按钮各自换行、高度参差。
+ */
+.versionActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex: 0 0 auto;
 }
 
 /* 贴图图标：无边框、无底板、无圆角遮罩，只做像素级放大。 */
@@ -744,10 +1052,94 @@
   color: color-mix(in srgb, #f16436 68%, var(--color-text-primary));
 }
 
+/*
+ * 展开的版本列表：与父行的图标对齐，用左侧内缩表达层级。
+ *
+ * 这条规则原本只在 `CurseForgePanel.module.css` 里；模组页把 CurseForge 结果
+ * 并进 StoreWorkspace 之后，那边用的是本文件的样式表，类名解析成 undefined，
+ * 缩进与间距整块丢失。复制到这里（而不是让两个组件互相 import 样式表），
+ * 是因为两处的行结构与父级缩进本来就各自独立。
+ */
+.versionListInner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 10px;
+  padding-left: 47px;
+}
+
+/*
+ * 受限文件提示：作者禁止第三方启动器分发时，用这个胶囊告知需手动下载。
+ * 与上面同样来自 CurseForgePanel.module.css。
+ */
+.restricted {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-warning-500, #f59e0b) 14%, transparent);
+  color: var(--color-warning-500, #f59e0b);
+  font-size: 11px;
+}
+
+/*
+ * 整合包版本按游戏版本分组。
+ *
+ * 参考 PCL2 详情页的多卡片结构：一个成熟整合包常有几十个文件，平铺时找「我这个
+ * 版本该用哪个」很费劲。分组标题直接用版本号，右侧带文件数。
+ */
+.packVersionGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.packVersionGroup + .packVersionGroup {
+  margin-top: 10px;
+}
+
+.packVersionGroupTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 2px 2px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+/* 文件数徽标：中性底，不抢版本号的视觉重量。 */
+.packVersionGroupCount {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
 /* --- 响应式 -------------------------------------------------------------- */
 
+/*
+ * `filterGridEven` 不需要任何断点：`auto-fit` + `minmax(210px, 1fr)` 会按容器
+ * 实际宽度自动决定列数（够宽一行四个、变窄依次落到三个/两个/一个）。
+ *
+ * 之前这里也给它强制过列数，结果在 761–980px 区间把每列压到 118–199px，反而
+ * 成了最严重的一处裁切（日文在 780px 差 90px）。列数交给 auto-fit 之后，
+ * 只有真正窄到容器放不下 210px 时才会变成一列。
+ * 通用的 `filterGrid`（名称行）仍按原来的断点。
+ */
 @media (max-width: 980px) {
-  .filterGrid {
+  /*
+   * `:not(.filterGridEven)` 不能省。
+   *
+   * 四列筛选行同时挂着 `filterGrid` 和 `filterGridEven` 两个类，两条规则特异度
+   * 相同，后出现的胜出——这条断点写在 `.filterGridEven` 的 auto-fit 之后，会把
+   * 它整个覆盖成 `repeat(2, minmax(0, 1fr))`，连 210px 下限一起丢掉，窄屏下
+   * 每列被压到 118px 左右，文字又被裁。排除掉带 `filterGridEven` 的行，列数
+   * 交给它的 auto-fit 自己算。
+   */
+  .filterGrid:not(.filterGridEven) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -779,7 +1171,8 @@
     overflow: visible;
   }
 
-  .filterGrid {
+  /* 同样要排除 `filterGridEven`：见上面 980px 断点处关于层叠覆盖的说明。 */
+  .filterGrid:not(.filterGridEven) {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -795,7 +1188,8 @@
   }
 
   .versionRow > button,
-  .contentRow > button {
+  .contentRow > button,
+  .versionActions {
     width: 100%;
   }
 
@@ -852,8 +1246,13 @@
   }
 
   .versionRow > button,
-  .contentRow > button {
+  .contentRow > button,
+  .versionActions {
     flex: 1 1 100%;
+  }
+
+  .versionActions > button {
+    flex: 1 1 0;
   }
 }
 
@@ -963,4 +1362,72 @@
   .pagerInfo {
     flex: 0 0 auto;
   }
+}
+
+
+
+/*
+ * 来源多选。
+ *
+ * 与关键词放在同一张筛选卡里：它们共同构成一次搜索。做成复选框而不是互斥切换，
+ * 是因为用户想要的是「搜到这个模组」，而不是「先在哪个站搜」；两边同时勾上时
+ * 结果合并显示，每条带来源标记。
+ */
+.sourcePick {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.sourcePickLabel {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.sourceOption {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  user-select: none;
+}
+
+.sourceOption:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+  color: var(--color-text-primary);
+}
+
+.sourceOption input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--color-primary-500);
+}
+
+/* CurseForge 的 key 设置嵌在筛选卡里时，与上方控件拉开距离。 */
+.cfKeySlot {
+  margin-top: 12px;
+}
+
+/*
+ * 结果分项计数。
+ *
+ * 合并列表里必须能回答「这个总数是怎么来的」，否则用户无法判断某个站是不是没返回
+ * 结果。用小号次要色，不抢标题。
+ */
+.resultsBreakdown {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
 }

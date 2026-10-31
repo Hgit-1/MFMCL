@@ -27,13 +27,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: design/flowlaunch-ui/package-lock.json
       - run: ${{ matrix.deps }}
         shell: bash
-      - run: npm ci --prefix ui
+      - run: npm ci --prefix design/flowlaunch-ui
       - run: cargo test -p mc-metadata -p download-engine -p launcher-core -p launcher-auth
-      - run: npm run build --prefix ui
-      - run: npm run tauri --prefix ui -- build --ci --no-sign
+      - run: npm run build --prefix design/flowlaunch-ui
+      - run: npm run tauri -- build --ci --no-sign
       - uses: actions/upload-artifact@v4
         with:
           name: mfmcl-unsigned-validation-${{ matrix.os }}

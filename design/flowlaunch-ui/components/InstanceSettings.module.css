@@ -106,6 +106,22 @@
   background: var(--color-primary-solid-hover);
 }
 
+/*
+ * 删除。用危险色的文字与描边，但不做实色填充：
+ * 实心红按钮在页头会和「启动」抢主次，而删除是低频且不可撤销的操作，
+ * 它应该在需要时被找到，而不是一直最显眼。悬停时才加深饱和。
+ */
+.danger {
+  border-color: color-mix(in srgb, var(--color-danger-500) 35%, var(--color-border));
+  color: var(--color-danger-500);
+}
+
+.danger:hover {
+  border-color: var(--color-danger-500);
+  background: color-mix(in srgb, var(--color-danger-500) 10%, var(--color-bg-elevated));
+  color: var(--color-danger-500);
+}
+
 /* --- 只读摘要 ------------------------------------------------------------ */
 
 .facts {

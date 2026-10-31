@@ -11,9 +11,30 @@
 // 状态文字会停留在调用那一刻的语言上。只有系统对话框的标题和 prompt 文案必须
 // 立即成句，因此接受一个语言参数。
 
-import { PREVIEW_JAVA_RUNTIMES, type JavaRuntime } from './java';
+import { previewJavaRuntimes, type JavaRuntime } from './java';
 import { translate, type Language } from './i18n';
 import { loc, locFromError, type Localized } from './i18n/localized';
+import {
+  inspectJavaPath as nativeInspectJavaPath,
+  isDesktopShell as shellIsDesktop,
+  listJavaRuntimes as nativeListJavaRuntimes,
+  pickFile,
+} from './native';
+import { PREVIEW_DATA } from './preview';
+
+/**
+ * 选择 java 可执行文件。
+ *
+ * 复用 `native.pickFile`（走 Tauri 的对话框插件），而不是自己再读
+ * `window.__TAURI__.dialog`：两套桥接会各自判断一次「是否桌面版」，迟早出现
+ * 「探测说在桌面版、导入说在预览」这种自相矛盾的状态。
+ *
+ * 不按扩展名过滤：Linux/macOS 上的 java 通常没有后缀，加 `exe` 过滤反而会把
+ * 它们藏起来。是否有效由后端的 `inspect_java_path` 实际执行来判定。
+ */
+async function pickJavaExecutable(language: Language): Promise<string | null> {
+  return pickFile(translate(language, 'java.importDialogTitle'));
+}
 
 interface TauriWindow {
   __TAURI__?: {
@@ -27,9 +48,10 @@ function bridge(): TauriWindow['__TAURI__'] {
   return (window as Window & TauriWindow).__TAURI__;
 }
 
-export function isDesktopShell(): boolean {
-  return Boolean(bridge()?.core?.invoke);
-}
+// `isDesktopShell` 现在从 `native.ts` 导入：这里曾有一份只看 `__TAURI__.core`
+// 的实现，而 `native.ts` 看的是 `__TAURI_INTERNALS__`。两套判断在某些构建下
+// （`withGlobalTauri` 关掉时）会得出相反结论，导致「探测认为在桌面版、导入认为
+// 在预览」这种自相矛盾的状态。统一用同一份实现。
 
 export interface DetectResult {
   runtimes: JavaRuntime[];
@@ -39,16 +61,22 @@ export interface DetectResult {
 
 /** Scan for Java runtimes. Mirrors PCL2's "自动搜索 Java". */
 export async function detectJavaRuntimes(): Promise<DetectResult> {
-  const invoke = bridge()?.core?.invoke;
-  if (!invoke) {
+  if (!shellIsDesktop()) {
+    // 浏览器里没有文件系统，探测不出任何真实的 Java。开发预览给一组示例值
+    // （否则实例的 Java 下拉框是空的，界面没法调）；生产构建里 PREVIEW_DATA 是
+    // 编译期 false，这两块示例数据都不会被打包。
+    if (!PREVIEW_DATA) {
+      return { runtimes: [], note: loc('java.detectNone'), simulated: false };
+    }
+    const preview = previewJavaRuntimes();
     return {
-      runtimes: PREVIEW_JAVA_RUNTIMES,
-      note: loc('java.previewFound', { count: PREVIEW_JAVA_RUNTIMES.length }),
+      runtimes: preview,
+      note: loc('java.previewFound', { count: preview.length }),
       simulated: true,
     };
   }
   try {
-    const runtimes = await invoke<JavaRuntime[]>('list_java_runtimes');
+    const runtimes = await nativeListJavaRuntimes();
     return {
       runtimes,
       note: runtimes.length ? loc('java.detectFound', { count: runtimes.length }) : loc('java.detectNone'),
@@ -66,23 +94,18 @@ export interface ImportResult {
 
 /** Import one Java by picking its executable. Mirrors PCL2's ManuallyImportJava. */
 export async function importJavaRuntime(language: Language): Promise<ImportResult> {
-  const tauri = bridge();
-  if (!tauri?.dialog || !tauri.core) {
-    const path = window.prompt(translate(language, 'java.importPrompt'), '/usr/bin/java');
-    if (!path?.trim()) return { runtime: null, note: null };
-    return {
-      runtime: {
-        path: path.trim(),
-        majorVersion: 21,
-        versionText: translate(language, 'java.importPlaceholder'),
-      },
-      note: loc('java.importAdded', { path: path.trim() }),
-    };
+  // 桌面版：走系统文件选择 + 后端校验（`inspect_java_path` 会真的跑 `java -version`）。
+  const desktop = shellIsDesktop();
+  if (!desktop) {
+    // 浏览器预览拿不到文件系统，也没有后端可以执行 java。这里**不再编造**一个
+    // 「21 / 已添加」的运行时：那会让预览里出现一条真机上并不存在的记录，用户
+    // 以为导入成功了。改为明确说明该操作需要桌面版。
+    return { runtime: null, note: loc('java.importNeedsDesktop') };
   }
-  const selected = await tauri.dialog.open({ multiple: false, title: translate(language, 'java.importDialogTitle') });
-  if (typeof selected !== 'string') return { runtime: null, note: null };
+  const selected = await pickJavaExecutable(language);
+  if (!selected) return { runtime: null, note: null };
   try {
-    const runtime = await tauri.core.invoke<JavaRuntime>('inspect_java_path', { path: selected });
+    const runtime = await nativeInspectJavaPath(selected);
     return { runtime, note: loc('java.importVerified', { major: runtime.majorVersion, path: runtime.path }) };
   } catch (error) {
     return { runtime: null, note: locFromError('java.importInvalid', error) };

@@ -1,10 +1,62 @@
 /* 应用基础布局 */
 .app {
+  position: relative;
   width: 100%;
   height: 100dvh;
   min-height: 100vh;
   display: flex;
   overflow: hidden;
+}
+
+/*
+ * 侧栏与内容区在背景层之上。
+ *
+ * 两者都要显式抬层：背景是 `.app` 的第一个子元素且 `z-index: 0`，只给其中一个
+ * 抬层会让另一个落到背景之下——那时用户看到的是「内容区正常、侧栏被照片盖住」，
+ * 很像一个渲染 bug。
+ */
+.sidebar,
+.main {
+  position: relative;
+  z-index: 1;
+}
+
+/*
+ * 有背景时，侧栏与内容区改用半透明底色。
+ *
+ * 这里有一个容易做错的地方：可读性由**两层**共同决定——面板自身的不透明度，
+ * 以及背景层上的遮罩浓度。两层都调高会让照片彻底消失（0.7 × 0.6 只剩一成多），
+ * 那时用户会以为背景功能坏了。所以面板只留 72%：照片仍能透出形状与颜色，而
+ * 文字始终有一层稳定的底。想要更淡的背景由用户去调遮罩浓度，不是在 CSS 里
+ * 再压一层。
+ *
+ * `backdrop-filter` 让面板背后的照片变虚，这是照片在文字下面仍然不刺眼的关键：
+ * 细节被抹掉之后，剩下的只是色块与明暗。
+ *
+ * 选择器挂在 `.app` 的 `data-has-background` 上而不是用 `:has()`：后者在旧版
+ * WebView 里不支持，而这个应用要在 Tauri 的各个平台外壳里跑。
+ */
+.app[data-has-background='true'] .sidebar {
+  background: color-mix(in srgb, var(--color-bg-elevated) 72%, transparent);
+  backdrop-filter: blur(18px) saturate(120%);
+}
+
+.app[data-has-background='true'] .main {
+  background: color-mix(in srgb, var(--color-bg-primary) 72%, transparent);
+  backdrop-filter: blur(18px) saturate(120%);
+}
+
+/*
+ * 半透明之后，卡片、输入框这些「抬升面」也要跟着透。
+ *
+ * 只透面板不透卡片会出现另一种割裂：照片从面板与卡片之间的缝隙透出来，而卡片
+ * 本身还是一块不透明的白/深灰，看起来像贴上去的纸片。抬升面用更高的不透明度
+ * （88%），因为卡片里全是正文——这一层是真正承担可读性的。
+ */
+.app[data-has-background='true'] .main [class*='card'],
+.app[data-has-background='true'] .main [class*='taskCard'],
+.app[data-has-background='true'] .main header {
+  background: color-mix(in srgb, var(--color-bg-elevated) 88%, transparent);
 }
 
 /* 首次运行 */
@@ -239,49 +291,85 @@
 
 .menuOpen .navChevron { transform: rotate(180deg); }
 
-.storeMenu {
-  position: fixed;
-  z-index: 900;
-  width: 236px;
-  overflow-y: auto;
-  padding: 6px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-elevated);
-  box-shadow: var(--shadow-lg);
+/*
+ * 内容商店抽屉。
+ *
+ * 内联展开而不是浮层：它参与文档流，把下方的导航项向下推。
+ * 这样三件事自然成立，而浮层版本需要额外代码才能勉强做到：
+ *   1. 层级关系一眼可见——子项确实在「内容商店」之下；
+ *   2. 不会遮挡相邻导航项（浮层会盖住「下载任务」）；
+ *   3. 不需要根据按钮位置算坐标，也不会在窗口缩放/滚动后跑到错的地方。
+ */
+.storeDrawer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  /*
+   * 左侧内缩 + 一条竖线，表达「这些是内容商店的子项」。
+   * 缩进量对齐导航图标中心（图标 20px + 右侧 gap），竖线落在图标列上。
+   */
+  margin: 2px 0 4px;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--color-border);
 }
 
-.storeMenuHeader {
-  padding: 8px 10px 6px;
-  color: var(--color-text-secondary);
+.storeDrawerHeader {
+  padding: 4px 8px 6px;
+  color: var(--color-text-disabled);
   font-size: var(--text-xs);
   font-weight: 600;
+  letter-spacing: .02em;
 }
 
-.storeMenu button {
+.storeDrawerItem,
+.storeDrawerItemActive {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 38px;
+  min-height: 36px;
   padding: 0 10px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
   cursor: pointer;
   font: inherit;
   font-size: var(--text-sm);
   text-align: left;
+  transition: background var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease);
 }
 
-.storeMenu button:hover { background: var(--color-bg-secondary); }
+.storeDrawerItem:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
 
-.storeMenu button[aria-checked="true"],
-.storeMenuItemActive {
-  /* 与侧栏选中行同一套色调 token：底色和文字色成对派生，保证 ≥4.5:1 */
+/*
+ * 当前分类：用色调底 + 主色文字，与侧栏选中行同一套 token，
+ * 保证两处「选中」在视觉上是同一种语言，也保证对比度 ≥4.5:1。
+ */
+.storeDrawerItemActive {
   background: var(--color-primary-tonal);
   color: var(--color-primary-tonal-text);
+  font-weight: 600;
+}
+
+.storeDrawerItemActive:hover {
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+}
+
+/*
+ * 抽屉在窄高度窗口里要能滚动，否则内容商店展开后可能把底部的
+ * 账户/设置挤出可视区。`min-height: 0` 是让它能在 flex 容器里收缩的前提。
+ */
+@media (max-height: 640px) {
+  .storeDrawer {
+    max-height: 46vh;
+    overflow-y: auto;
+  }
 }
 
 .storeMenuItemIcon {
@@ -293,7 +381,7 @@
   color: var(--color-text-secondary);
 }
 
-.storeMenuItemActive .storeMenuItemIcon { color: var(--color-primary-tonal-text); }
+.storeDrawerItemActive .storeMenuItemIcon { color: var(--color-primary-tonal-text); }
 .storeMenuCheck { margin-left: auto; }
 
 .sidebarAvatar {
@@ -340,6 +428,39 @@
   background: var(--color-bg-elevated);
 }
 
+/*
+ * 实时活动气泡：并行下载数。
+ *
+ * 与普通计数徽章的视觉区分是必要的：那个灰色数字回答「有几条任务」，而这个回答
+ * 「此刻有几条连接在跑」。用主色实心 + 同色柔光，让它在侧栏里一眼可辨，同时
+ * 不会像错误提示那样抢注意力——下载是预期内的活动，不是警报。
+ *
+ * 数字用等宽字形（tabular-nums）：并行数会频繁跳动，非等宽字体会让气泡宽度
+ * 反复变化，在侧栏里抖动得很明显。
+ */
+.badgeLive {
+  background: var(--color-primary-solid);
+  color: var(--color-on-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary-500) 22%, transparent);
+}
+
+/* 选中态下气泡仍是主色实心，不需要换成抬升面底色。 */
+.navItem.active .badgeLive {
+  background: var(--color-primary-solid);
+  color: var(--color-on-primary);
+}
+
+/*
+ * 减少动效偏好下保持完全静止：这里不做脉冲动画。
+ * 下载进度本身已经在下载页有反馈，侧栏再让数字闪动只会分散注意力；
+ * 而且持续动画对前庭敏感用户不友好。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .badgeLive {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary-500) 22%, transparent);
+  }
+}
+
 .sidebarFooter {
   display: flex;
   flex-direction: column;
@@ -357,6 +478,64 @@
   flex-direction: column;
   overflow: hidden;
   background: var(--color-bg-primary);
+  /* 启动进度条绝对定位在底部，需要一个定位上下文。 */
+  position: relative;
+}
+
+/* --- 启动进度条 ------------------------------------------------------- */
+/*
+ * 贴在内容区底部的细条。参考 PCL2：不遮挡界面、不用居中遮罩，让用户在启动
+ * 等待期间仍能浏览实例列表。
+ */
+.launchBar {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 10px clamp(14px, 2vw, 24px);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+  box-shadow: 0 -2px 8px rgb(0 0 0 / 6%);
+}
+
+.launchBarTrack {
+  flex: 1 1 auto;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--color-bg-secondary);
+}
+
+.launchBarFill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary-500);
+  /*
+   * 只在宽度变化时过渡。后端推进是分段的（5→20→75→90→100），短暂动画让跳跃
+   * 看起来像进度而不是闪烁。
+   */
+  transition: width var(--duration-base, 240ms) var(--ease, ease);
+}
+
+.launchBarLabel {
+  flex: 0 0 auto;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.launchBarPct {
+  flex: 0 0 auto;
+  min-width: 36px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* 减少动态效果时不做宽度过渡：推进瞬间到位，但信息不丢。 */
+@media (prefers-reduced-motion: reduce) {
+  .launchBarFill { transition: none; }
 }
 
 .mainHeader p { margin-top: 6px; color: var(--color-text-secondary); font-size: 12px; }
@@ -443,7 +622,12 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr));
+  /*
+   * 最小列宽 420px：卡片里同时有图标（64px）、名称、元信息与三枚按钮。
+   * 400px 时名称会被压成「纯净生存…」这种两三字就截断的宽度，而实例名恰恰
+   * 是用户分辨卡片的主要信息；420px 下名称完整，且 1180px 视口仍能排两列。
+   */
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
   align-content: start;
   gap: var(--space-lg);
   padding: clamp(12px, 2vw, 24px);
@@ -464,8 +648,18 @@
   display: grid;
   place-items: center;
   border-radius: var(--radius-base);
+  /*
+   * 底板用于给标志提供对比。加载器标志里既有深色（Forge 铁砧、NeoForge 狐狸）
+   * 也有浅色（Fabric 米色织纹），透明背景上直接放会随主题变化而看不清。
+   * 内边距让标志不贴边：Fabric 的标志本身几乎填满画布。
+   */
+  padding: 8px;
   background: var(--color-bg-secondary);
-  font-size: 32px;
+  overflow: hidden;
+}
+
+.instanceIcon img {
+  display: block;
 }
 
 .instanceInfo {
@@ -482,6 +676,84 @@
   white-space: nowrap;
 }
 
+/*
+ * 标题行：实例名 + 「主页默认」标记 + 图钉开关。
+ *
+ * 名字用 flex:1 吃掉剩余宽度，标记与图钉贴在它右侧。之前 h3 是块级元素独占
+ * 一行，加标记只能另起一行，会让每张卡片的高度随状态变化——排成网格时相邻
+ * 卡片的元信息会错位。
+ */
+.instanceTitleRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  margin-bottom: var(--space-xs);
+}
+
+.instanceTitleRow h3 {
+  flex: 0 1 auto;
+  margin-bottom: 0;
+}
+
+/*
+ * 「主页默认」标记：低调的强调色小胶囊。
+ *
+ * 不改成整卡高亮或左侧色条：默认值是「这个按钮会启动它」的说明，不是警告，
+ * 也不是选中态（卡片本身仍然可以被选中去做别的操作）。一个小标记足够回答
+ * 「主页启动哪个」这个问题。
+ */
+.defaultBadge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/*
+ * 图钉开关。
+ *
+ * 未固定时只有悬停才显形（图标本身常驻但颜色淡），固定后转为强调色——这与
+ * 「有值/无值」的语义一致：没设默认时界面上不该有一排醒目的按钮在等你去点。
+ */
+.pinButton {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-disabled);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
+}
+
+.pinButton:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+}
+
+.pinActive {
+  color: var(--color-primary-text);
+}
+
+.pinActive:hover {
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+}
+
+.pinButton:focus-visible {
+  outline: 2px solid var(--color-primary-500);
+  outline-offset: 1px;
+}
+
 .instanceMeta {
   display: flex;
   flex-wrap: wrap;
@@ -489,6 +761,17 @@
   margin-bottom: var(--space-xs);
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
+}
+
+/*
+ * 元信息里的分隔点。
+ *
+ * 之前分隔是靠 JSX 里单独插入的「•」文本节点，配合 flex-wrap 换行时会出现
+ * 「上一行末尾一个孤零零的点」。现在让点跟着它后面的条目走（不换行），
+ * 换行只会发生在两条信息之间。
+ */
+.instanceMeta > span {
+  white-space: nowrap;
 }
 
 .lastPlayed {
@@ -527,6 +810,145 @@
 .taskProgress span { min-width: 40px; color: var(--color-text-secondary); font-size: var(--text-sm); text-align: right; }
 /* 状态文字：与侧栏徽章的数字对应，让用户知道那个数字代表哪些任务。 */
 .taskStatus { display: inline-block; margin-top: var(--space-xs); color: var(--color-text-secondary); font-size: var(--text-xs); }
+
+/* --- 文件级下载进度 ---------------------------------------------------- */
+/*
+ * 一个安装任务会下载上百个文件。这里每行表达三件事：阶段、进度、字节数。
+ * 设计参照 PCL2 下载窗口：把「连接中」与「下载中」分开，用不同的标签色，
+ * 让用户能区分「在等服务器」和「在传数据」。
+ */
+.fileProgressHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.fileProgressTitle { color: var(--color-text-secondary); font-size: var(--text-xs); font-weight: 600; }
+.fileProgressCount { color: var(--color-text-secondary); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+
+.fileProgressRow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-elevated);
+}
+
+.fileProgressTop {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+/* 文件名通常是长路径：单行省略，完整值放 title。 */
+.fileProgressName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileStageTag {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 阶段标签：连接中偏中性（在等，不是错），下载中偏主色，其余按语义上色。 */
+.stageConnecting { background: color-mix(in srgb, var(--color-text-secondary) 14%, transparent); color: var(--color-text-secondary); }
+.stageDownloading { background: color-mix(in srgb, var(--color-primary-500) 15%, transparent); color: var(--color-primary-500); }
+.stageVerifying { background: color-mix(in srgb, var(--color-warning-500, #f59e0b) 16%, transparent); color: var(--color-warning-500, #f59e0b); }
+.stageCompleted { background: color-mix(in srgb, var(--color-success-600, #16a34a) 14%, transparent); color: var(--color-success-600, #16a34a); }
+.stageFailed { background: color-mix(in srgb, var(--color-danger-500, #dc2626) 14%, transparent); color: var(--color-danger-500, #dc2626); }
+
+.fileProgressBarRow { display: flex; align-items: center; gap: var(--space-md); }
+
+.fileProgressBar {
+  flex: 1 1 auto;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--color-bg-secondary);
+}
+
+.fileProgressFill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary-500);
+  transition: width var(--duration-fast) linear;
+}
+
+.fillConnecting { background: var(--color-text-secondary); }
+.fillDownloading { background: var(--color-primary-500); }
+.fillVerifying { background: var(--color-warning-500, #f59e0b); }
+.fillCompleted { background: var(--color-success-600, #16a34a); }
+.fillFailed { background: var(--color-danger-500, #dc2626); }
+
+/*
+ * 总量未知时的「不确定」进度：一条来回滑动的色块。
+ * 不能画成一个固定宽度——那会被读成「快完成了」，而实际上进度根本无法估算。
+ *
+ * 两个 class 一起选（`.fileProgressBar.fileProgressIndeterminate`）是为了让特异度
+ * 高过 `.fileProgressFill` 的普通规则；`!important` 用于压过组件里给 fill 设的
+ * 内联 `width` 百分比。
+ */
+.fileProgressBar.fileProgressIndeterminate {
+  position: relative;
+}
+
+.fileProgressBar.fileProgressIndeterminate > .fileProgressFill {
+  position: absolute;
+  top: 0;
+  left: -35%;
+  width: 35% !important;
+  animation-name: fileProgressSlide;
+  animation-duration: 1.1s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+
+@keyframes fileProgressSlide {
+  from { left: -35%; }
+  to { left: 100%; }
+}
+
+.fileProgressPct {
+  flex: 0 0 auto;
+  min-width: 38px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.fileProgressMeta {
+  display: flex;
+  gap: var(--space-md);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 尊重系统的「减少动态效果」设置：来回滑动的色块会让人不适。 */
+@media (prefers-reduced-motion: reduce) {
+  .fileProgressBar.fileProgressIndeterminate > .fileProgressFill {
+    animation: none;
+    left: 0;
+    width: 100% !important;
+    opacity: 0.45;
+  }
+  .fileProgressFill { transition: none; }
+}
 
 /* 设置 */
 .settingsContent { display: flex; flex-direction: column; gap: var(--space-xl); }
@@ -612,4 +1034,146 @@
   .nav,
   .sidebarFooter { padding-top: 8px; padding-bottom: 8px; }
   .mainHeader { padding-top: 12px; padding-bottom: 12px; }
+}
+
+/*
+ * 删除确认对话框里的正文与勾选项。
+ *
+ * 这两条样式放在 App.module.css 而不是单独的 Modal 样式表里：它们描述的是
+ * 「删除实例」这个具体对话框的内容，属于页面层的排版，不是 Modal 的通用能力。
+ */
+.dialogBody {
+  margin: 0 0 16px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.checkRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  cursor: pointer;
+}
+
+.checkRow input {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  margin: 2px 0 0;
+  accent-color: var(--color-danger-500);
+}
+
+.checkRow strong {
+  display: block;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.checkRow small {
+  display: block;
+  margin-top: 3px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/*
+ * 提示条。
+ *
+ * 固定贴在窗口底部居中，不参与主布局——它是对某个操作的结果反馈，不该挤压
+ * 页面内容，也不该在切换页面时消失。层级高于侧栏但低于弹窗（弹窗有自己
+ * 的遮罩），因为弹窗里的操作结果要显示在弹窗之上时，用户正在看弹窗。
+ */
+.toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 900;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: min(440px, calc(100vw - 48px));
+  padding: 11px 12px 11px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-lg);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.toast > span {
+  flex: 1;
+  min-width: 0;
+  /* 后端错误可能带长路径；允许换行而不是撑破卡片。 */
+  overflow-wrap: anywhere;
+}
+
+.toast > button {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/*
+ * 主页的提示条要抬高。
+ *
+ * 那一页底部有一条操作区（下拉 + 启动按钮），提示条默认贴在窗口右下角会正好
+ * 盖住启动按钮——恰恰是最不能挡的那个控件。
+ *
+ * 高度由 Dashboard 用 ResizeObserver 量出来写进 `--dashboard-dock-height`，
+ * 而不是在这里写死一个数字：窄窗口下操作区会折成两行，写死的高度不是压住按钮
+ * 就是凭空留出一段空白。变量缺失时回落到 76px（宽窗口下的一行高度）。
+ */
+.toastAboveDock {
+  bottom: calc(var(--dashboard-dock-height, 76px) + 20px);
+}
+
+.toast > button:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+@media (max-width: 760px) {
+  .toast { right: 12px; bottom: 12px; left: 12px; max-width: none; }
+
+  /*
+   * 窄窗口里提示条贴满宽度，主页的抬高必须写在 .toast 之后。
+   * 只把 .toastAboveDock 定义在媒体查询之前会被上面这条 `.toast` 的 bottom
+   * 盖掉：两者都是单类选择器，后出现的胜出。
+   */
+  .toastAboveDock { bottom: calc(var(--dashboard-dock-height, 76px) + 12px); }
+}
+
+/*
+ * 问题徽章：安装失败的实例数。
+ *
+ * 用危险色实心，与旁边的灰色计数徽章形成对比——灰色回答「有几个」，
+ * 红色回答「有几个不能用」。只在确实有失败实例时出现，所以它本身就是提醒。
+ *
+ * 对比度：危险色底 + 白色文字在两种主题下都 ≥4.5:1（--color-danger-500 是
+ * 中等明度的红，配白字足够）。选中态不换底色——它表达的是内容状态，
+ * 不该随导航项选中与否改变含义。
+ */
+.badgeProblem,
+.navItem.active .badgeProblem {
+  background: var(--color-danger-500);
+  color: #FFFFFF;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-danger-500) 20%, transparent);
 }

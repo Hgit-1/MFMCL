@@ -356,7 +356,7 @@ mod tests {
     fn trust_is_exact_and_https_only() {
         let base = Url::parse("https://auth.example/authserver").unwrap();
         assert!(YggdrasilClient::new(base.clone(), &[]).is_err());
-        assert!(YggdrasilClient::new(base.clone(), &[base.clone()]).is_ok());
+        assert!(YggdrasilClient::new(base.clone(), std::slice::from_ref(&base)).is_ok());
         for bad in [
             "http://auth.example/authserver",
             "https://auth.example.evil/authserver",
@@ -365,7 +365,10 @@ mod tests {
             "https://auth.example/authserver?token=secret",
             "https://auth.example/authserver#fragment",
         ] {
-            assert!(YggdrasilClient::new(Url::parse(bad).unwrap(), &[base.clone()]).is_err());
+            assert!(
+                YggdrasilClient::new(Url::parse(bad).unwrap(), std::slice::from_ref(&base))
+                    .is_err()
+            );
         }
     }
 
@@ -381,7 +384,10 @@ mod tests {
             choose_profile(&[first.clone(), second.clone()], None, None),
             Err(AuthError::ProfileSelectionRequired)
         );
-        assert_eq!(choose_profile(&[first.clone()], None, None).unwrap(), first);
+        assert_eq!(
+            choose_profile(std::slice::from_ref(&first), None, None).unwrap(),
+            first
+        );
         assert_eq!(
             choose_profile(&[first.clone(), second.clone()], None, Some(&second.id)).unwrap(),
             second

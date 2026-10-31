@@ -26,6 +26,7 @@
 import type { GameInstance } from '../types';
 import { loc, renderLocalized, type Localized } from './i18n/localized';
 import { translate, type Language } from './i18n';
+import { PREVIEW_DATA } from './preview';
 
 export interface JavaRuntime {
   path: string;
@@ -37,14 +38,22 @@ export const JAVA_LIST_KEY = 'flowlaunch-java-runtimes';
 export const INSTANCE_JAVA_KEY = 'flowlaunch-instance-java';
 
 /**
- * PCL2 在列表为空时会自动触发一次搜索。网页预览没有文件系统，因此用这一组
- * 模拟搜索结果，保证实例的 Java 下拉框一开始就有可选项。
+ * 开发预览用的示例 Java 运行时。
+ *
+ * 为什么整个函数体由 `PREVIEW_DATA` 包起来而不是让调用方判断：常量折叠是逐语句
+ * 做的，`if (!PREVIEW_DATA) return []` 之后仍然存在一条「会调用本函数」的路径，
+ * 打包器因此必须保留函数体（连同这些路径字符串）。把判断放进函数内部，生产
+ * 构建里函数体变成 `if (false) { ... }`，内部的对象字面量就没有任何引用者，
+ * 才能被真正删除。
  */
-export const PREVIEW_JAVA_RUNTIMES: JavaRuntime[] = [
-  { path: '/usr/lib/jvm/java-21-openjdk/bin/java', majorVersion: 21, versionText: 'openjdk version "21.0.5"' },
-  { path: '/usr/lib/jvm/java-17-openjdk/bin/java', majorVersion: 17, versionText: 'openjdk version "17.0.13"' },
-  { path: '/usr/lib/jvm/temurin-8/bin/java', majorVersion: 8, versionText: 'openjdk version "1.8.0_432"' },
-];
+export function previewJavaRuntimes(): JavaRuntime[] {
+  if (!PREVIEW_DATA) return [];
+  return [
+    { path: '/usr/lib/jvm/java-21-openjdk/bin/java', majorVersion: 21, versionText: 'openjdk version "21.0.5"' },
+    { path: '/usr/lib/jvm/java-17-openjdk/bin/java', majorVersion: 17, versionText: 'openjdk version "17.0.13"' },
+    { path: '/usr/lib/jvm/temurin-8/bin/java', majorVersion: 8, versionText: 'openjdk version "1.8.0_432"' },
+  ];
+}
 
 function isRuntime(value: unknown): value is JavaRuntime {
   if (!value || typeof value !== 'object') return false;
@@ -55,18 +64,22 @@ function isRuntime(value: unknown): value is JavaRuntime {
     && Number.isFinite(runtime.majorVersion);
 }
 
-/** Load the global Java list. First run seeds the preview list, like PCL's auto search. */
+/** Load the global Java list. Dev preview seeds the sample list; production starts empty. */
 export function loadJavaList(): JavaRuntime[] {
   try {
     const raw = localStorage.getItem(JAVA_LIST_KEY);
     if (raw === null) {
-      saveJavaList(PREVIEW_JAVA_RUNTIMES);
-      return PREVIEW_JAVA_RUNTIMES.map(runtime => ({ ...runtime }));
+      // 生产构建里 PREVIEW_DATA 是编译期 false，这段播种逻辑与示例数据一起被移除，
+      // 首次启动得到空列表，由后端 `list_java_runtimes` 填真实结果。
+      if (!PREVIEW_DATA) return [];
+      const preview = previewJavaRuntimes();
+      saveJavaList(preview);
+      return preview;
     }
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter(isRuntime) : [];
   } catch {
-    return PREVIEW_JAVA_RUNTIMES.map(runtime => ({ ...runtime }));
+    return PREVIEW_DATA ? previewJavaRuntimes() : [];
   }
 }
 
@@ -151,6 +164,110 @@ function toVersion(text: string): JavaVersion | null {
   return { major: Number(parts[0]), minor: Number(parts[1] ?? 0), patch: Number(parts[2] ?? 0) };
 }
 
+/**
+ * 把用户随手写的版本范围解析成 `JavaRange`。
+ *
+ * ## 为什么需要它
+ *
+ * 原来的输入框只接受数学区间语法 `[21.0, )`，并且提示语是
+ * 「方括号表示包含、圆括号表示不包含、省略一侧表示无限制」。这是集合论写法，
+ * 对绝大多数用户都是陌生的——他们想的只是「Java 17 以上」或「17 到 21 之间」。
+ *
+ * 所以这里接受几种自然写法，内部统一翻译成区间：
+ *
+ * | 用户输入 | 含义 |
+ * | --- | --- |
+ * | `21` | 恰好 21 |
+ * | `21+`、`≥21`、`>=21` | 21 及以上 |
+ * | `<=17`、`≤17`、`17-` | 17 及以下 |
+ * | `17-21`、`17~21`、`17 - 21` | 17 到 21（含两端） |
+ * | `[21.0, )` | 仍兼容旧的区间语法 |
+ *
+ * 解析顺序很重要：先试区间语法（以 `[` 或 `(` 开头），再试自然写法。
+ * 反过来的话，`[21.0, )` 会被当成非法输入——它以符号开头，自然写法解析不了。
+ *
+ * 任何一侧解析失败都返回带具体位置说明的错误，而不是笼统的「格式错误」：
+ * 用户需要知道是哪一边写错了。
+ */
+export function parseFriendlyRange(text: string): JavaRange | { error: Localized } {
+  const trimmed = text.trim();
+  if (!trimmed) return { error: loc('java.rangeMissing') };
+
+  // 1) 旧语法：以方/圆括号开头，交给原有解析器，保持向后兼容
+  //    （已保存的设置里存的都是这种形式，不能因为换了输入方式就读不出来）。
+  if (/^[[(]/.test(trimmed)) return parseJavaRange(trimmed);
+
+  /*
+   * 2) 自然写法。先归一化各种符号，避免后面出现四套分支：
+   *    - 全角/Unicode 比较符 → ASCII
+   *    - 波浪号、中文顿号 → 连字符
+   *    - 两侧空白交给各分支自己 trim
+   */
+  const normalized = trimmed
+    .replace(/≥/g, '>=')
+    .replace(/≤/g, '<=')
+    .replace(/[～〜]/g, '~')
+    .replace(/—|–/g, '-')
+    .replace(/\s+/g, ' ');
+
+  // 2a) `>=21` / `>21` / `<=17` / `<17`
+  const comparison = /^(>=|<=|>|<)\s*(\d+(?:\.\d+){0,2})$/.exec(normalized);
+  if (comparison) {
+    const [, operator, value] = comparison;
+    const bound = toVersion(value);
+    if (!bound) return { error: loc('java.rangeBadValue', { value }) };
+    switch (operator) {
+      case '>=':
+        return { min: bound, minInclusive: true, max: null, maxInclusive: false };
+      case '>':
+        return { min: bound, minInclusive: false, max: null, maxInclusive: false };
+      case '<=':
+        return { min: null, minInclusive: false, max: bound, maxInclusive: true };
+      default:
+        return { min: null, minInclusive: false, max: bound, maxInclusive: false };
+    }
+  }
+
+  // 2b) `21+`（及以上）与 `17-`（及以下）
+  const suffix = /^(\d+(?:\.\d+){0,2})\s*([+-])$/.exec(normalized);
+  if (suffix) {
+    const bound = toVersion(suffix[1]);
+    if (!bound) return { error: loc('java.rangeBadValue', { value: suffix[1] }) };
+    return suffix[2] === '+'
+      ? { min: bound, minInclusive: true, max: null, maxInclusive: false }
+      : { min: null, minInclusive: false, max: bound, maxInclusive: true };
+  }
+
+  // 2c) 区间写法：`17-21`、`17 ~ 21`、`17 到 21`
+  const between = /^(\d+(?:\.\d+){0,2})\s*(?:-|~|到|至|to)\s*(\d+(?:\.\d+){0,2})$/.exec(normalized);
+  if (between) {
+    const min = toVersion(between[1]);
+    const max = toVersion(between[2]);
+    if (!min) return { error: loc('java.rangeBadLower', { value: between[1] }) };
+    if (!max) return { error: loc('java.rangeBadUpper', { value: between[2] }) };
+    if (compareVersion(min, max) > 0) return { error: loc('java.rangeInverted') };
+    return { min, minInclusive: true, max, maxInclusive: true };
+  }
+
+  // 2d) 单个版本号：`21`、`17.0.2`
+  const single = /^(\d+(?:\.\d+){0,2})$/.exec(normalized);
+  if (single) {
+    const exact = toVersion(single[1]);
+    if (!exact) return { error: loc('java.rangeBadValue', { value: single[1] }) };
+    // 单个版本理解为「在这一大版本内都可接受」：用户写 21 时想要的是 Java 21，
+    // 而 21.0.1、21.0.2 都属于 Java 21。若按精确匹配，几乎永远选不中运行时。
+    // 因此把上限开到下一个大版本之前，下界从这个大版本的 .0 开始。
+    return {
+      min: { major: exact.major, minor: 0, patch: 0 },
+      minInclusive: true,
+      max: { major: exact.major + 1, minor: 0, patch: 0 },
+      maxInclusive: false,
+    };
+  }
+
+  return { error: loc('java.rangeBrackets') };
+}
+
 /** Parse a PCL-style range such as `[21.0, )`, `(, 18.0)` or `[8.0.81, 8.0.141]`. */
 export function parseJavaRange(text: string): JavaRange | { error: Localized } {
   const trimmed = text.trim();
@@ -174,9 +291,72 @@ export function parseJavaRange(text: string): JavaRange | { error: Localized } {
   };
 }
 
+/**
+ * 把区间翻译成一句人能读的话。
+ *
+ * 为什么需要：`formatJavaRange` 输出的是 `[21.0, )` 这类集合语法，用它当
+ * 「解析结果」的反馈，等于让刚逃离这个写法的用户又看到一遍。这里按区间形态
+ * 分三类给出自然语言描述，用户能立刻确认「我要的就是这个」。
+ *
+ * 四种形态各自的说法：
+ *   - 双侧都是开区间端点（单个版本号会被翻译成这种）→ 「Java 21」
+ *   - 只有下界                                        → 「Java 21 及更高」
+ *   - 只有上界                                        → 「Java 17 及更低」
+ *   - 双侧                                            → 「Java 17 到 21」
+ */
+export function describeJavaRange(range: JavaRange, language: Language): string {
+  /*
+   * 版本号的显示规则：必须保留中间的 0。
+   *
+   * `8.0.81` 的 minor 是 0，如果按「non-zero 才显示」的写法会输出 `8.81`——
+   * 把 patch 顶到了 minor 的位置，读起来完全是另一个版本。所以按层级判断：
+   * 有 patch 就三段全写，只有 minor 就写两段，否则只写大版本。
+   */
+  const show = (version: JavaVersion) => {
+    if (version.patch > 0) return `${version.major}.${version.minor}.${version.patch}`;
+    if (version.minor > 0) return `${version.major}.${version.minor}`;
+    return String(version.major);
+  };
+
+  /*
+   * 单个大版本会在 parseFriendlyRange 里展开成 `[major.0, major+1.0)`。
+   * 这种形态对用户来说就是「Java 21」，直接还原成简短说法，而不是显示
+   * 「Java 21.0 到 22.0」——后者既啰嗦又容易让人以为排除了 21 的小版本。
+   */
+  if (
+    range.min && range.max
+    && range.minInclusive && !range.maxInclusive
+    && range.min.minor === 0 && range.min.patch === 0
+    && range.max.minor === 0 && range.max.patch === 0
+    && range.max.major === range.min.major + 1
+  ) {
+    return renderLocalized(language, loc('java.rangeExact', { value: String(range.min.major) }));
+  }
+
+  if (range.min && !range.max) {
+    return renderLocalized(language, loc('java.rangeAtLeast', { value: show(range.min) }));
+  }
+  if (!range.min && range.max) {
+    return renderLocalized(language, loc('java.rangeAtMost', { value: show(range.max) }));
+  }
+  if (range.min && range.max) {
+    return renderLocalized(language, loc('java.rangeBetween', { from: show(range.min), to: show(range.max) }));
+  }
+  return renderLocalized(language, loc('java.rangeAny'));
+}
+
 export function formatJavaRange(range: JavaRange): string {
-  const lower = range.min ? `${range.min.major}.${range.min.minor}` : '';
-  const upper = range.max ? `${range.max.major}.${range.max.minor}` : '';
+  /*
+   * 保留 patch：原先只输出 `major.minor`，于是 `[8.0.81, 8.0.141]` 会显示成
+   * `[8.0, 8.0]`——一个看着像空区间的东西，用户无法确认自己写的范围。
+   */
+  const show = (version: JavaVersion) => {
+    if (version.patch > 0) return `${version.major}.${version.minor}.${version.patch}`;
+    if (version.minor > 0) return `${version.major}.${version.minor}`;
+    return String(version.major);
+  };
+  const lower = range.min ? show(range.min) : '';
+  const upper = range.max ? show(range.max) : '';
   return `${range.minInclusive ? '[' : '('}${lower}, ${upper}${range.maxInclusive ? ']' : ')'}`;
 }
 

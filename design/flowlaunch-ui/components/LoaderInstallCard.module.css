@@ -1,0 +1,114 @@
+/* 加载器安装卡片。 */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.kinds {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-secondary);
+}
+
+.kind {
+  padding: 5px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.kindActive {
+  background: var(--color-primary-solid);
+  color: var(--color-on-primary);
+  font-weight: 600;
+}
+
+.select {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-sm);
+}
+
+.select span {
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.select select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.hint {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+/*
+ * 「为什么只有这两个加载器」的常驻说明。
+ *
+ * 比 hint 更弱化（小一号、更浅），因为它不是操作提示而是背景信息；但必须常驻
+ * 可见——用户看到只有 Fabric/Quilt 时第一反应就是「Forge 呢」。
+ */
+.kindNote {
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px dashed var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+
+.error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-danger-500) 35%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-danger-500) 9%, transparent);
+  color: var(--color-danger-500);
+  font-size: var(--text-sm);
+}
+
+/* 已装加载器：只读的一行说明，不含任何可点元素。 */
+.done {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}

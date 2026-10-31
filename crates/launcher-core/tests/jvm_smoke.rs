@@ -29,6 +29,7 @@ impl Fixture {
             isolated: true,
             state: InstanceState::Ready,
             created_at: String::new(),
+            last_launched_at: None,
         };
         fs::create_dir_all(&instance.game_dir).unwrap();
         fs::create_dir_all(root.join("classes")).unwrap();

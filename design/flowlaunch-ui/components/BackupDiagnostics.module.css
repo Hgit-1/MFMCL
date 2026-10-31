@@ -1,0 +1,273 @@
+/* 备份与诊断页。 */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-elevated);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-primary-500) 14%, transparent);
+  color: var(--color-primary-text);
+}
+
+.head h2 {
+  margin: 0 0 3px;
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
+.head p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+/*
+ * 输入框 + 「浏览」按钮。按钮和输入框底部对齐：Input 自带标签与提示，
+ * 用 align-items: end 让按钮贴住输入框的下沿，而不是被标签顶到上面去。
+ */
+.fieldRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.fieldRow > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  cursor: pointer;
+}
+
+.check input {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  margin: 2px 0 0;
+  accent-color: var(--color-primary-500);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.previewBox,
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.facts div {
+  min-width: 0;
+}
+
+.factWide {
+  grid-column: 1 / -1;
+}
+
+.facts dt {
+  margin-bottom: 2px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.facts dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+}
+
+.summary h3 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
+.explanation {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.confidence {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  list-style: none;
+}
+
+/*
+ * 命中的原因列表。
+ *
+ * 用带序号的列表而不是卡片堆叠：这些原因是有优先级的（高置信度在前），
+ * 编号把这个顺序显式化，用户知道「先看第 1 条」。
+ */
+.reasonList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0 0 0 18px;
+}
+
+.reason {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+
+.reasonHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.reasonHead strong {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+/* 置信度标签：高置信度用主色，中等用中性色。都不做成警告色——
+   这是「把握有多大」，不是「有危险」。 */
+.reasonTag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.reasonHigh {
+  background: color-mix(in srgb, var(--color-primary-500) 14%, transparent);
+  color: var(--color-primary-text);
+}
+
+.reasonMedium {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+}
+
+.reasonExplanation {
+  margin: 5px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+/* 涉及的模组：用等宽字体 + 浅底标出，方便照着去 mods 目录里找。 */
+.reasonMods {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 7px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.modName {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+/* 建议编号：用户会按顺序尝试，编号让「试到第几步」可追踪。 */
+.suggestions {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+
+.suggestions li { margin-bottom: 3px; }
+
+.reasonEvidence {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  line-height: 1.55;
+}
