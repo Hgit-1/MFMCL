@@ -729,3 +729,51 @@ button {
 }
 
 .mod-failures span { color: var(--text-2); }
+
+/* --- 模型状态 ------------------------------------------------------------ */
+
+/*
+ * 只在「跑不动」或「已熔断」时出现。正常情况下不占版面——模型状态是辅助信息，
+ * 一直挂在页面上会让人以为需要处理。
+ */
+.model-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+  border-radius: 8px;
+  background: var(--warn-soft);
+}
+
+/* 熔断用中性色：它是一次可恢复的临时状态，不像「跑不动」那样是硬限制。 */
+.model-status[data-state="tripped"] {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.model-status-head {
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.model-status[data-state="tripped"] .model-status-head { color: var(--text-2); }
+
+.model-status p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.model-status-reason {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.model-status-note {
+  color: var(--ok) !important;
+  font-size: 11px;
+}

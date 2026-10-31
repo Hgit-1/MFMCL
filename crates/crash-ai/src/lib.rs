@@ -5,6 +5,7 @@
 //! links the same library and therefore behaves identically.
 
 pub mod causes;
+pub mod feasibility;
 pub mod hardware;
 pub mod llm;
 pub mod rules;
@@ -176,6 +177,12 @@ pub struct Analysis {
     /// 硬件是否撑得住这个整合包。
     #[serde(default)]
     pub capability: Option<hardware::Capability>,
+    /// 本地模型能不能在这台机器上跑。
+    ///
+    /// 与 `capability` 是**两个不同的问题**：那个问「游戏跑不跑得动」，这个问
+    /// 「模型跑不跑得动」。用户说「带不动」时指的常常是后者。
+    #[serde(default)]
+    pub model_status: Option<feasibility::ModelAssessment>,
     #[serde(default)]
     pub narrative: Option<Narrative>,
     pub facts: LogFacts,
@@ -368,6 +375,21 @@ pub async fn analyse(
     config: &llm::LlmConfig,
     use_model: bool,
 ) -> Analysis {
+    analyse_with_status(log, environment, config, use_model, None).await
+}
+
+/// 与 `analyse` 相同，但接受一份预先算好的模型可行性判断。
+///
+/// 分开的原因：可行性判断需要硬件信息，而硬件探测是阻塞的（读 `lspci`、sysinfo）。
+/// 调用方在异步上下文里应当把探测放到 blocking 线程池，再把结果传进来，而不是
+/// 在 `analyse` 内部同步读取。
+pub async fn analyse_with_status(
+    log: &str,
+    environment: &Environment,
+    config: &llm::LlmConfig,
+    use_model: bool,
+    model_status: Option<feasibility::ModelAssessment>,
+) -> Analysis {
     let (findings, facts, mut warnings) = analyse_log(log, environment);
 
     /*
@@ -406,7 +428,25 @@ pub async fn analyse(
 
     let mut narrative = None;
     let mut model_used = false;
-    if use_model {
+
+    /*
+     * 静态判断说跑不动时，直接不调用模型。
+     *
+     * 这不是「优化」，是必要的：在内存不足的机器上加载模型会触发系统换页，
+     * 整个分析从 4 毫秒变成几分钟，而规则结论已经在那儿了。用户看到的是界面
+     * 卡死，而不是「你的电脑带不动模型」。
+     */
+    let blocked_by_hardware = model_status
+        .as_ref()
+        .is_some_and(|status| status.disable_model);
+
+    if blocked_by_hardware {
+        let summary = model_status
+            .as_ref()
+            .map(|status| status.summary.clone())
+            .unwrap_or_default();
+        warnings.push(format!("已停用本地模型：{summary}"));
+    } else if use_model {
         /*
          * 把因果结论交给模型，而不是只给规则结论。
          *
@@ -428,6 +468,7 @@ pub async fn analyse(
         findings,
         cause,
         capability,
+        model_status,
         narrative,
         facts,
         model_used,

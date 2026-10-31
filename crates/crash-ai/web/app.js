@@ -76,15 +76,34 @@ async function checkHealth() {
   try {
     const response = await fetch('/api/health');
     const data = await response.json();
-    if (data.ok) {
+    const feasibility = data.feasibility || {};
+    const modelName = data.model || '';
+
+    /*
+     * 三种状态必须分开说，因为修复方式完全不同：
+     *   - 机器跑不动 → 不用找模型服务了，这台电脑就是带不动
+     *   - 熔断     → 之前试过失败，已自动停用
+     *   - 服务没起 → 去启动 llama.cpp
+     */
+    if (feasibility.feasibility === 'notViable') {
+      status.dataset.state = 'down';
+      text.textContent = '这台电脑跑不动本地模型';
+    } else if (data.disabledReason) {
+      status.dataset.state = 'down';
+      text.textContent = '本地模型已自动停用';
+    } else if (data.ok) {
       status.dataset.state = 'ok';
-      text.textContent = `模型就绪 · ${data.model}`;
-      $('foot-model').textContent = `${data.model} @ ${data.endpoint}`;
+      text.textContent = feasibility.feasibility === 'slow'
+        ? `模型就绪 · ${modelName}（CPU 推理，较慢）`
+        : `模型就绪 · ${modelName}`;
+      $('foot-model').textContent = `${modelName} @ ${data.endpoint}`;
     } else {
       status.dataset.state = 'down';
       text.textContent = '模型未连接（仍可只用规则分析）';
       $('foot-model').textContent = data.endpoint || '';
     }
+
+    renderModelStatus(feasibility, data.disabledReason);
   } catch {
     status.dataset.state = 'down';
     text.textContent = '无法连接分析服务';
@@ -244,6 +263,32 @@ function renderHardware(capability) {
       ${rows}
       ${advice}
     </div>`;
+}
+
+/**
+ * 模型本身的状态。
+ *
+ * 这一块回答的是「这台电脑能不能跑模型」，与上面的硬件块（能不能跑游戏）是
+ * 两件事。只有在本机跑不动、或已熔断时才显示——正常情况下它不该占用版面。
+ */
+function renderModelStatus(feasibility, disabledReason) {
+  const box = $('model-status');
+  if (!box) return;
+  const notViable = feasibility && feasibility.feasibility === 'notViable';
+  if (!notViable && !disabledReason) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  box.dataset.state = notViable ? 'blocked' : 'tripped';
+  const title = notViable ? '本地模型已停用（这台电脑跑不动）' : '本地模型已自动停用';
+  const detail = notViable ? feasibility.summary : (disabledReason || '');
+  const reason = notViable ? feasibility.reason : '';
+  box.innerHTML = `
+    <div class="model-status-head">${escapeHtml(title)}</div>
+    <p>${escapeHtml(detail)}</p>
+    ${reason ? `<p class="model-status-reason">${escapeHtml(reason)}</p>` : ''}
+    <p class="model-status-note">规则分析不受影响，仍然可用。</p>`;
 }
 
 function resourceLabel(resource) {

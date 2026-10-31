@@ -17,12 +17,17 @@ use tauri::State;
 /// 分析服务在应用里的状态。
 pub struct CrashAiState {
     config: Arc<LlmConfig>,
+    /// 运行时健康状态。连续失败后自动停用模型，与独立服务同一套逻辑。
+    health: std::sync::Arc<std::sync::Mutex<crash_ai::feasibility::LlmHealth>>,
 }
 
 impl Default for CrashAiState {
     fn default() -> Self {
         Self {
             config: Arc::new(LlmConfig::default()),
+            health: std::sync::Arc::new(std::sync::Mutex::new(
+                crash_ai::feasibility::LlmHealth::new(),
+            )),
         }
     }
 }
@@ -39,23 +44,38 @@ pub struct CrashAiStatus {
     pub endpoint: String,
     #[serde(default)]
     pub error: Option<String>,
+    /// 这台机器能不能跑模型。
+    ///
+    /// 与 `ok` 是两件事：`ok` 是「模型服务在不在」，这个字段是「本机跑不跑得动」。
+    /// 界面必须区分，否则用户会去给一台内存不足的机器找模型服务。
+    pub feasibility: crash_ai::feasibility::ModelAssessment,
 }
 
 #[tauri::command]
 pub async fn crash_ai_status(state: State<'_, CrashAiState>) -> Result<CrashAiStatus, String> {
     let config = state.config.clone();
+    let hardware = tauri::async_runtime::spawn_blocking(crash_ai::hardware::detect)
+        .await
+        .unwrap_or_default();
+    let feasibility = crash_ai::feasibility::assess_llm(
+        &hardware,
+        config.parameters_b,
+        config.context_tokens,
+    );
     match crash_ai::llm::probe(&config).await {
         Ok(_) => Ok(CrashAiStatus {
             ok: true,
             model: config.model.clone(),
             endpoint: config.base_url.clone(),
             error: None,
+            feasibility,
         }),
         Err(error) => Ok(CrashAiStatus {
             ok: false,
             model: config.model.clone(),
             endpoint: config.base_url.clone(),
             error: Some(error.to_string()),
+            feasibility,
         }),
     }
 }
@@ -97,7 +117,66 @@ pub async fn crash_ai_analyse(
             .ok();
     }
 
-    Ok(crash_ai::analyse(&log, &environment, &config, use_model.unwrap_or(true)).await)
+    /*
+     * 可行性判断。与独立服务同一套规则：机器跑不动就直接不用模型，
+     * 不要让用户等一次注定失败的超时。
+     */
+    let hardware_for_status = environment.hardware.clone().unwrap_or_default();
+    let assessment = crash_ai::feasibility::assess_llm(
+        &hardware_for_status,
+        config.parameters_b,
+        config.context_tokens,
+    );
+
+    /*
+     * 熔断状态：已停用则不再请求模型。
+     *
+     * 读一次快照后立即释放锁，不跨 await 持锁——否则一次慢请求会阻塞其他分析的
+     * 健康检查。
+     */
+    let tripped = state
+        .health
+        .lock()
+        .ok()
+        .and_then(|health| health.disabled_reason().map(str::to_owned));
+    let want_model = use_model.unwrap_or(true) && tripped.is_none();
+
+    let mut analysis = crash_ai::analyse_with_status(
+        &log,
+        &environment,
+        &config,
+        want_model,
+        Some(assessment.clone()),
+    )
+    .await;
+
+    if let Some(reason) = &tripped {
+        analysis.warnings.retain(|warning| !warning.contains("按请求"));
+        analysis
+            .warnings
+            .push(format!("本地模型已自动停用（{reason}）。恢复模型服务后重启启动器即可重新启用。"));
+    }
+
+    /*
+     * 记录结果。只在「本该用模型」时统计：被硬件判断拦下的不算失败，
+     * 否则一台内存不足的机器会把熔断也点上，而真正的原因已经由 `modelStatus` 说明。
+     */
+    if want_model && !assessment.disable_model
+        && let Ok(mut health) = state.health.lock()
+    {
+        if analysis.model_used {
+            health.record_success();
+        } else {
+            let reason = analysis
+                .warnings
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "未知原因".to_owned());
+            health.record_failure(&reason);
+        }
+    }
+
+    Ok(analysis)
 }
 
 /// 读取一个实例最近的崩溃报告，供一键分析。

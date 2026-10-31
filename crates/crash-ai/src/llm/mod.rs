@@ -31,6 +31,18 @@ pub struct LlmConfig {
     /// is better served by the rules-only result.
     pub timeout: Duration,
     pub max_tokens: u32,
+    /*
+     * 下面两项用于判断这台机器能不能跑这个模型。
+     *
+     * 它们是部署参数而不是用户输入：用户不该需要知道「参数量」或「上下文长度」
+     * 这类数字，但内存需求完全由它们决定。写成配置项而不是常量，是因为将来换成
+     * 更大的模型时，可行性判断必须跟着变——否则它会自信地说「能跑」然后把人
+     * 的机器拖死。
+     */
+    /// 参数量（十亿）。默认 1.7（LFM3-1.7B）。
+    pub parameters_b: f32,
+    /// 上下文长度。默认 8192，与启动 llama-server 时用的 `-c` 一致。
+    pub context_tokens: u32,
 }
 
 impl Default for LlmConfig {
@@ -41,6 +53,14 @@ impl Default for LlmConfig {
             model: std::env::var("MFMCL_LLM_MODEL").unwrap_or_else(|_| "lfm3-1.7b".to_owned()),
             timeout: Duration::from_secs(90),
             max_tokens: 420,
+            parameters_b: std::env::var("MFMCL_LLM_PARAMS_B")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1.7),
+            context_tokens: std::env::var("MFMCL_LLM_CONTEXT")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(8192),
         }
     }
 }

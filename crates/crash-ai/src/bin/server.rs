@@ -31,6 +31,13 @@ const WEB_STYLE: &str = include_str!("../../web/style.css");
 #[derive(Clone)]
 struct AppState {
     config: Arc<LlmConfig>,
+    /**
+     * 模型的运行时健康状态。
+     *
+     * 用 `Mutex` 而不是原子变量：熔断需要「连续失败计数 + 原因文本」一起更新，
+     * 分开的原子操作会让两个请求交错时记错次数。
+     */
+    health: Arc<std::sync::Mutex<crash_ai::feasibility::LlmHealth>>,
 }
 
 #[tokio::main]
@@ -54,7 +61,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("crash-ai listening on http://{address}");
     println!("model endpoint: {} ({})", config.base_url, config.model);
 
-    let state = Arc::new(AppState { config: Arc::new(config) });
+    let state = Arc::new(AppState {
+        config: Arc::new(config),
+        health: Arc::new(std::sync::Mutex::new(crash_ai::feasibility::LlmHealth::new())),
+    });
     let listener = TcpListener::bind(&address).await?;
     loop {
         let (stream, _peer) = match listener.accept().await {
@@ -235,6 +245,24 @@ async fn route(request: &Request, state: &AppState) -> Response {
 /// The page calls this on load so it can state "model offline" up front instead
 /// of failing on the first analysis.
 async fn health(state: &AppState) -> Response {
+    /*
+     * 把「能不能跑模型」与「模型现在在不在」一起报告。
+     *
+     * 两者是不同的失败：前者是机器不够，后者是服务没启动。界面上必须能区分，
+     * 否则用户会去修错的東西（给一台 2 GB 的机器找模型服务）。
+     */
+    let hardware = tauri_hardware();
+    let assessment = crash_ai::feasibility::assess_llm(
+        &hardware,
+        state.config.parameters_b,
+        state.config.context_tokens,
+    );
+    let tripped = state
+        .health
+        .lock()
+        .ok()
+        .and_then(|health| health.disabled_reason().map(str::to_owned));
+
     match crash_ai::llm::probe(&state.config).await {
         Ok(models) => Response::json(
             200,
@@ -243,6 +271,8 @@ async fn health(state: &AppState) -> Response {
                 "model": state.config.model,
                 "endpoint": state.config.base_url,
                 "available": models,
+                "feasibility": assessment,
+                "disabledReason": tripped,
             }),
         ),
         Err(error) => Response::json(
@@ -252,6 +282,8 @@ async fn health(state: &AppState) -> Response {
                 "model": state.config.model,
                 "endpoint": state.config.base_url,
                 "error": error.to_string(),
+                "feasibility": assessment,
+                "disabledReason": tripped,
             }),
         ),
     }
@@ -299,9 +331,82 @@ async fn analyse(request: &Request, state: &AppState) -> Response {
         environment.hardware = Some(crash_ai::hardware::detect());
     }
 
+    /*
+     * 可行性判断。
+     *
+     * 放在调用模型之前，因为结论决定**要不要**调用。判断本身是 CPU + 文件读取，
+     * 放到 blocking 池里跑，避免阻塞异步运行时。
+     */
+    let config_for_status = state.config.clone();
+    let hardware_for_status = environment.hardware.clone();
+    let assessment = tokio::task::spawn_blocking(move || {
+        let hardware = hardware_for_status.unwrap_or_else(crash_ai::hardware::detect);
+        crash_ai::feasibility::assess_llm(
+            &hardware,
+            config_for_status.parameters_b,
+            config_for_status.context_tokens,
+        )
+    })
+    .await
+    .ok();
+
+    /*
+     * 熔断状态：已经停用就直接跳过模型，不再等一次超时。
+     *
+     * 没有这一步，一台跑不动模型的机器每次点分析都要干等 90 秒，而规则结论
+     * 本来几毫秒就能出来。
+     */
+    let tripped = state
+        .health
+        .lock()
+        .ok()
+        .and_then(|health| health.disabled_reason().map(str::to_owned));
+    let want_model = parsed.use_model && tripped.is_none();
+
     let started = std::time::Instant::now();
-    let analysis =
-        crash_ai::analyse(&parsed.log, &environment, &state.config, parsed.use_model).await;
+    let mut analysis =
+        crash_ai::analyse_with_status(&parsed.log, &environment, &state.config, want_model, assessment.clone())
+            .await;
+
+    /*
+     * 熔断已被触发过：把那条误导性的「按请求跳过」换掉。
+     *
+     * 内部调用传的是 `want_model = false`，框架层于是记了一条「已跳过模型分析
+     * （按请求）」——但用户并没有跳过，是熔断器停用的。两条并存会让提示自相
+     * 矛盾，所以先移除框架那条，再写真实原因。
+     */
+    if let Some(reason) = &tripped {
+        analysis
+            .warnings
+            .retain(|warning| !warning.contains("按请求"));
+        analysis
+            .warnings
+            .push(format!("本地模型已自动停用（{reason}）。恢复模型服务后重启本程序即可重新启用。"));
+    }
+
+    /*
+     * 更新健康状态。
+     *
+     * 只看「请求了模型但没拿到结果」：模型本来就被硬件判断拦下时不算失败，
+     * 否则一台 2 GB 的机器会把熔断也点上，而真正的原因已经由 `modelStatus` 说明。
+     */
+    if want_model && assessment.as_ref().is_none_or(|status| !status.disable_model) {
+        let failed = !analysis.model_used;
+        if let Ok(mut health) = state.health.lock() {
+            if failed {
+                let reason = analysis
+                    .warnings
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| "未知原因".to_owned());
+                if health.record_failure(&reason) {
+                    println!("model circuit breaker tripped: {reason}");
+                }
+            } else {
+                health.record_success();
+            }
+        }
+    }
     println!(
         "analyse: {} bytes, model={}, findings={}, {} ms",
         parsed.log.len(),
@@ -463,4 +568,12 @@ async fn read_controlled(request: &Request) -> Response {
         ),
         Err(error) => Response::error(500, &format!("无法读取文件：{error}")),
     }
+}
+
+/// 探测硬件，供可行性判断使用。
+///
+/// 同步调用会读 `lspci` 与 sysinfo，几毫秒量级；`/api/health` 本来就不是热路径，
+/// 这里直接同步读可以接受。真正的分析路径在 `analyse()` 里走 blocking 池。
+fn tauri_hardware() -> crash_ai::hardware::Hardware {
+    crash_ai::hardware::detect()
 }
