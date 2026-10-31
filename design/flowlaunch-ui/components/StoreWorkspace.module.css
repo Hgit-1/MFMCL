@@ -230,7 +230,21 @@
   border-radius: var(--radius-sm);
   background: var(--color-bg-secondary);
   color: var(--color-text-primary);
+  /*
+   * 12px 而不是继承 body 的 14px。
+   *
+   * 这个下拉框在 183px 宽的侧栏里，14px 下实测 6 个示例实例有 4 个超宽（最长
+   * 177px，可用约 145px），文字会被原生 select 硬裁成「… · 1.18」。12px 除了
+   * 多出约 14% 的宽度，也让字号与旁边的说明文字（--text-xs/--text-sm）一致。
+   */
   font: inherit;
+  font-size: var(--text-sm);
+  /*
+   * 兜底：`fitInstanceLabel` 已经把文字控制在预算内，个别字体度量更宽时仍能
+   * 优雅收尾。Chromium 支持对 select 的选中项生效，其余浏览器会忽略——所以
+   * 真正的保证来自标签本身的长度控制。
+   */
+  text-overflow: ellipsis;
   outline: none;
 }
 

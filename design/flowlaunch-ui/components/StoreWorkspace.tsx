@@ -39,7 +39,7 @@ import { StoreLogo } from './StoreLogo';
 import { blockForVersion, VANILLA_BLOCK } from '../utils/store/blocks';
 import { useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
-import { kindOfVersion, VERSION_KINDS, VERSION_KIND_KEYS } from '../utils/store/format';
+import { fitInstanceLabel, kindOfVersion, VERSION_KINDS, VERSION_KIND_KEYS } from '../utils/store/format';
 import type { VersionKind } from '../utils/store/types';
 import type { GameInstance } from '../types';
 import {
@@ -1146,6 +1146,11 @@ export function StoreWorkspace({
                     setTargetInstanceId(next);
                     onSelectInstance(next);
                   }}
+                  /*
+                   * 标签可能因为宽度不够被截断（见 `fitInstanceLabel`），
+                   * 悬停时给完整名称，截断就不算丢信息。
+                   */
+                  title={target ? `${target.name} · ${target.version}` : undefined}
                 >
                   {/*
                     没有实例时才给一个空占位项。
@@ -1159,7 +1164,7 @@ export function StoreWorkspace({
                   )}
                   {instances.map(instance => (
                     <option key={instance.id} value={instance.id}>
-                      {instance.name} · {instance.version}
+                      {fitInstanceLabel(instance.name, instance.version)}
                     </option>
                   ))}
                 </select>
