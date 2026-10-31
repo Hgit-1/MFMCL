@@ -331,11 +331,7 @@ pub fn build_plan(
     let mut plan = ContributionPlan::default();
 
     for plugin in plugins {
-        let enabled = state
-            .enabled
-            .get(&plugin.id)
-            .copied()
-            .unwrap_or(true);
+        let enabled = state.enabled.get(&plugin.id).copied().unwrap_or(true);
         for contribution in &plugin.contributions {
             match contribution_verdict(plugin, enabled, contribution) {
                 Ok(()) => {
@@ -486,11 +482,13 @@ mod tests {
 
     #[test]
     fn env_requires_a_valid_key() {
-        assert!(validate_contribution(&Contribution {
-            kind: ContributionKind::Env,
-            value: "MY_FLAG=1".into()
-        })
-        .is_ok());
+        assert!(
+            validate_contribution(&Contribution {
+                kind: ContributionKind::Env,
+                value: "MY_FLAG=1".into()
+            })
+            .is_ok()
+        );
         for bad in ["1BAD=1", "BAD-KEY=1", "NOVALUE", "=1"] {
             assert!(
                 validate_contribution(&Contribution {
