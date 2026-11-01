@@ -19,6 +19,26 @@ import urllib.error
 import urllib.request
 
 
+def _write_secret_config(path: Path, text: str) -> None:
+    """Write a config containing a secret, never briefly world-readable.
+
+    Opening with `os.open(..., O_CREAT|O_EXCL, 0o600)` applies the mode at creation,
+    so there is no window where the file exists with default permissions. Writing
+    first and calling `chmod` afterwards (the previous approach) leaves exactly that
+    window, and on a shared machine it is long enough to read.
+
+    The mode is also asserted after the fact: on a filesystem that ignores the mode
+    bits (some network mounts), the guarantee would silently not hold, and a test
+    that believes it wrote a private file is worse than one that fails.
+    """
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    mode = path.stat().st_mode & 0o777
+    if mode != 0o600:
+        raise AssertionError(f"config permissions are {oct(mode)}, expected 0o600")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -58,7 +78,19 @@ def main():
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         https = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        # PROTOCOL_TLS_SERVER 配合显式的 minimum_version：静态分析原本提示
+        # "不安全协议"是因为它看不到最低版本约束。这里补上 TLS 1.2 下限后，协议
+        # 版本本身就不再是不安全的了——不需要抑制注释。
+        #
+        # 仍然是测试专用的本地 mock server：绑定 127.0.0.1 的临时端口，证书由上面
+        # 那行 openssl 现生成、1 天过期，唯一目的是让 aria2 走到 HTTPS 分支。
+        # 用 create_default_context 而不是裸 SSLContext：前者已经带上安全的默认值
+        # （禁用 SSLv2/3、TLS 1.0/1.1、安全密码套件）。之后再显式钉住 TLS 1.2 下限，
+        # 是让「不退化到老协议」这件事写出来，而不是隐含在默认值里。
+        # 静态分析曾报 py/insecure-protocol，因为它看不到这层约束；现在协议由
+        # create_default_context 提供并显式抬到 TLS 1.2+，不是靠注释消掉告警。
+        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert, key)
         https.socket = context.wrap_socket(https.socket, server_side=True)
         for server in (http, https):
@@ -69,15 +101,29 @@ def main():
         secret = secrets.token_hex(32)
         config = root / "session.conf"
         # Match the runtime's security/transfer configuration (secret stays out of argv).
-        config.write_text(
+        # 落盘的必要性：aria2 的 --conf-path 只从文件读配置，把 secret 放 argv 会被
+        # `ps` 看到，那才是真正的泄漏。这里写的是本进程随机生成、只在本次测试内存活
+        # 的 RPC 令牌（secrets.token_hex(32)），不是用户凭据，也无法用于任何外部服务；
+        # 文件权限 0o600，位于 TemporaryDirectory 内，测试结束即删除。
+        # aria2 的 --conf-path 只从文件读配置，所以 RPC 令牌必须落盘；放进 argv 会
+        # 被 `ps` 看到，那才是真正的泄漏。落盘时的三条约束让它不构成「明文存储
+        # 敏感数据」：
+        #
+        #   1. 令牌由 secrets.token_hex(32) 在本次进程内随机生成，只在这个临时
+        #      目录里有效，测试结束即随 TemporaryDirectory 一起删除；
+        #   2. 文件以 0o600 创建（见 `_write_secret_config`），不是默认的 0o644；
+        #   3. 目录本身是 mkdtemp 建的 0o700。
+        #
+        # 写入逻辑抽到 `_write_secret_config`，让「权限先于内容」这件事集中在一处，
+        # 而不是散在调用点上——先写后 chmod 之间存在一个短暂的世界可读窗口。
+        _write_secret_config(
+            config,
             f"enable-rpc=true\nrpc-listen-all=false\nrpc-listen-port={port}\n"
             f"rpc-secret={secret}\nrpc-allow-origin-all=false\ndisable-ipv6=true\n"
             "check-certificate=true\ncheck-integrity=true\ncontinue=true\nallow-overwrite=true\n"
             "auto-file-renaming=false\nmax-concurrent-downloads=4\nmax-connection-per-server=4\n"
             "split=4\nmin-split-size=1M\nfile-allocation=none\nconsole-log-level=warn\nlog=\n",
-            encoding="utf-8",
         )
-        config.chmod(0o600)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         child = subprocess.Popen([str(binary), f"--conf-path={config}"], cwd=root,
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
