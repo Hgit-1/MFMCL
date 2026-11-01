@@ -1,0 +1,84 @@
+/*
+ * 数字步进器。
+ *
+ * 三个部分尺寸对齐：两侧按钮 32px 见方，中间的值同样 32px 高、至少 40px 宽，
+ * 这样点「−」「+」不会让中间的数字左右跳动。之前用 <output> 时宽度随位数变化，
+ * 从 9 跳到 10 时整行会抖一下。
+ */
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.stepper button {
+  height: 32px;
+  min-width: 32px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.stepper button:hover:not(:disabled) {
+  border-color: var(--color-primary-500);
+  color: var(--color-primary-text);
+}
+
+/* 到边界时禁用：继续点不会发生任何事，禁用比「点了没反应」更诚实。 */
+.stepper button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/*
+ * 可点击的数字。
+ *
+ * 外观与两侧按钮区分开（无边框、稍粗），暗示「这里可以点进去编辑」——
+ * 一个看起来像纯文字的控件，用户不会去点它。
+ */
+.stepper .value {
+  min-width: 40px;
+  height: 32px;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.stepper .value:hover {
+  border-color: var(--color-border);
+  background: var(--color-bg-elevated);
+}
+
+/* 编辑态：与普通输入框一致，让「正在输入」这件事一眼可见。 */
+.input {
+  width: 56px;
+  height: 32px;
+  padding: 0 6px;
+  border: 1px solid var(--color-primary-500);
+  border-radius: 7px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary-500) 13%, transparent);
+}
+
+.stepper small {
+  color: var(--color-text-disabled);
+  font-size: 10px;
+}

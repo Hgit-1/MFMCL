@@ -5,6 +5,7 @@ import { applyAccent as applyAccentRamp } from '../utils/accent';
 import { Button } from './Button';
 import { JavaSettingsSection } from './JavaSettingsSection';
 import { MemorySection } from './MemorySection';
+import { NumberStepper } from './NumberStepper';
 import { DEFAULT_PREFS, SETTINGS_STORAGE_KEY, readPrefs, type LauncherPrefs, type ThemeMode } from '../utils/launcherPrefs';
 import { LanguageSection } from './LanguageSection';
 import { SkinSection } from './SkinSection';
@@ -456,19 +457,24 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         {prefs.proxyMode === 'http' && field(t('settings.proxyUrl'), t('settings.proxyUrlHint'),
           <input value={prefs.proxyUrl} onChange={e => update('proxyUrl', e.target.value)} placeholder="http://127.0.0.1:7890" />)}
         {field(t('settings.timeout'), t('settings.timeoutHint'),
-          <div className={styles.stepper}>
-            <button onClick={() => update('downloadTimeoutSec', Math.max(10, prefs.downloadTimeoutSec - 10))}>−</button>
-            <output>{prefs.downloadTimeoutSec}</output>
-            <button onClick={() => update('downloadTimeoutSec', Math.min(600, prefs.downloadTimeoutSec + 10))}>+</button>
-            <small>{t('settings.seconds')}</small>
-          </div>)}
+          <NumberStepper
+            value={prefs.downloadTimeoutSec}
+            onChange={v => update('downloadTimeoutSec', v)}
+            min={10}
+            max={600}
+            step={10}
+            suffix={t('settings.seconds')}
+            label={t('settings.timeout')}
+          />)}
         {field(t('settings.retries'), t('settings.retriesHint'),
-          <div className={styles.stepper}>
-            <button onClick={() => update('downloadRetries', Math.max(0, prefs.downloadRetries - 1))}>−</button>
-            <output>{prefs.downloadRetries}</output>
-            <button onClick={() => update('downloadRetries', Math.min(10, prefs.downloadRetries + 1))}>+</button>
-            <small>{t('settings.times')}</small>
-          </div>)}
+          <NumberStepper
+            value={prefs.downloadRetries}
+            onChange={v => update('downloadRetries', v)}
+            min={0}
+            max={10}
+            suffix={t('settings.times')}
+            label={t('settings.retries')}
+          />)}
         {field(t('settings.speedLimit'), t('settings.speedLimitHint'),
           <input type="number" min="0" max="1048576" value={prefs.speedLimitKbps} onChange={e => update('speedLimitKbps', Number(e.target.value))} placeholder={t('settings.unlimited')} />)}
         {toggle(t('settings.verifySsl'), t('settings.verifySslHint'), prefs.verifySsl, v => update('verifySsl', v))}
@@ -480,19 +486,23 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         {field(t('settings.targetFolder'), t('settings.targetFolderHint'),
           <input value={prefs.downloadDirectory} onChange={e => update('downloadDirectory', e.target.value)} placeholder={t('settings.useDefaultDir')} />)}
         {field(t('settings.concurrentTasks'), t('settings.concurrentTasksHint'),
-          <div className={styles.stepper}>
-            <button onClick={() => update('maxConcurrentDownloads', Math.max(1, prefs.maxConcurrentDownloads - 1))}>−</button>
-            <output>{prefs.maxConcurrentDownloads}</output>
-            <button onClick={() => update('maxConcurrentDownloads', Math.min(16, prefs.maxConcurrentDownloads + 1))}>+</button>
-            <small>{t('settings.tasksUnit')}</small>
-          </div>)}
+          <NumberStepper
+            value={prefs.maxConcurrentDownloads}
+            onChange={v => update('maxConcurrentDownloads', v)}
+            min={1}
+            max={16}
+            suffix={t('settings.tasksUnit')}
+            label={t('settings.concurrentTasks')}
+          />)}
         {field(t('settings.connections'), t('settings.connectionsHint'),
-          <div className={styles.stepper}>
-            <button onClick={() => update('connectionsPerFile', Math.max(1, prefs.connectionsPerFile - 1))}>−</button>
-            <output>{prefs.connectionsPerFile}</output>
-            <button onClick={() => update('connectionsPerFile', Math.min(16, prefs.connectionsPerFile + 1))}>+</button>
-            <small>{t('settings.connectionsUnit')}</small>
-          </div>)}
+          <NumberStepper
+            value={prefs.connectionsPerFile}
+            onChange={v => update('connectionsPerFile', v)}
+            min={1}
+            max={16}
+            suffix={t('settings.connectionsUnit')}
+            label={t('settings.connections')}
+          />)}
         {toggle(t('settings.aria2'), t('settings.aria2Hint'), prefs.aria2Enabled, v => update('aria2Enabled', v))}
         {/*
           aria2 的真实状态。
