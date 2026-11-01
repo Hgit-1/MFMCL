@@ -378,6 +378,21 @@ pub async fn install_mod_version(
     let target = instance(&store, &instance_id)?;
     let kind = project_type.unwrap_or_default();
     let dir_name = content_dir(&kind)?;
+    /*
+     * 模组必须装进带加载器的实例。
+     *
+     * 版本列表现在对原版实例也开放（看版本是公开信息，不该被实例类型挡住），
+     * 但「安装」不行：Forge/Fabric 的模组在纯原版客户端里不会被加载，游戏启动后
+     * 它们只是躺在 mods 目录里，用户会以为装好了却没效果。
+     *
+     * 资源包 / 光影 / 数据包不在此列——它们在原版里同样生效。
+     */
+    if dir_name == "mods" && target.loader == "vanilla" {
+        return Err(
+            "这个实例是原版，没有安装模组加载器；请先安装 Fabric、Quilt、Forge 或 NeoForge。"
+                .into(),
+        );
+    }
     let label = match dir_name {
         "resourcepacks" => "资源包",
         "shaderpacks" => "光影包",

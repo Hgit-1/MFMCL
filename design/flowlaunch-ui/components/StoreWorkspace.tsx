@@ -478,6 +478,8 @@ export function StoreWorkspace({
   const [expandedMod, setExpandedMod] = useState<string | null>(null);
   const [modVersions, setModVersions] = useState<CatalogVersion[]>([]);
   const [modVersionsState, setModVersionsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  /** 版本列表的失败原因。与 `modsError`（搜索结果横幅）分开，两者互不覆盖。 */
+  const [modVersionsError, setModVersionsError] = useState('');
   const [installing, setInstalling] = useState('');
 
   /*
@@ -985,6 +987,7 @@ export function StoreWorkspace({
     setExpandedMod(mod.projectId);
     setModVersionsState('loading');
     setModVersions([]);
+    setModVersionsError('');
     try {
       /*
        * 直连模式下列出**全部**版本，不按实例过滤。
@@ -995,13 +998,30 @@ export function StoreWorkspace({
        *
        * 资源包没有加载器维度，两条路径都透传当前分类的项目类型。
        */
-      setModVersions(await (targetInstanceId
+      /*
+       * 原版实例也允许列出全部版本，而不是报错。
+       *
+       * 版本清单是公开信息：用户点开一个模组想看它有哪些版本，这件事与「当前实例
+       * 是否装了加载器」无关。之前原版实例会直接收到「在线模组目录需要 Fabric 或
+       * Quilt 实例」，界面又把这个错误丢进搜索横幅——最终表现是卡片展开了但下面
+       * 一片空白，看起来完全没反应。
+       *
+       * 仍然不给「安装」按钮（后端会按实例的加载器再校验一次），只是把版本列出来。
+       */
+      const isVanillaInstance = target !== undefined && target.loader === 'vanilla';
+      setModVersions(await (targetInstanceId && !isVanillaInstance
         ? listModVersions(targetInstanceId, mod.projectId, projectTypeOf(category))
         : listProjectVersions(mod.projectId, projectTypeOf(category) === 'modpack' ? 'modpack' : 'mod')));
       setModVersionsState('ready');
     } catch (error) {
       setModVersionsState('error');
-      setModsError(errorText(error, '无法读取该模组的版本列表。'));
+      /*
+       * 只写进版本区的状态，不碰 `modsError`。
+       *
+       * 之前这里复用 `modsError`（搜索结果那条横幅）：一次展开失败会把
+       * 「搜索失败」显示在顶部，而版本区仍然空白——两处都指向不了真正的原因。
+       */
+      setModVersionsError(errorText(error, t('cf.versionsFailed')));
     }
   };
 
@@ -2180,6 +2200,19 @@ export function StoreWorkspace({
                           <div className={styles.versionMeta}>{t('cf.noVersion')}</div>
                         )}
                         {/*
+                          失败要就地说明。
+                          之前 error 只写进 `setModsError`（搜索结果区那条横幅），
+                          版本区没有任何分支——于是点开一个模组后，卡片显示「收起」
+                          却下面是空的，看起来像「这个项目没有版本」。
+                          Modrinth 的版本请求失败（网络、限流、该项目无文件）都会
+                          走到这里。
+                        */}
+                        {modVersionsState === 'error' && (
+                          <div className={styles.versionError} role="alert">
+                            <span>{modVersionsError || t('cf.versionsFailed')}</span>
+                          </div>
+                        )}
+                        {/*
                           一行说明：这一列到底是「装进实例」还是「只下载」。
                           用户看到的按钮不同（有实例时两个、直连时一个），不解释的话
                           会以为功能少了一个。
@@ -2248,8 +2281,12 @@ export function StoreWorkspace({
                                 没有目标实例，`installModVersion` 无从写入——留一个
                                 点了必然报错的按钮，比不显示更糟。此时只剩「仅下载」，
                                 而这正是直连模式的定义。
+
+                                原版实例 + 模组同理：后端会拒绝（模组在原版客户端里不会
+                                被加载），所以这里也不给按钮，避免点了才看到错误。
+                                资源包与光影在原版里生效，因此只对「模组」这一类收窄。
                               */}
-                              {!directMode && (
+                              {!directMode && !(target?.loader === 'vanilla' && category === 'mod') && (
                                 <Button
                                   size="sm"
                                   disabled={installing === version.versionId}
