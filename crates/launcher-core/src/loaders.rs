@@ -148,55 +148,99 @@ async fn list_installer_versions(
     }
 }
 
+/// Forge 的版本列表。
+///
+/// ## 为什么同时读两个来源
+///
+/// `promotions_slim.json` 只给「该 MC 版本当前推荐的 latest 与 recommended」两条。
+/// 界面照着它做，一个 1.20.1 实例就只剩两个可选版本——而该版本实际发布过 137 个
+/// Forge 构建。用户想装某个特定版本（模组作者指定、或规避某个 bug）时无从选择，
+/// 这正是 PCL2 等启动器提供完整列表的原因。
+///
+/// 所以：**maven-metadata.xml 给全量**，`promotions_slim.json` **只用来标记哪一个
+/// 是稳定版**。两个来源都失败才报错；只缺 promotions 时列表仍然可用，只是没有
+/// 稳定版标记。
 async fn forge_versions(game: &str) -> Result<Vec<LoaderVersion>, String> {
+    let prefix = format!("{game}-");
     let client = metadata_client()?;
+
+    // 1) 全量版本：maven 元数据里的 `<mc>-<forge>` 条目。
     let response = client
-        .get("https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json")
+        .get("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml")
         .send()
         .await
         .map_err(|_| "无法连接 Forge 版本服务。")?
         .error_for_status()
         .map_err(|_| "Forge 版本服务拒绝了请求。")?;
+    let bytes = bounded_response(response, 16 * 1024 * 1024).await?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "Forge 版本列表不是有效文本。")?;
+    let mut versions: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<version>") {
+        let after = &rest[start + "<version>".len()..];
+        let Some(end) = after.find("</version>") else {
+            break;
+        };
+        let value = after[..end].trim();
+        if value.starts_with(&prefix) && safe_version(value).is_ok() {
+            versions.push(value.to_owned());
+        }
+        rest = &after[end + "</version>".len()..];
+    }
+    if versions.is_empty() {
+        return Err(format!("Minecraft {game} 没有可用的 Forge 版本。"));
+    }
+    versions.sort_by(|a, b| compare_versions(b, a));
+    versions.dedup();
+
+    // 2) 稳定版标记。失败不影响主流程：列表本身已经可用。
+    let promoted = forge_promoted(game).await.unwrap_or_default();
+
+    Ok(versions
+        .into_iter()
+        .map(|version| {
+            let stable = promoted.contains(&version);
+            LoaderVersion { version, stable }
+        })
+        .collect())
+}
+
+/// 该 MC 版本被官方标为 latest / recommended 的 Forge 构建。
+///
+/// 取失败时返回空集合而不是错误：这只是「给某一项加个徽标」，不值得让它挡住
+/// 整个版本列表。
+async fn forge_promoted(game: &str) -> Result<std::collections::BTreeSet<String>, String> {
+    let client = metadata_client()?;
+    let response = client
+        .get("https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json")
+        .send()
+        .await
+        .map_err(|_| "无法读取 Forge 推荐版本。")?
+        .error_for_status()
+        .map_err(|_| "Forge 推荐版本服务拒绝了请求。")?;
     let bytes = bounded_response(response, 4 * 1024 * 1024).await?;
     let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|_| "Forge 版本列表格式无效。")?;
-    let promos = value
-        .get("promos")
-        .and_then(|v| v.as_object())
-        .ok_or("Forge 版本列表缺少 promos 字段。")?;
-    let mut out: Vec<LoaderVersion> = Vec::new();
+        serde_json::from_slice(&bytes).map_err(|_| "Forge 推荐版本格式无效。")?;
+    let Some(promos) = value.get("promos").and_then(|v| v.as_object()) else {
+        return Ok(Default::default());
+    };
+    let mut out = std::collections::BTreeSet::new();
     for (key, version) in promos {
         // 键形如 `<mc>-latest` / `<mc>-recommended`。
-        let Some((mc, channel)) = key.rsplit_once('-') else {
+        let Some((mc, _channel)) = key.rsplit_once('-') else {
             continue;
         };
         if mc != game {
             continue;
         }
-        let Some(version) = version.as_str() else {
-            continue;
-        };
-        if safe_version(version).is_err() {
-            continue;
+        if let Some(version) = version.as_str() {
+            /*
+             * promotions 里的值是**构建号**（`47.4.28`），而 maven 条目是
+             * `<mc>-<构建号>`（`1.20.1-47.4.28`）。不补前缀就永远匹配不上，
+             * 表现为「列表里有 137 个版本，但没有一个被标为稳定版」。
+             */
+            out.insert(format!("{game}-{version}"));
         }
-        // recommended 视为稳定版；同一版本可能既是 latest 又是 recommended。
-        let stable = channel == "recommended";
-        match out.iter_mut().find(|item| item.version == version) {
-            Some(existing) => existing.stable |= stable,
-            None => out.push(LoaderVersion {
-                version: version.to_owned(),
-                stable,
-            }),
-        }
-    }
-    // 稳定版排前面，同组内按版本号倒序（新版本优先）。
-    out.sort_by(|a, b| {
-        b.stable
-            .cmp(&a.stable)
-            .then_with(|| compare_versions(&b.version, &a.version))
-    });
-    if out.is_empty() {
-        return Err(format!("Minecraft {game} 没有可用的 Forge 版本。"));
     }
     Ok(out)
 }

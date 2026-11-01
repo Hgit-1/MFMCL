@@ -22,13 +22,16 @@
 //      实例状态，否则卡片仍显示「未安装」。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Cpu, Download } from 'lucide-react';
+import { Cpu, Download, PackagePlus, CheckCircle2 } from 'lucide-react';
 import { Button } from './Button';
 import { useI18n } from '../utils/i18n';
 import {
   errorText,
+  fabricApiStatus,
+  installFabricApi,
   installLoader,
   loaderVersions,
+  type FabricApiStatus,
   type LoaderKind,
   type LoaderVersion,
 } from '../utils/native';
@@ -121,14 +124,98 @@ export function LoaderInstallCard({ instance, onNotice, onInstalled }: LoaderIns
     }
   };
 
+  /*
+   * Fabric API 的状态。
+   *
+   * 装完加载器之后实例仍然只有加载器本身——绝大多数 Fabric 模组还需要 API 才能
+   * 启动。这里单独查一次并给出安装入口，而不是让用户去商店里自己找：他不知道
+   * 那是必需品，而崩溃日志只会给一段 NoClassDefFoundError。
+   *
+   * 已装加载器时也要查（那是装 API 的唯一时机——加载器就绪、还没装模组）。
+   */
+  const [api, setApi] = useState<FabricApiStatus | null>(null);
+  const [apiBusy, setApiBusy] = useState(false);
+  const lastApiQuery = useRef('');
+  useEffect(() => {
+    const key = `${instance.id}:${instance.loader}`;
+    if (lastApiQuery.current === key) return;
+    lastApiQuery.current = key;
+    void fabricApiStatus(instance.id)
+      .then(setApi)
+      .catch(() => setApi(null));
+  }, [instance.id, instance.loader]);
+
+  const runApiInstall = async () => {
+    setApiBusy(true);
+    try {
+      const file = await installFabricApi(instance.id);
+      onNotice(t('loader.fabricApiInstalled', { values: { file } }));
+      // 重查状态，让区块切成「已安装」，而不是留着一个还能再点的按钮。
+      lastApiQuery.current = '';
+      setApi(await fabricApiStatus(instance.id).catch(() => api));
+      onInstalled();
+    } catch (error) {
+      onNotice(errorText(error, '安装 Fabric API 失败。'));
+    } finally {
+      setApiBusy(false);
+    }
+  };
+
+  /*
+   * Fabric API 区块。三种形态：
+   *   1. 不适用（Forge / NeoForge / 原版）→ 不渲染；
+   *   2. 已安装 → 一行确认，不提供重复操作；
+   *   3. 可安装 → 说明 + 按钮。
+   */
+  const apiSection = api?.applicable ? (
+    <div className={styles.apiBlock}>
+      <div className={styles.apiHead}>
+        <PackagePlus size={14} />
+        <strong>Fabric API</strong>
+        {api.installed && (
+          <span className={styles.apiInstalled}>
+            <CheckCircle2 size={12} />
+            {t('loader.fabricApiInstalledShort')}
+          </span>
+        )}
+      </div>
+      {api.installed ? (
+        <p className={styles.apiHint}>
+          {t('loader.fabricApiPresent', { values: { file: api.installedFile ?? '' } })}
+        </p>
+      ) : (
+        <>
+          <p className={styles.apiHint}>{t('loader.fabricApiHint')}</p>
+          <div className={styles.actions}>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Download size={13} />}
+              loading={apiBusy}
+              disabled={!api.available}
+              onClick={() => void runApiInstall()}
+            >
+              {api.available
+                ? t('loader.fabricApiInstall', { values: { version: api.version ?? '' } })
+                : t('loader.fabricApiUnavailable')}
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  ) : null;
+
   if (hasLoader) {
     return (
-      <div className={styles.done}>
-        <Cpu size={15} />
-        <span>
-          {t('loader.alreadyInstalled', { values: { kind: instance.loader ?? '', version: instance.version } })}
-        </span>
-      </div>
+      <>
+        <div className={styles.done}>
+          <Cpu size={15} />
+          <span>
+            {t('loader.alreadyInstalled', { values: { kind: instance.loader ?? '', version: instance.version } })}
+          </span>
+        </div>
+        {apiSection}
+      </>
     );
   }
 
@@ -202,6 +289,13 @@ export function LoaderInstallCard({ instance, onNotice, onInstalled }: LoaderIns
           <p className={styles.hint}>{t('loader.installHint')}</p>
         </>
       )}
+
+      {/*
+        未装加载器时也显示 API 区块。
+        这时按钮是禁用的（后端会拒绝非 Fabric 实例），但区块本身说明了「装完
+        加载器还有一步」——这正是用户最容易漏掉的一步。
+      */}
+      {apiSection}
     </div>
   );
 }

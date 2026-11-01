@@ -1275,6 +1275,8 @@ pub fn run() {
             management::loader_versions,
             management::install_loader,
             management::list_mods,
+            management::fabric_api_status,
+            management::install_fabric_api,
             management::inspect_mods,
             management::set_mod_enabled,
             management::check_mod_updates,

@@ -1761,6 +1761,35 @@ export async function installLoader(instanceId: string, kind: LoaderKind, versio
   await invoke('install_loader', { instanceId, kind, version })
 }
 
+/** 对应 Rust `FabricApiStatus`。 */
+export interface FabricApiStatus {
+  /** 这个实例是否可能装 Fabric API（Fabric / Quilt 加载器）。 */
+  applicable: boolean
+  installed: boolean
+  installedFile: string | null
+  /** 是否找到与该实例匹配的可用版本。 */
+  available: boolean
+  version: string | null
+}
+
+export async function fabricApiStatus(instanceId: string): Promise<FabricApiStatus> {
+  if (!isDesktopShell()) {
+    /*
+     * 预览模式：让界面能看到三种状态。
+     *
+     * 固定返回「可安装」而不是「已安装」，因为演示的重点是那个按钮长什么样；
+     * 想看已安装状态的人可以在真实实例上验证。
+     */
+    return { applicable: true, installed: false, installedFile: null, available: true, version: '0.92.2+1.20.1' }
+  }
+  return invoke<FabricApiStatus>('fabric_api_status', { instanceId })
+}
+
+export async function installFabricApi(instanceId: string): Promise<string> {
+  requireDesktop('安装 Fabric API')
+  return invoke<string>('install_fabric_api', { instanceId })
+}
+
 export async function previewModpack(path: string): Promise<PackPreview> {
   requireDesktop('预览整合包')
   return invoke<PackPreview>('preview_modpack', { path })

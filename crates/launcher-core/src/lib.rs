@@ -2,6 +2,7 @@ pub mod backups;
 pub mod catalog;
 pub mod curseforge;
 mod diagnostics;
+pub mod fabric_api;
 pub mod forge_install;
 mod installer;
 mod launch;
