@@ -22,7 +22,7 @@ export interface LauncherPrefs {
   theme: ThemeMode; themePreset: string; customAccent: string; showGameLog: boolean;
   javaPath: string; memoryMb: number; windowWidth: number; windowHeight: number; extraJvmArgs: string;
   downloadSource: string; maxConcurrentDownloads: number; connectionsPerFile: number; aria2Enabled: boolean;
-  closeAfterLaunch: boolean; checkUpdates: boolean; gameDirectory: string; announcementPolicy: 'notify' | 'off'; cacheDirectory: string; anonymousUsage: boolean; opacity: number; hiddenTheme: boolean; showLauncherLogo: boolean; backgroundImage: string; backgroundMusic: boolean; titleBar: 'default' | 'text' | 'image' | 'none'; homeSource: string;
+  closeAfterLaunch: boolean; checkUpdates: boolean; gameDirectory: string; announcementPolicy: 'notify' | 'off'; cacheDirectory: string; launcherLogEnabled: boolean; llamaServerPath: string; opacity: number; hiddenTheme: boolean; showLauncherLogo: boolean; backgroundImage: string; backgroundMusic: boolean; titleBar: 'default' | 'text' | 'image' | 'none'; homeSource: string;
 }
 
 export const DEFAULT_PREFS: LauncherPrefs = {
@@ -36,7 +36,7 @@ export const DEFAULT_PREFS: LauncherPrefs = {
   // 'auto' → 后端 `mixed`：镜像优先、官方回退（详见 native.ts 的 prefsToSettings）。
   // 默认选它是因为官方 CDN 在部分地区很慢，而镜像只在有校验值时才用，不牺牲完整性。
   downloadSource: 'auto', maxConcurrentDownloads: 4, connectionsPerFile: 4, aria2Enabled: true,
-  closeAfterLaunch: false, checkUpdates: true, gameDirectory: '', announcementPolicy: 'notify', cacheDirectory: '', anonymousUsage: false, opacity: 100, hiddenTheme: false, showLauncherLogo: true, backgroundImage: '', backgroundMusic: false, titleBar: 'default', homeSource: 'official',
+  closeAfterLaunch: false, checkUpdates: true, gameDirectory: '', announcementPolicy: 'notify', cacheDirectory: '', launcherLogEnabled: false, llamaServerPath: '', opacity: 100, hiddenTheme: false, showLauncherLogo: true, backgroundImage: '', backgroundMusic: false, titleBar: 'default', homeSource: 'official',
 };
 
 /** 存档里的皮肤设置可能来自旧版本或只有部分字段，逐项兜底。 */

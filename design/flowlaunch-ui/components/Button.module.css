@@ -8,7 +8,22 @@
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease);
+  /*
+   * 逐条列出，不用 `all`。
+   *
+   * `all` 会把 `box-shadow` 的模糊半径也做插值，而主按钮的悬停阴影是
+   * `0 10px 15px` 这类大范围模糊——每帧都要重新生成一张阴影纹理，是这一页
+   * 最贵的绘制之一。列清单后只过渡真正想动的那几项。
+   *
+   * 同时排除 `font-weight`：它固定 500，但将来若加一个加粗变体，`all` 会让字重
+   * 走过去，而中文只有 400/700 两档，插值必然卡顿。
+   */
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease);
   white-space: nowrap;
   user-select: none;
 }
