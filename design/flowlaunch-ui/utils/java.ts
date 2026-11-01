@@ -605,7 +605,14 @@ export function resolveJava({ setting, requirement, runtimes, globalPath = '', l
   }
 
   if (setting.mode === 'range') {
-    const parsed = parseJavaRange(setting.range);
+    /*
+     * 必须用友好解析器，和输入框的提示保持一致。
+     *
+     * 这里原本调 `parseJavaRange`，它只认 `[21.0, )` 这种集合语法。而输入框下面
+     * 的提示写着「写 21、21+ 或 17-21」，于是用户照着提示输入 `25`，解析失败，
+     * 界面却报「格式无法识别」——照着提示做反而报错，这是最糟的一类不一致。
+     */
+    const parsed = parseFriendlyRange(setting.range);
     if ('error' in parsed) {
       return { runtime: null, tone: 'error', message: loc('java.rangeInvalidMessage', { message: renderLocalized(language, parsed.error) }) };
     }
