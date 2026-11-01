@@ -104,7 +104,11 @@ stages the binary under `src-tauri/resources/aria2/<os>/<arch>/` and pins it in 
 
 ## Microsoft account configuration
 
-Microsoft login requires an application public client ID registered and authorized for the relevant Xbox/Minecraft services. Supply it through the login dialog or set `MFMCL_MICROSOFT_CLIENT_ID` when building. Configure an appropriate desktop/loopback redirect URI in that registration. MFMCL contains no client secret and must not borrow another launcher's application ID. A denied/unavailable OS credential provider is reported as a login error; no plaintext fallback is used.
+Microsoft login requires an application public client ID registered and authorized for the relevant Xbox/Minecraft services.
+
+**Build-time only.** Set `MFMCL_MICROSOFT_CLIENT_ID` when building; there is currently no runtime field for it in the login dialog, so a build without this variable cannot sign in (tracked in #16). Configure a loopback redirect URI on the registration (`http://127.0.0.1/callback`) and enable the public client flow. MFMCL contains no client secret and must not borrow another launcher's application ID. A denied/unavailable OS credential provider is reported as a login error; no plaintext fallback is used.
+
+Step-by-step registration, consent and troubleshooting: [`docs/MICROSOFT_LOGIN.md`](MICROSOFT_LOGIN.md).
 
 ## CurseForge API key (optional)
 
