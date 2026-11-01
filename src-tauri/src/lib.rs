@@ -1,8 +1,10 @@
 mod authentication;
 mod backup_management;
 mod crash_ai;
+mod crash_ai_model;
 mod curseforge;
 mod downloads;
+mod llama_runtime;
 mod management;
 mod plugin_runtime;
 mod sidecar;
@@ -129,10 +131,101 @@ async fn aria2_status(app: tauri::AppHandle) -> Result<sidecar::Aria2Availabilit
 fn save_settings(
     settings: LauncherSettings,
     store: State<'_, LauncherStore>,
+    app: tauri::AppHandle,
+    log: State<'_, launcher_core::launcher_log::LauncherLog>,
 ) -> Result<(), String> {
     validate_settings(&settings, Some(system_memory_info().maximum_game_mb))?;
-    store.save_settings(&settings).map_err(|e| e.to_string())
+    store.save_settings(&settings).map_err(|e| e.to_string())?;
+    /*
+     * 让日志开关立刻跟上设置。
+     *
+     * 只改设置不动写入器的话，用户拨动开关后要重启启动器才生效——而「我刚开启
+     * 了日志，去复现一次问题」正是最典型的用法，等一次重启就把这一步打断了。
+     *
+     * 开关失败不回滚设置：设置本身已经存好了，下次启动会再尝试一次。把保存
+     * 设置变成失败，会让用户以为设置没保存，而实际上只是日志文件打不开。
+     */
+    if settings.launcher_log_enabled {
+        if let Ok(path) = launcher_log_path(&app) {
+            let _ = log.enable(&path);
+        }
+    } else {
+        log.disable();
+    }
+    Ok(())
 }
+/*
+ * ---------------------------------------------------------------------------
+ * 启动器日志
+ * ---------------------------------------------------------------------------
+ */
+
+/// 启动器日志放在应用数据目录下的固定位置。
+///
+/// 不用用户可配置的路径：报 issue 时「日志在哪」必须是一个能一句话说清的答案。
+/// 可配置会带来「用户换了目录，但截图里写的是默认路径」这种无效指引。
+fn launcher_log_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    Ok(root.join("logs").join("launcher.log"))
+}
+
+#[tauri::command]
+fn launcher_log_info(
+    app: tauri::AppHandle,
+    log: State<'_, launcher_core::launcher_log::LauncherLog>,
+) -> Result<serde_json::Value, String> {
+    let path = launcher_log_path(&app)?;
+    let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+    Ok(serde_json::json!({
+        "enabled": log.is_enabled(),
+        "path": path.to_string_lossy(),
+        "directory": path.parent().map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default(),
+        "bytes": size,
+    }))
+}
+
+/// 打开日志文件所在目录。
+///
+/// 打开的是**目录**而不是文件：用户接下来要做的是「把文件拖进 issue 的附件框」，
+/// 在文件管理器里定位到它比让系统默认程序打开一个几十万行的文本更有用。
+#[tauri::command]
+fn launcher_log_open_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let path = launcher_log_path(&app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| format!("无法创建日志目录：{error}"))?;
+        return open_in_file_manager(parent);
+    }
+    Err("无法定位日志目录。".into())
+}
+
+/// 清空日志文件。
+///
+/// 用户主动要求：日志里可能含有他不想外发的内容（模组列表、实例名、路径）。给一个
+/// 「删掉重来」的入口，比让他自己去文件管理器里找更可靠。
+#[tauri::command]
+fn launcher_log_clear(
+    app: tauri::AppHandle,
+    log: State<'_, launcher_core::launcher_log::LauncherLog>,
+) -> Result<(), String> {
+    let path = launcher_log_path(&app)?;
+    let was_enabled = log.is_enabled();
+    // 先关掉再删：Windows 上打开着的文件删不掉。
+    log.disable();
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("无法删除日志文件：{error}")),
+    }
+    // 原本开着就重新打开，否则用户点完「清空」会发现开关悄悄关了。
+    if was_enabled {
+        log.enable(&path)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn detect_java() -> Result<JavaRuntimeInfo, String> {
     detect_java_runtime(None).map_err(|e| e.to_string())
@@ -649,8 +742,17 @@ async fn launch_instance(
     store: State<'_, LauncherStore>,
     processes: State<'_, ProcessRegistry>,
     operations: State<'_, management::Operations>,
+    launcher_log: State<'_, launcher_core::launcher_log::LauncherLog>,
 ) -> Result<(), String> {
     let operation = operations.acquire(&instance_id)?;
+    /*
+     * 启动是用户最常报问题的一步，所以这里的两条日志是整份文件里最重要的。
+     * 只记 id 与结果，不记账号名或令牌——脱敏会兜住后者，但少写一条永远是更好的做法。
+     */
+    launcher_log.write(
+        launcher_core::launcher_log::Level::Info,
+        &format!("启动实例 {instance_id}"),
+    );
     /*
      * 启动进度上报。
      *
@@ -875,8 +977,21 @@ async fn launch_instance(
         command.env(key, value);
     }
     let mut child = match command.spawn() {
-        Ok(child) => child,
+        Ok(child) => {
+            launcher_log.write(
+                launcher_core::launcher_log::Level::Info,
+                &format!(
+                    "实例 {instance_id} 的 Java 进程已拉起（pid {}）",
+                    child.id().unwrap_or(0)
+                ),
+            );
+            child
+        }
         Err(error) => {
+            launcher_log.write(
+                launcher_core::launcher_log::Level::Error,
+                &format!("实例 {instance_id} 启动失败：{error}"),
+            );
             if let Ok(mut running) = registry.lock() {
                 running.remove(&instance_id);
             }
@@ -1085,12 +1200,40 @@ pub fn run() {
         .setup(|app| {
             let root = app.path().app_data_dir()?;
             std::fs::create_dir_all(&root)?;
-            app.manage(LauncherStore::open(root.join("mfmcl.sqlite"))?);
+            let store = LauncherStore::open(root.join("mfmcl.sqlite"))?;
+            /*
+             * 启动时按已保存的设置决定是否记日志。
+             *
+             * 读设置失败时保持关闭：一个读不到配置的启动器不该开始写文件。
+             */
+            let launcher_log = launcher_core::launcher_log::LauncherLog::default();
+            if let Ok(settings) = store.load_settings()
+                && settings.launcher_log_enabled
+                && let Ok(path) = launcher_log_path(app.handle())
+            {
+                let _ = launcher_log.enable(&path);
+                launcher_log.write(
+                    launcher_core::launcher_log::Level::Info,
+                    &format!("MFMCL {} 启动", env!("CARGO_PKG_VERSION")),
+                );
+            }
+            app.manage(store);
             app.manage(ProcessRegistry::default());
             app.manage(management::Operations::default());
             app.manage(Arc::new(downloads::Downloads::default()));
             app.manage(authentication::AuthState::default());
             app.manage(crash_ai::CrashAiState::default());
+            app.manage(launcher_log);
+            app.manage(llama_runtime::LlamaRuntime::default());
+            /*
+             * 引擎的空闲回收。
+             *
+             * 模型常驻约 1.8 GB，用完不还回去会让笔记本白耗电、让 8 GB 的机器
+             * 一直处在换页边缘。回收任务自己判断「有没有托管进程」与「闲置多久」，
+             * 没启动过引擎的机器上它什么都不做。
+             */
+            llama_runtime::spawn_idle_reaper(app.handle().clone());
+            app.manage(crash_ai_model::ModelDownloads::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1121,12 +1264,16 @@ pub fn run() {
             curseforge::curseforge_download,
             management::search_mods,
             management::list_mod_versions,
+            management::search_mods_unscoped,
+            management::list_project_versions,
             management::install_mod_version,
             management::download_mod_version,
             management::delete_instance,
             management::preview_modpack,
             management::import_modpack,
             management::download_and_import_modpack,
+            management::download_and_import_modrinth_pack,
+            management::project_versions,
             management::export_modpack,
             list_versions,
             get_settings,
@@ -1151,6 +1298,9 @@ pub fn run() {
             remove_account,
             summarize_diagnostics,
             export_diagnostics,
+            launcher_log_info,
+            launcher_log_open_folder,
+            launcher_log_clear,
             launch_instance,
             stop_game,
             plugin_runtime::plugin_runtime_info,
@@ -1160,9 +1310,16 @@ pub fn run() {
             plugin_runtime::launch_history,
             plugin_runtime::clear_launch_history,
             crash_ai::crash_ai_status,
+            crash_ai::crash_ai_stop_engine,
             crash_ai::crash_ai_analyse,
+            crash_ai::crash_ai_analyse_stream,
             crash_ai::crash_ai_instance_report,
             crash_ai::crash_ai_local_reports,
+            crash_ai_model::crash_ai_model_status,
+            crash_ai_model::crash_ai_model_sources,
+            crash_ai_model::crash_ai_model_download,
+            crash_ai_model::crash_ai_model_cancel,
+            crash_ai_model::crash_ai_model_remove,
         ])
         .run(tauri::generate_context!())
         .expect("MFMCL desktop application failed");
