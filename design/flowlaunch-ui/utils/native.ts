@@ -950,9 +950,29 @@ export async function resetInstanceSettings(instanceId: string): Promise<void> {
 // 启动 / 停止
 // ---------------------------------------------------------------------------
 
-export async function launchInstance(instanceId: string, accountId: string, offlineConfirmed: boolean): Promise<void> {
+/**
+ * 启动实例。
+ *
+ * `javaPath` 是这个实例**解析后**要用的 Java 可执行文件。前端负责把实例级 Java
+ * 设置（自动 / 版本范围 / 目录 / 指定路径）与全局设置合并成唯一一个路径，后端
+ * 只管用——它没有运行时列表，无法自己做区间匹配。
+ *
+ * 传 `null` 表示「这次不用前端解析的结果」，退回到全局 `java_path` + 后端自动探测。
+ */
+export async function launchInstance(
+  instanceId: string,
+  accountId: string,
+  offlineConfirmed: boolean,
+  javaPath: string | null = null,
+): Promise<void> {
   requireDesktop('启动游戏')
-  await invoke('launch_instance', { instanceId, accountId, offlineConfirmed })
+  await invoke('launch_instance', {
+    instanceId,
+    accountId,
+    offlineConfirmed,
+    /* 后端参数名是 snake_case 对应的 camelCase：javaPath -> java_path。 */
+    javaPath,
+  })
 }
 
 export async function stopGame(instanceId: string): Promise<void> {

@@ -53,8 +53,10 @@ import { iconForLoader } from '../utils/store/loaders';
 import { Image as ImageIcon, Map, Package, Puzzle } from 'lucide-react';
 import {
   DEFAULT_INSTANCE_JAVA,
+  javaRequirementFor,
   loadInstanceJavaSettings,
   loadJavaList,
+  resolveJava,
   saveInstanceJavaSettings,
   type InstanceJavaSetting,
   type JavaRuntime,
@@ -1211,7 +1213,26 @@ function App() {
         if (!offlineConfirmed) return;
       }
       try {
-        await launchInstanceNative(instance.id, account.id, offlineConfirmed);
+        /*
+         * 实例级 Java 设置在这里解析成唯一路径。
+         *
+         * 后端只有一份 `settings.java_path`（全局值），它没有运行时列表，也不该
+         * 知道「版本范围 / 目录」这些界面侧概念。所以合并放在这里：实例设置优先，
+         * 只有实例是「跟随全局」时才用全局路径。
+         *
+         * 解析不出来时传 null：后端会退回全局值并自行探测，比传一个空串好——
+         * 空串会被当成「用户指定了一个不存在的路径」。
+         */
+        const javaSetting = instanceJavaSettings[instance.id];
+        const resolvedJava = javaSetting && javaSetting.mode !== 'auto'
+          ? resolveJava({
+            setting: javaSetting,
+            requirement: javaRequirementFor(instance),
+            runtimes: javaRuntimes,
+            globalPath: globalPrefs.javaPath,
+          }).runtime?.path ?? null
+          : null;
+        await launchInstanceNative(instance.id, account.id, offlineConfirmed, resolvedJava);
       } catch (error) {
         /*
          * 启动失败要把进度条收掉。
