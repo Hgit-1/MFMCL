@@ -603,6 +603,16 @@ export function StoreWorkspace({
   const [mrPackVersionsState, setMrPackVersionsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [packSearchState, setPackSearchState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [packSearchError, setPackSearchError] = useState('');
+  /*
+   * 整合包的页码与「是否还有下一页」。
+   *
+   * 与模组页的 `modPage` 分开：两页的筛选条件完全不同（整合包不按实例的版本与
+   * 加载器收窄），共用一个页码会在切换分类时把用户丢到某个无关列表的中段。
+   */
+  const [packPage, setPackPage] = useState(0);
+  const [packHasMore, setPackHasMore] = useState(false);
+  /** 记住上一次实际执行的查询，翻页时复用，避免把输入框的实时内容带进去。 */
+  const lastPackQuery = useRef('');
   /** 当前展开文件列表的整合包项目。 */
   const [expandedPack, setExpandedPack] = useState<string | null>(null);
   const [packVersions, setPackVersions] = useState<CurseForgeVersion[]>([]);
@@ -1265,21 +1275,29 @@ export function StoreWorkspace({
    * 关键词为空时按下载量浏览（后端已支持不传 searchFilter 的浏览模式），
    * 所以进入整合包页可以先点一次搜索看到热门列表，不必先想关键词。
    */
-  const runPackSearch = async () => {
+  const runPackSearch = async (pageOverride?: number) => {
+    const page = pageOverride ?? 0;
     setPackSearchState('loading');
     setPackSearchError('');
     setPackHits([]);
     setMrPackHits([]);
     setExpandedPack(null);
     setExpandedMrPack(null);
+    setPackPage(page);
 
-    const query = packQuery.trim();
+    // 翻页复用上次的查询条件，而不是读输入框的实时内容：用户可能改了输入框但没点搜索。
+    const query = pageOverride === undefined ? packQuery.trim() : lastPackQuery.current;
+    lastPackQuery.current = query;
     /*
      * 两个来源并发查。
      *
      * Modrinth 需要一个实例来做 facet 构造（后端签名如此），但它只需要游戏版本与
      * 加载器；整合包不按这些筛，所以传当前目标实例即可，拿到的结果里后端**不**加
      * 版本/加载器 facet（整合包走的是 `project_versions` 与不加版本 facet 的搜索）。
+     *
+     * 没有目标实例时仍然查 Modrinth：整合包是「创建新实例」，与当前选中的实例
+     * 无关。之前这里要求必须有实例，导致全新安装（一个实例都没有）时整合包页
+     * 一片空白——而那恰恰是最需要它的时刻。
      */
     const wantsCf = sources.includes('curseforge');
     const [cfResult, mrResult] = await Promise.allSettled([
@@ -1288,20 +1306,20 @@ export function StoreWorkspace({
             kind: 'modpack',
             query,
             // 整合包跨版本可用，不按实例的版本/加载器收窄——否则会漏掉大量实际能装的包。
-            index: 0,
-            pageSize: 20,
+            index: page * PAGE_SIZE,
+            pageSize: PAGE_SIZE,
           })
         : Promise.resolve([] as CurseForgeMod[]),
-      targetInstanceId
-        ? searchMods(targetInstanceId, {
-            query,
-            projectType: 'modpack',
-            // 不传 gameVersion / loader：整合包自带它们，按实例筛会漏掉大量能装的包。
-            gameVersion: undefined,
-            loader: 'any',
-            index: 'downloads',
-          })
-        : Promise.resolve([] as CatalogMod[]),
+      searchModsUnscoped({
+        query,
+        projectType: 'modpack',
+        // 不传 gameVersion / loader：整合包自带它们，按实例筛会漏掉大量能装的包。
+        gameVersion: undefined,
+        loader: 'any',
+        // 排序与分页对齐模组页：按下载量，offset 用同一套页码。
+        index: 'downloads',
+        offset: page * PAGE_SIZE,
+      }),
     ]);
 
     const errors: string[] = [];
@@ -1318,8 +1336,20 @@ export function StoreWorkspace({
       errors.push(errorText(mrResult.reason, t('store.modrinthUnavailable')));
     }
 
-    const attempted = (wantsCf ? 1 : 0) + (targetInstanceId ? 1 : 0);
-    if (attempted > 0 && errors.length === attempted) {
+    /*
+     * 是否还有下一页。
+     *
+     * 用「本页是否满额」判断，与模组页同一套做法：两站都不返回可靠的总数
+     * （CurseForge 的 pagination 与 Modrinth 的 total_hits 语义不同），读它们
+     * 会让「最后一页之后还有一页」这种 bug 反复出现。
+     */
+    const fullPage =
+      (cfResult.status === 'fulfilled' && cfResult.value.length >= PAGE_SIZE)
+      || (mrResult.status === 'fulfilled' && mrResult.value.length >= PAGE_SIZE);
+    setPackHasMore(fullPage && page < 40);
+
+    // 两个来源都失败才算整页失败；只缺一个时另一栏仍然有用。
+    if (errors.length === 2) {
       setPackSearchState('error');
       setPackSearchError(errors.join(' '));
       return;
@@ -1328,6 +1358,25 @@ export function StoreWorkspace({
     setPackSearchError(errors.join(' '));
     setPackSearchState('ready');
   };
+
+  /*
+   * 进入整合包页就列出一批（按下载量）。
+   *
+   * 之前必须先输入关键词再点「搜索」——而用户往往不知道有哪些整合包，空着搜索框
+   * 就不知道下一步该做什么。模组页早就是「空关键词 = 浏览热门」的行为，两页
+   * 保持一致。
+   *
+   * 依赖只放 `category`：切到整合包页时跑一次。不把 `sources` 放进去是因为
+   * 用户勾选来源后由「搜索」按钮触发重查，自动重跑会把他正在看的列表清空。
+   */
+  const packAutoLoaded = useRef(false);
+  useEffect(() => {
+    if (category !== 'modpack') { packAutoLoaded.current = false; return; }
+    if (packAutoLoaded.current) return;
+    packAutoLoaded.current = true;
+    void runPackSearch(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [category]);
 
   /** 展开一个 Modrinth 整合包的文件列表。 */
   const openMrPackVersions = async (hit: CatalogMod) => {
@@ -1345,8 +1394,7 @@ export function StoreWorkspace({
   };
 
   /** 下载并导入一个 Modrinth 整合包。 */
-  const installMrPack = async (version: CatalogVersion) => {
-    setInstallingPack(version.versionId);
+  const installMrPack = async (version: CatalogVersion) => {    setInstallingPack(version.versionId);
     try {
       const record = await downloadAndImportModrinthPack(version, targetInstanceId || undefined);
       onNotice(`整合包已导入为实例「${record.name}」。`);
@@ -2774,6 +2822,43 @@ export function StoreWorkspace({
                       </div>
                     ))}
                   </div>
+
+                  {/*
+                    翻页。
+                    与模组页同一套：只在「有结果」且（不在第一页或还有下一页）时出现。
+                    整合包的列表页数通常比模组少，但按下载量浏览时同样需要往后翻。
+                  */}
+                  {packSearchState === 'ready'
+                    && (packHits.length > 0 || mrPackHits.length > 0)
+                    && (packPage > 0 || packHasMore) && (
+                      <nav className={styles.pager} aria-label={t('store.pageNavLabel')}>
+                        <span className={styles.pagerRange}>
+                          {t('store.pageRange', {
+                            values: {
+                              from: packPage * PAGE_SIZE + 1,
+                              to: packPage * PAGE_SIZE + Math.max(packHits.length, mrPackHits.length),
+                              total: `${packPage * PAGE_SIZE + Math.max(packHits.length, mrPackHits.length)}${packHasMore ? '+' : ''}`,
+                            },
+                          })}
+                        </span>
+                        <div className={styles.pagerControls}>
+                          <button
+                            type="button"
+                            disabled={packPage === 0}
+                            onClick={() => void runPackSearch(packPage - 1)}
+                          >
+                            {t('store.pagePrev')}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!packHasMore}
+                            onClick={() => void runPackSearch(packPage + 1)}
+                          >
+                            {t('store.pageNext')}
+                          </button>
+                        </div>
+                      </nav>
+                    )}
                 </div>
               )}
 
