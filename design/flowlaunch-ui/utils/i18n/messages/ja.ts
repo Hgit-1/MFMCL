@@ -291,7 +291,6 @@ export const ja: Record<MessageKey, string> = {
   'install.stable': '安定版',
   'install.noLoaderVersion': 'このゲームバージョンで利用できるローダーがありません。',
   'install.loaderListFailed': 'ローダーのバージョン一覧を取得できませんでした。',
-  'install.unsupportedLoaders': 'Forge と NeoForge は未対応です。バックエンドは Fabric と Quilt のみインストールできます。',
   'install.optifineTitle': 'OptiFine について',
   'install.optifineNote': 'OptiFine は公式サイトから手動でダウンロードする必要があります（ダウンロードページは広告を経由するため直接取得できる URL がありません）。また Fabric/Quilt とは共存できません。必要な場合はインスタンスの mods フォルダーに入れてください。',
   'install.nameRequired': 'インスタンス名を入力してください。',

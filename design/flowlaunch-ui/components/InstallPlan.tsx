@@ -45,6 +45,19 @@ import styles from './InstallPlan.module.css';
 /** 可选加载器。`vanilla` 表示不装加载器。 */
 type LoaderChoice = 'vanilla' | LoaderKind;
 
+/**
+ * 加载器的显示名。
+ *
+ * 单独一张表而不是内联三元：之前是 `choice === 'fabric' ? 'Fabric' : 'Quilt'`，
+ * 加到四项就会退化成嵌套三元。加载器名是专有名词，三种语言都保持原文，不进词典。
+ */
+const LOADER_LABELS: Record<LoaderKind, string> = {
+  fabric: 'Fabric',
+  quilt: 'Quilt',
+  forge: 'Forge',
+  neoforge: 'NeoForge',
+};
+
 export interface InstallPlanTarget {
   /** 游戏版本号，来自用户点的那一行。 */
   version: string;
@@ -211,8 +224,14 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
             单选，且 vanilla 与各加载器互斥。
             这是「不会一口气装两个加载器」的第一道保证：界面上根本无法同时选中两个。
             第二道是后端的 `install_loader`，它会在实例已有加载器时直接拒绝。
+
+            Forge / NeoForge 也在这里：后端早已支持（`LoaderKind` 含四个变体，
+            安装走真实的 installer processor），之前只有本面板漏了它们，而下方还
+            写着「暂不支持」——用户看到的是一个自相矛盾的界面。
+            顺序按安装代价排列：Fabric/Quilt 十几秒，Forge/NeoForge 要跑几分钟的
+            JVM processor。
           */}
-          {(['vanilla', 'fabric', 'quilt'] as LoaderChoice[]).map(choice => (
+          {(['vanilla', 'fabric', 'quilt', 'forge', 'neoforge'] as LoaderChoice[]).map(choice => (
             <button
               key={choice}
               type="button"
@@ -223,7 +242,7 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
               disabled={busy}
             >
               {choice === 'vanilla' ? <Package size={15} /> : <Boxes size={15} />}
-              <span>{choice === 'vanilla' ? t('install.loaderNone') : choice === 'fabric' ? 'Fabric' : 'Quilt'}</span>
+              <span>{choice === 'vanilla' ? t('install.loaderNone') : LOADER_LABELS[choice]}</span>
               {loader === choice && <Check size={14} className={styles.loaderCheck} />}
             </button>
           ))}
@@ -231,11 +250,12 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
       </div>
 
       {/*
-        Forge 与 NeoForge 不在可选项里。
-        后端 `LoaderKind` 只有 Fabric 与 Quilt；放一个选不了的按钮比不放更糟。
-        这里用一行说明解释「为什么没有」，而不是让用户去猜。
+        Forge / NeoForge 的安装要跑一串 Java processor（解压映射、合并客户端 jar、
+        打二进制补丁），比 Fabric/Quilt 慢一个数量级。提前说明，避免用户以为卡死。
       */}
-      <p className={styles.note}>{t('install.unsupportedLoaders')}</p>
+      {(loader === 'forge' || loader === 'neoforge') && (
+        <p className={styles.note}>{t('loader.heavyNote')}</p>
+      )}
 
       {loader !== 'vanilla' && (
         <div className={styles.field}>

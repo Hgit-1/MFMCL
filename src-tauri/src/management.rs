@@ -779,11 +779,14 @@ pub async fn install_pending_pack_loader(
         }
     } else {
         let (kind, version) = request.split_once('@').ok_or("整合包加载器请求无效。")?;
-        let kind = match kind {
-            "fabric" => LoaderKind::Fabric,
-            "quilt" => LoaderKind::Quilt,
-            _ => return Err("整合包加载器暂不支持。".into()),
-        };
+        /*
+         * 四种加载器都要认。
+         *
+         * 之前这里只映射 fabric/quilt，Forge 与 NeoForge 的整合包会在这一步被
+         * 拒绝（「整合包加载器暂不支持」），尽管 `install_loader` 早就支持它们。
+         * CurseForge 上大量整合包是 Forge 的，这个缺口等于把一整类整合包挡在门外。
+         */
+        let kind = LoaderKind::from_name(kind).ok_or("整合包加载器暂不支持。")?;
         loaders::safe_version(version)?;
         let latest = store
             .list_instances()

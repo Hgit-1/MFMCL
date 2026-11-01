@@ -289,7 +289,6 @@ export const zhCN = {
   'install.stable': '稳定版',
   'install.noLoaderVersion': '这个游戏版本没有可用的加载器版本。',
   'install.loaderListFailed': '无法读取加载器版本列表。',
-  'install.unsupportedLoaders': 'Forge 与 NeoForge 暂不支持：当前后端只实现了 Fabric 与 Quilt 安装。',
   'install.optifineTitle': '关于 OptiFine',
   'install.optifineNote': 'OptiFine 需要从官网手动下载（其下载页要求经过广告页，没有可直接请求的地址），且不能与 Fabric/Quilt 共存。如需使用，请把它放进实例的 mods 目录。',
   'install.nameRequired': '请填写实例名称。',
