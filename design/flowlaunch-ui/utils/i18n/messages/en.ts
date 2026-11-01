@@ -293,7 +293,6 @@ export const en: Record<MessageKey, string> = {
   'install.stable': 'stable',
   'install.noLoaderVersion': 'No loader versions are available for this game version.',
   'install.loaderListFailed': 'Could not read the loader version list.',
-  'install.unsupportedLoaders': 'Forge and NeoForge are not supported yet: the backend only installs Fabric and Quilt.',
   'install.optifineTitle': 'About OptiFine',
   'install.optifineNote': 'OptiFine must be downloaded from its website (its download page goes through an ad step, so there is no direct URL to fetch), and it cannot coexist with Fabric/Quilt. Place it in the instance mods folder if you need it.',
   'install.nameRequired': 'Enter an instance name.',
