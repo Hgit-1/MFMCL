@@ -273,6 +273,7 @@ export const ja: Record<MessageKey, string> = {
   'cf.searchFailed': 'CurseForge の検索に失敗しました。',
   'cf.versionsFailed': 'このプロジェクトのファイルを取得できませんでした。',
   'cf.noVersion': 'このインスタンス向けのファイルがありません。',
+  'cf.openKeySettings': 'API キーを設定',
   'cf.chooseVersion': 'バージョンを選択',
   'cf.collapse': '閉じる',
   'cf.restricted': '作者が第三者によるダウンロードを禁止しています。Web から取得してください',

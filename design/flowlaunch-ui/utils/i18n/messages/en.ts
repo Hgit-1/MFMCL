@@ -275,6 +275,7 @@ export const en: Record<MessageKey, string> = {
   'cf.searchFailed': 'CurseForge search failed.',
   'cf.versionsFailed': 'Could not read this project’s files.',
   'cf.noVersion': 'No files for this instance.',
+  'cf.openKeySettings': 'Set the API key',
   'cf.chooseVersion': 'Choose version',
   'cf.collapse': 'Collapse',
   'cf.restricted': 'The author disallows third-party downloads; get it from the website',
