@@ -75,6 +75,7 @@ import {
   listAccounts,
   listInstances,
   listDownloadTasks,
+  clearFinishedDownloadTasks,
   listJavaRuntimes,
   listMods,
   onDownloadProgress,
@@ -640,7 +641,17 @@ function App() {
        * 之前只在用户操作后刷新，导致重启启动器时下载页是空的：上一次未完成或
        * 刚完成的任务全都看不见，用户会以为任务丢了——而它们其实还在后端表里。
        * 事件只推送变化，补不上「当前已有什么」。
+       *
+       * 顺序很重要：先按设置清掉已结束的记录，再读列表。反过来的话，界面会先
+       * 闪一下那些马上要被删掉的行，看起来像是清理没生效。
        */
+      if (settings?.clearFinishedTasks !== false) {
+        try {
+          await clearFinishedDownloadTasks();
+        } catch {
+          // 清理是整理性工作：失败不影响任何下载，也不该阻止界面加载。
+        }
+      }
       void refreshDownloadTasks();
 
       /*
@@ -1263,6 +1274,42 @@ function App() {
    * 与 `toggleTheme` 同一套做法：基于 `naturalSettings`（上次从后端读到的完整设置）
    * 改一个字段再整份保存，避免把界面不展示的字段重置成默认值。
    */
+  /**
+   * 清掉已结束的任务记录。
+   *
+   * 两个入口共用它：设置里的「关闭后自动清理」和下载页的手动按钮。清理后必须
+   * 重新读一次列表——只在前端把数组置空的话，下次进下载页又会从数据库把记录
+   * 读回来，用户会以为清理没生效。
+   *
+   * `announce` 为假时不弹提示：自动清理是后台行为，每次启动都弹一条「已清理」
+   * 反而是噪音，用户并没有主动要求这件事。
+   */
+  const clearFinishedTasks = async (announce = true) => {
+    /*
+     * 本地先数一遍已结束的条数。
+     *
+     * 不只是为了提示文案：浏览器预览里没有后端，清理命令返回 0，但界面上明明
+     * 摆着「已完成」的卡片。如果只信后端的返回值，用户点清理会看到「没有可清理
+     * 的记录」和一张已完成任务并列——界面在自相矛盾。本地计数在后端返回值缺失
+     * （预览）时兜底，桌面版以后端为准。
+     */
+    const finishedLocal = downloadTasks.filter(task => !ACTIVE_TASK_STATUSES.includes(task.status)).length;
+    try {
+      const removed = await clearFinishedDownloadTasks();
+      // 已结束的行立刻从内存里去掉：后端已经删了，等下一次读表才消失会闪一下。
+      setDownloadTasks(current => current.filter(task => ACTIVE_TASK_STATUSES.includes(task.status)));
+      if (removed > 0) await refreshDownloadTasks();
+      const cleared = removed > 0 ? removed : finishedLocal;
+      if (announce) {
+        setToast(cleared > 0
+          ? t('app.tasksCleared', { values: { count: cleared } })
+          : t('app.tasksClearedNone'));
+      }
+    } catch (error) {
+      if (announce) setToast(errorText(error, t('app.tasksClearFailed')));
+    }
+  };
+
   const persistDownloadSource = async (source: string) => {
     const next = { ...globalPrefs, downloadSource: source };
     setGlobalPrefs(next);
@@ -1882,6 +1929,16 @@ function App() {
                 {/* 说明这一页展示的是什么：任务级状态，不是文件级流水。 */}
                 <p>一个任务包含多个文件；下方「正在下载的文件」只显示当前传输的那几个。</p>
               </div>
+              {/*
+                手动清理。只在「确实有已结束的任务」时出现：列表全是进行中的时候
+                放一个按了没反应的按钮，用户会以为坏了。
+                清的是记录，不动已下载的文件——文案里要写清楚，否则没人敢点。
+              */}
+              {downloadTasks.some(task => !ACTIVE_TASK_STATUSES.includes(task.status)) && (
+                <Button variant="ghost" size="sm" onClick={() => { void clearFinishedTasks(); }}>
+                  {t('app.clearFinished')}
+                </Button>
+              )}
             </header>
 
             {downloadTasks.length === 0 ? (

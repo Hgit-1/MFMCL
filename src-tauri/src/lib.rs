@@ -1244,6 +1244,7 @@ pub fn run() {
             updates::download_launcher_update,
             downloads::control_download,
             downloads::list_download_tasks,
+            downloads::clear_finished_download_tasks,
             backup_management::create_backup,
             backup_management::preview_backup,
             backup_management::restore_backup,

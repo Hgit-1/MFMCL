@@ -472,6 +472,11 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         {field(t('settings.speedLimit'), t('settings.speedLimitHint'),
           <input type="number" min="0" max="1048576" value={prefs.speedLimitKbps} onChange={e => update('speedLimitKbps', Number(e.target.value))} placeholder={t('settings.unlimited')} />)}
         {toggle(t('settings.verifySsl'), t('settings.verifySslHint'), prefs.verifySsl, v => update('verifySsl', v))}
+        {/*
+          自动清理。放在下载设置里而不是「高级」：它改变的是下载页会显示什么，
+          与下载行为直接相关。默认开启，但必须能关——失败的记录有时要留着排查。
+        */}
+        {toggle(t('settings.clearFinishedTasks'), t('settings.clearFinishedTasksHint'), prefs.clearFinishedTasks, v => update('clearFinishedTasks', v))}
         {field(t('settings.targetFolder'), t('settings.targetFolderHint'),
           <input value={prefs.downloadDirectory} onChange={e => update('downloadDirectory', e.target.value)} placeholder={t('settings.useDefaultDir')} />)}
         {field(t('settings.concurrentTasks'), t('settings.concurrentTasksHint'),

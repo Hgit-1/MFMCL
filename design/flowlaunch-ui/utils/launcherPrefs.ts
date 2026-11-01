@@ -17,7 +17,7 @@ export interface LauncherPrefs {
   defaultVersionIsolation: boolean; gameResourceLocation: string; skin: SkinSetting; launcherVisibility: 'keep' | 'hide' | 'close'; processPriority: 'normal' | 'high' | 'low'; windowPreset: 'default' | 'custom';
   fullscreen: boolean; gameArgs: string; preLaunchCommand: string; memoryMode: 'auto' | 'custom'; optimizeMemory: boolean; launchWrapperDisabled: boolean; lwjglUnsafeAgentDisabled: boolean; hardwareAcceleration: boolean;
   proxyMode: 'none' | 'system' | 'http'; proxyUrl: string; downloadTimeoutSec: number; downloadRetries: number; speedLimitKbps: number; verifySsl: boolean; downloadDirectory: string;
-  debugMode: boolean; showCommandPreview: boolean; safeMode: boolean; logLevel: 'error' | 'warn' | 'info' | 'debug'; environmentVariables: string;
+  debugMode: boolean; showCommandPreview: boolean; safeMode: boolean; logLevel: 'error' | 'warn' | 'info' | 'debug'; environmentVariables: string; clearFinishedTasks: boolean;
   communitySource: string; modpackFilenameFormat: string; modpackMergeMode: 'ask' | 'replace' | 'merge'; showGameHints: boolean; showDebugHints: boolean;
   theme: ThemeMode; themePreset: string; customAccent: string; showGameLog: boolean;
   javaPath: string; memoryMb: number; windowWidth: number; windowHeight: number; extraJvmArgs: string;
@@ -28,7 +28,7 @@ export interface LauncherPrefs {
 export const DEFAULT_PREFS: LauncherPrefs = {
   defaultVersionIsolation: true, gameResourceLocation: 'default', skin: { ...DEFAULT_SKIN_SETTING }, launcherVisibility: 'keep', processPriority: 'normal', windowPreset: 'default',
   fullscreen: false, gameArgs: '', preLaunchCommand: '', memoryMode: 'custom', optimizeMemory: false, launchWrapperDisabled: false, lwjglUnsafeAgentDisabled: false, hardwareAcceleration: true,
-  debugMode: false, showCommandPreview: false, safeMode: false, logLevel: 'info', environmentVariables: '',
+  debugMode: false, showCommandPreview: false, safeMode: false, logLevel: 'info', environmentVariables: '', clearFinishedTasks: true,
   proxyMode: 'none', proxyUrl: '', downloadTimeoutSec: 60, downloadRetries: 3, speedLimitKbps: 0, verifySsl: true, downloadDirectory: '',
   communitySource: 'official', modpackFilenameFormat: '{name}-{version}', modpackMergeMode: 'ask', showGameHints: true, showDebugHints: false,
   theme: 'dark', themePreset: 'ocean', customAccent: '', showGameLog: true,

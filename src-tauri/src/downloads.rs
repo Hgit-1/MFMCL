@@ -136,6 +136,18 @@ impl Downloads {
 pub fn list_download_tasks(store: State<'_, LauncherStore>) -> Result<Vec<DownloadTask>, String> {
     store.list_download_tasks().map_err(|e| e.to_string())
 }
+
+/// 清掉已结束的任务记录。
+///
+/// 正在进行和已暂停的任务不动：前者还在写文件，后者可以继续。只返回删除的行数，
+/// 界面据此提示具体清掉了几条——「已清理」这种没有数量的说法，用户无法判断
+/// 是不是真的生效了。
+#[tauri::command]
+pub fn clear_finished_download_tasks(store: State<'_, LauncherStore>) -> Result<usize, String> {
+    store
+        .clear_finished_download_tasks()
+        .map_err(|e| e.to_string())
+}
 #[tauri::command]
 pub fn control_download(
     instance_id: String,

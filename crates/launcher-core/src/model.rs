@@ -182,6 +182,16 @@ pub struct LauncherSettings {
     /// 由用户自己决定要不要把文件贴到 issue 里。没有任何数据离开这台机器。
     #[serde(default)]
     pub launcher_log_enabled: bool,
+    /// 是否在启动器启动时清掉已结束的下载任务记录（默认开启）。
+    ///
+    /// 默认开启的理由：任务列表是给人看「正在发生什么」的，历史记录会自动变成
+    /// 噪音——一次安装会产生三条（整合包、模组、本体），几天后就攒满一屏全是
+    /// 已完成。清掉的只是记录，不动任何已下载的文件。
+    ///
+    /// 保留关闭选项是因为有人会把失败记录留着排查；那种情况下自动删除等于把
+    /// 证据丢了，必须能让用户关掉。
+    #[serde(default = "default_true")]
+    pub clear_finished_tasks: bool,
     /// 用户指定的 `llama-server` 可执行文件路径。
     ///
     /// 为什么需要它：llama.cpp 的发布物按平台与加速后端分叉，安装包不可能全带上。
@@ -268,6 +278,7 @@ impl Default for LauncherSettings {
             announcement_policy: UpdatePolicy::Notify,
             cache_directory: None,
             launcher_log_enabled: false,
+            clear_finished_tasks: true,
             llama_server_path: None,
             opacity: 100,
             hidden_theme: false,
