@@ -89,11 +89,27 @@ export const DEFAULT_BACKGROUND: BackgroundSetting = {
 
 export const BACKGROUND_STORAGE_KEY = 'mfmcl-background';
 
-/** IndexedDB 的库名与两个 object store。 */
+/** IndexedDB 的库名与各个 object store。 */
 const DB_NAME = 'mfmcl-media';
-const DB_VERSION = 1;
+
+/**
+ * 数据库版本。
+ *
+ * 2 新增了 `icons`（实例自定义图标）。升版本必须配合 `onupgradeneeded` 里的
+ * 建表语句——只改版本号不建表，升级会成功但随后的读写全都找不到 store。
+ * 用户从旧版本升级时 onupgradeneeded 会一起执行下面的建表循环，已有的
+ * `images` / `video` 数据原样保留。
+ */
+const DB_VERSION = 2;
 const STORE_IMAGES = 'images';
 const STORE_VIDEO = 'video';
+const STORE_ICONS = 'icons';
+
+/** 用到的所有 store。集中列出，新增一个只需改这一处和上面的版本号。 */
+const STORES = [STORE_IMAGES, STORE_VIDEO, STORE_ICONS] as const;
+
+/** store 名的类型。导出给其它模块用，避免各处再写一遍字面量。 */
+export type MediaStore = typeof STORES[number];
 
 /**
  * 上限。
@@ -207,8 +223,9 @@ function openDb(): Promise<IDBDatabase | null> {
     }
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_IMAGES)) db.createObjectStore(STORE_IMAGES);
-      if (!db.objectStoreNames.contains(STORE_VIDEO)) db.createObjectStore(STORE_VIDEO);
+      for (const store of STORES) {
+        if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => resolve(null);
@@ -238,19 +255,19 @@ function runTransaction<T>(
   });
 }
 
-/** 存一个 Blob，返回它的键。 */
-async function putBlob(store: string, id: string, blob: Blob): Promise<boolean> {
+/** 存一个 Blob，返回是否成功。 */
+export async function putBlob(store: MediaStore, id: string, blob: Blob): Promise<boolean> {
   const result = await runTransaction<IDBValidKey>(store, 'readwrite', objectStore => objectStore.put(blob, id));
   return result !== null;
 }
 
 /** 取出一个 Blob。键不存在或被删除时返回 null。 */
-export async function readBlob(store: 'images' | 'video', id: string): Promise<Blob | null> {
+export async function readBlob(store: MediaStore, id: string): Promise<Blob | null> {
   const result = await runTransaction<Blob | undefined>(store, 'readonly', objectStore => objectStore.get(id));
   return result instanceof Blob ? result : null;
 }
 
-async function deleteBlob(store: string, id: string): Promise<void> {
+export async function deleteBlob(store: MediaStore, id: string): Promise<void> {
   await runTransaction(store, 'readwrite', objectStore => objectStore.delete(id) as IDBRequest<undefined>);
 }
 

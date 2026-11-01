@@ -1,0 +1,715 @@
+/* 首次引导。
+ *
+ * 视觉基调与主界面一致：同一套 CSS 变量、同样的卡片圆角与边框、同样的字号阶梯。
+ * 引导页比常规页面更「安静」——没有侧栏、没有背景层，只有一张居中的卡片，因为
+ * 新用户此刻还不该被启动器的信息密度吓到。
+ */
+
+.page {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  /* 极矮的窗口（横屏手机）里内容会超过一屏，允许整页滚动而不是裁掉按钮。 */
+  overflow-y: auto;
+  padding: clamp(12px, 3vw, 32px);
+  background: var(--color-bg-primary);
+}
+
+/*
+ * 卡片。
+ *
+ * 宽度上限 560px：再宽的话每行文字会超过 75 个字符，阅读时眼睛要来回扫；再窄
+ * 则内存滑条与四选一的预设会挤成两行。
+ *
+ * 高度用较小的 `min-height` 而不是写死 560px：短步骤（语言、模型）内容只有两百
+ * 多像素，撑到 560 会在中间留下一大块空白，看起来像没加载完。各步骤之间高度会
+ * 变，这是正常的——内容确实不一样长，强行拉平才是虚假的一致。
+ */
+.shell {
+  display: flex;
+  width: min(560px, 100%);
+  min-height: min(420px, calc(100dvh - 2 * clamp(12px, 3vw, 32px)));
+  flex-direction: column;
+  gap: 18px;
+  padding: clamp(20px, 3.5vw, 30px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl, 16px);
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+/* --- 进度轨 -------------------------------------------------------------- */
+
+.progress {
+  display: flex;
+  gap: 6px;
+}
+
+/*
+ * 分段进度。
+ *
+ * 每段是一个可点的按钮（点已走过的步骤可以直接回去改），但视觉上只是一条细线，
+ * 不显示数字。`flex: 1` 让六段等长——长度本身就在传达「还有几段」。
+ */
+.progressDot {
+  display: block;
+  height: 14px;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.progressDot > span {
+  display: block;
+  height: 4px;
+  border-radius: 99px;
+  background: var(--color-border);
+  transition: background .2s ease;
+}
+
+.progressDot:hover > span {
+  background: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+}
+
+.progressDone > span {
+  background: color-mix(in srgb, var(--color-primary-500) 55%, var(--color-border));
+}
+
+.progressCurrent > span {
+  background: var(--color-primary-solid);
+}
+
+.progressDot:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary-500) 60%, transparent);
+  outline-offset: 2px;
+  border-radius: 99px;
+}
+
+/* --- 标题 ---------------------------------------------------------------- */
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.stepIcon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--color-primary-500) 12%, var(--color-bg-secondary));
+  color: var(--color-primary-text);
+}
+
+.head > div {
+  min-width: 0;
+}
+
+.title {
+  margin: 2px 0 0;
+  color: var(--color-text-primary);
+  font-size: clamp(17px, 2.4vw, 20px);
+  font-weight: 650;
+  letter-spacing: -.01em;
+}
+
+/* 标题被脚本聚焦（切换步骤时），但不需要可见的焦点环——它不是可交互元素。 */
+.title:focus {
+  outline: none;
+}
+
+.hint {
+  margin: 5px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+/* --- 正文 ---------------------------------------------------------------- */
+
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 16px;
+  /* 内容超过卡片时内部滚动，而不是把底部按钮顶出视口。 */
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+/* --- 欢迎页 -------------------------------------------------------------- */
+
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 0;
+  text-align: center;
+}
+
+.logo {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--color-primary-700), var(--color-secondary-600));
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -1px;
+}
+
+.welcomeText {
+  margin: 0;
+  max-width: 42ch;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+}
+
+.featureList {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 8px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.featureList li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  text-align: left;
+}
+
+.featureList svg {
+  flex: none;
+  color: var(--color-primary-text);
+}
+
+/* --- 语言 ---------------------------------------------------------------- */
+
+.options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 13px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .16s, background .16s, color .16s;
+}
+
+.option:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+  color: var(--color-text-primary);
+}
+
+.optionActive,
+.optionActive:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 60%, var(--color-border));
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+  font-weight: 600;
+}
+
+.optionLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- 通用字段 ------------------------------------------------------------ */
+
+.fieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fieldLabel {
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+/*
+ * 分段选择。
+ *
+ * 用 grid 等宽而不是 flex：两档、三档并存时，等宽让「选中」的位置本身成为信号，
+ * 切换时滑块的落点可预期。与设置面板里的分段控件同一套视觉。
+ */
+.segmented {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-secondary);
+}
+
+.segment {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: calc(var(--radius-base) - 2px);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background .16s, color .16s;
+}
+
+.segment:hover {
+  color: var(--color-text-primary);
+}
+
+.segmentActive,
+.segmentActive:hover {
+  background: var(--color-bg-elevated);
+  color: var(--color-primary-tonal-text);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm, 0 1px 3px rgb(0 0 0 / .08));
+}
+
+/* --- 主题预设 ------------------------------------------------------------ */
+
+.presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.preset {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .16s, background .16s, color .16s;
+}
+
+.preset i {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.preset span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset svg {
+  flex: none;
+  color: var(--color-primary-text);
+}
+
+.preset:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 40%, var(--color-border));
+  color: var(--color-text-primary);
+}
+
+.presetActive,
+.presetActive:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 60%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary-500) 7%, var(--color-bg-elevated));
+  color: var(--color-text-primary);
+}
+
+/* --- 配色预览 ------------------------------------------------------------ */
+
+/*
+ * 用当前强调色渲染一小块界面，而不是只给一排色块。
+ * 强调色影响的是按钮、选中态与强调文字，只有把它们放在一起看，才能判断「这个
+ * 颜色配这个明暗是否舒服」。
+ */
+.preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-secondary);
+}
+
+.previewBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 11px;
+  border-radius: 99px;
+  background: var(--demo-accent, var(--color-primary-solid));
+  color: #0a0e14;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.previewBar {
+  width: 44px;
+  height: 5px;
+  flex: none;
+  border-radius: 99px;
+  background: var(--demo-accent, var(--color-primary-solid));
+}
+
+.previewText {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* --- 内存 ---------------------------------------------------------------- */
+
+.memoryControl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-secondary);
+}
+
+/* 自动模式下整块变灰但数值保留：自动值本身是有意义的结果，藏起来反而更糟。 */
+.memoryDisabled {
+  opacity: .62;
+}
+
+.memoryHead {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.memoryValue {
+  color: var(--color-text-primary);
+  font-size: var(--text-xl);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.memoryTotal {
+  color: var(--color-text-disabled);
+  font-size: var(--text-sm);
+}
+
+.slider {
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slider:disabled {
+  cursor: not-allowed;
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 99px;
+  background: linear-gradient(
+    to right,
+    var(--color-primary-solid) 0 var(--fill, 0%),
+    var(--color-border) var(--fill, 0%) 100%
+  );
+}
+
+.slider::-moz-range-track {
+  height: 5px;
+  border-radius: 99px;
+  background: var(--color-border);
+}
+
+.slider::-moz-range-progress {
+  height: 5px;
+  border-radius: 99px;
+  background: var(--color-primary-solid);
+}
+
+.slider::-webkit-slider-thumb {
+  width: 15px;
+  height: 15px;
+  margin-top: -5px;
+  appearance: none;
+  border: 2px solid var(--color-bg-elevated);
+  border-radius: 50%;
+  background: var(--color-primary-solid);
+  box-shadow: 0 1px 3px rgb(0 0 0 / .25);
+}
+
+.slider::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--color-bg-elevated);
+  border-radius: 50%;
+  background: var(--color-primary-solid);
+}
+
+/* --- Java ---------------------------------------------------------------- */
+
+.javaStatus,
+.modelCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-secondary);
+}
+
+.javaStatus > svg,
+.modelCard > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--color-primary-text);
+}
+
+.javaStatus > div,
+.modelCard > div {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.javaStatus strong,
+.modelCard strong {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.javaStatus span,
+.modelCard span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.javaList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.javaList li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+
+.javaVersion {
+  flex: none;
+  min-width: 26px;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--color-primary-500) 16%, transparent);
+  color: var(--color-primary-text);
+  font-size: 10px;
+  font-weight: 650;
+  text-align: center;
+}
+
+/* 路径可能很长：单行省略，完整值在 title 里。 */
+.javaPath {
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inlineActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.modelBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 3px 9px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--color-success-500, #10b981) 16%, transparent);
+  color: color-mix(in srgb, var(--color-success-500, #10b981) 70%, var(--color-text-primary));
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* --- 底部操作 ------------------------------------------------------------ */
+
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  /* 窄卡片里左右两组按钮放不下时换行，而不是把「跳过」挤成两行文字。 */
+  flex-wrap: wrap;
+  padding-top: 14px;
+  border-top: 1px solid var(--color-border);
+}
+
+.footLeft,
+.footRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.footRight {
+  margin-left: auto;
+}
+
+/* --- 说明文字 ------------------------------------------------------------ */
+
+.asideNote {
+  margin: 0;
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  line-height: 1.65;
+}
+
+/* --- 窄屏 ---------------------------------------------------------------- */
+
+/*
+ * 窄屏只做一件事：把两列降成一列。
+ * 卡片本身已经 `width: min(560px, 100%)`，所以横向不需要额外处理；这里要防的是
+ * 四选一的预设和两选一的语言在 320px 下被压得只剩半个词。
+ */
+@media (max-width: 460px) {
+  .options,
+  .presets {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foot {
+    /* 按钮整行排开：小屏上「跳过」和「下一步」并排容易误触。 */
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .footLeft,
+  .footRight {
+    margin-left: 0;
+  }
+
+  .footRight {
+    justify-content: flex-end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progressDot > span,
+  .option,
+  .segment,
+  .preset {
+    transition: none;
+  }
+}
+
+/* 「这台电脑跑不动模型」的提示。
+ *
+ * 用警示色而不是错误红：这不是错误，是一句需要被读到的事实。它比普通说明更重
+ * （有底色和边框），因为用户此刻正要做一个 2 GB 的下载决定。
+ */
+.modelWarn {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-warning-500, #f59e0b) 45%, var(--color-border));
+  border-radius: var(--radius-base);
+  background: color-mix(in srgb, var(--color-warning-500, #f59e0b) 9%, var(--color-bg-secondary));
+}
+
+.modelWarn > svg {
+  flex: none;
+  margin-top: 1px;
+  color: color-mix(in srgb, var(--color-warning-500, #f59e0b) 80%, var(--color-text-primary));
+}
+
+.modelWarn > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.modelWarn strong {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.modelWarn span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}

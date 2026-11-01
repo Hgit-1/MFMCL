@@ -26,12 +26,11 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Play } from 'lucide-react';
 import { Button } from './Button';
-import { LoaderIcon } from './LoaderIcon';
-import { BlockIcon } from './BlockIcon';
-import { VANILLA_BLOCK } from '../utils/store/blocks';
+import { InstanceIcon } from './InstanceIcon';
 import { useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
 import type { LoaderIcon as LoaderIconSpec } from '../utils/store/loaders';
+import type { InstanceIconRecord } from '../utils/instanceIcons';
 import type { Account, GameInstance } from '../types';
 import styles from './Dashboard.module.css';
 
@@ -53,6 +52,10 @@ interface DashboardProps {
   onOpenLibrary: () => void;
   /** 实例加载器对应的图标配置。 */
   iconForLoader: (loader: string | undefined) => LoaderIconSpec;
+  /** 各实例的自定义图标元数据；没有的走加载器标志。 */
+  instanceIcons: Record<string, InstanceIconRecord>;
+  /** 元数据在、图读不出来时清掉那条记录。 */
+  onIconMissing: (instanceId: string) => void;
 }
 
 /** 启动阶段的展示文案。与 App 里的进度条共用同一套键。 */
@@ -75,6 +78,8 @@ export function Dashboard({
   onCreate,
   onOpenLibrary,
   iconForLoader,
+  instanceIcons,
+  onIconMissing,
 }: DashboardProps) {
   const { t } = useI18n();
 
@@ -157,11 +162,13 @@ export function Dashboard({
       <div className={styles.stage}>
         <div className={styles.hero}>
           <div className={styles.heroIcon}>
-            <LoaderIcon
-              {...iconForLoader(target.loader)}
+            <InstanceIcon
+              instanceId={target.id}
+              loaderIcon={iconForLoader(target.loader)}
+              customIcon={instanceIcons[target.id]}
               size={72}
               muted={target.status === 'error'}
-              fallback={<BlockIcon {...VANILLA_BLOCK} size={72} />}
+              onMissing={() => onIconMissing(target.id)}
             />
           </div>
           <h1 className={styles.heroName}>{target.name}</h1>

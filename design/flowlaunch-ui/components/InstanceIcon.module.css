@@ -1,0 +1,46 @@
+/* 实例图标：自定义图片那一支的样式。
+ *
+ * 只描述「用户选的一整张图」，加载器标志的框、底板、像素化在 LoaderBadge.module.css
+ * 里。两者分开是因为视觉规则完全不同（见 InstanceIcon.tsx 头部说明）。
+ */
+
+/*
+ * 自定义图标铺满图标框并裁掉多余部分。
+ *
+ * `object-fit: cover` 而不是 `contain`：用户选的是头像式的图片，留白会让它看起来
+ * 比旁边卡片的图标小一圈。裁切是这里正确的取舍——图标框的形状由列表布局决定，
+ * 不应该为了迁就某张图的宽高比而变形。
+ *
+ * 圆角跟调用方的图标框一致（`--radius-base`），这样图片边缘不会盖住框的圆角。
+ * 这里写死而不是继承，因为 `<img>` 不吃父级的 border-radius——父级的
+ * `overflow: hidden` 虽然也能裁，但那样每次都要依赖父级有设置，容易在某个新
+ * 入口漏掉。
+ */
+.custom {
+  display: block;
+  border-radius: var(--radius-base);
+  object-fit: cover;
+  object-position: center;
+  user-select: none;
+}
+
+/*
+ * 加载中的占位。
+ *
+ * 用一层极淡的底色而不是旋转图标：图标框只有 48-64px，一个 spinner 在里面会
+ * 显得很吵，而这张图通常在几十毫秒内就出来了。`aria-hidden` 由调用方给。
+ */
+.placeholder {
+  display: block;
+  border-radius: var(--radius-base);
+  background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+}
+
+/*
+ * 去色。与 LoaderBadge 的 `.muted` 用同一组数值，保证同一个实例在游戏库与
+ * 主页上的「坏掉」状态看起来一致。
+ */
+.muted {
+  filter: grayscale(1) brightness(0.92);
+  opacity: 0.55;
+}
