@@ -558,6 +558,7 @@ impl Entitlements {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{checked_response_strict, is_loopback_url};
 
     fn client() -> MicrosoftClient {
         MicrosoftClient::new(
@@ -619,16 +620,13 @@ mod tests {
                 .unwrap();
             client.endpoints = MicrosoftEndpoints {
                 /*
-                 * CodeQL 报 `rust/cleartext-transmission`（「OAuth 令牌通过 HTTP 发送」）。
-                 * 这是误报，且只发生在测试里：`base` 来自 `mock_server`，绑定
-                 * 127.0.0.1 的临时端口，且这些断言用的是假凭据。生产路径的端点由
-                 * 上面的 `TOKEN_URL` 固定为 HTTPS，`MicrosoftEndpoints` 是私有类型，
-                 * 外部无法改写。
+                 * 测试指向本地假服务器（`http://127.0.0.1`，临时端口，假凭据）。
                  *
-                 * 用 `lgtm` 按规则 id 精确抑制，而不是整段忽略——同文件里将来真的
-                 * 引入明文传输时仍然会报。
+                 * 这里不再需要抑制注释：生产路径的明文传输由 `checked_response`
+                 * 在运行时拒绝（见 `lib.rs` 里那段说明），而回环地址的例外只在
+                 * 测试构建里存在。约束落实在代码里，就不需要靠注释让扫描闭嘴。
                  */
-                oauth_token: format!("{base}/0"), // lgtm[rust/cleartext-transmission]
+                oauth_token: format!("{base}/0"),
                 xbox: format!("{base}/1"),
                 xsts: format!("{base}/2"),
                 minecraft_login: format!("{base}/3"),
@@ -1002,5 +1000,63 @@ mod tests {
         assert!(token.user_hash("Xbox").is_err());
         token.display_claims.xui.clear();
         assert!(token.user_hash("Xbox").is_err());
+    }
+
+    /// 明文传输必须在**拿到响应之后**被拒绝。
+    ///
+    /// 这条测试守的是 `checked_response` 里那道运行时约束。没有它的话，一个被改
+    /// 成 `http://` 的端点（手误、环境变量覆盖、未来的重构）会把 refresh token
+    /// 明文送出去，而测试全绿——假服务器本来就不在乎协议。
+    ///
+    /// ## 为什么不能用一个不存在的域名
+    ///
+    /// 第一版用的是 `http://example.invalid`，结果拿到的是 `Network` 而不是
+    /// `InsecureTransport`——DNS 就失败了，请求根本没到「检查协议」那一步。那种
+    /// 测试只在「拦截逻辑存在」时通过，删掉拦截也照样通过，等于什么都没测。
+    ///
+    /// 所以这里起一个**真的能连上的**明文服务器（非回环豁免之外的主机名做不到，
+    /// 因此改用一个显式构造的 URL，让 `checked_response` 的检查成为唯一可能失败
+    /// 的点）：服务器返回 200 和一个合法令牌，客户端必须拒绝它。
+    #[tokio::test]
+    async fn plaintext_endpoints_are_refused() {
+        /*
+         * 起一个真的能连上的明文服务器，然后把回环豁免**关掉**。
+         *
+         * 这是关键：如果豁免还开着（`cfg!(test)` 的默认行为），这个请求会正常
+         * 成功，测试就只能在「拦截存在」时通过——删掉拦截它照样绿。传 `false`
+         * 之后，「响应到手但协议是 http」成了唯一可能失败的环节。
+         */
+        let (base, _server) = crate::tests::mock_server(vec![(
+            200,
+            serde_json::json!({"access_token": "should-never-be-used", "token_type": "Bearer"}),
+        )])
+        .await;
+        let url = Url::parse(&format!("{base}/oauth")).unwrap();
+        let response = reqwest::Client::new().post(url).send().await;
+        let error = match checked_response_strict(response, "Microsoft OAuth").await {
+            Ok(_) => panic!("a plaintext response must not be accepted"),
+            Err(error) => error,
+        };
+        // 拒绝的理由要具体：只说「网络失败」会把一个安全拦截伪装成网络抖动，
+        // 用户和开发者都会去查网络，而不是看端点配置。
+        assert!(
+            matches!(error, AuthError::InsecureTransport(_)),
+            "expected InsecureTransport, got {error:?}"
+        );
+    }
+
+    /// 回环豁免只在测试构建里生效。
+    ///
+    /// `cfg!(test)` 为 true 时它成立；这条断言的价值在于把「豁免的条件」写成
+    /// 可读的代码，将来有人想在生产里放宽时，会先看到这里写着「仅测试」。
+    #[test]
+    fn loopback_plaintext_is_only_excused_in_tests() {
+        let loopback = reqwest::Url::parse("http://127.0.0.1:8080/token").unwrap();
+        let remote = reqwest::Url::parse("http://example.invalid/token").unwrap();
+        // 允许时才豁免；不允许时一律拒绝。
+        assert!(is_loopback_url(&loopback, true));
+        assert!(!is_loopback_url(&remote, true));
+        assert!(!is_loopback_url(&loopback, false));
+        assert!(!is_loopback_url(&remote, false));
     }
 }

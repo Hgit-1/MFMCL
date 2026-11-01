@@ -145,6 +145,10 @@ pub enum AuthError {
     InvalidInput(&'static str),
     #[error("authentication network request failed")]
     Network,
+    /// 响应来自非 HTTPS 传输。请求体里带着令牌，明文往返等于把它们交给路径上的
+    /// 任何人，所以这里宁可失败也不继续。
+    #[error("refusing to handle a {0} response over an insecure transport")]
+    InsecureTransport(&'static str),
     #[error("{service} returned HTTP {status}")]
     Http { service: &'static str, status: u16 },
     #[error("{0} returned an invalid authentication response")]
@@ -191,7 +195,57 @@ pub(crate) async fn checked_response(
     response: Result<Response, reqwest::Error>,
     service: &'static str,
 ) -> Result<Response, AuthError> {
+    checked_response_with(response, service, cfg!(test)).await
+}
+
+/// 与 `checked_response` 相同，但可以显式关掉回环豁免。
+///
+/// 只有测试用它：测试里唯一能连上的服务器就在回环上，如果豁免不可关闭，那么
+/// 「拒绝明文」这条分支永远走不到，删掉拦截也不会让任何测试变红。
+#[cfg(test)]
+pub(crate) async fn checked_response_strict(
+    response: Result<Response, reqwest::Error>,
+    service: &'static str,
+) -> Result<Response, AuthError> {
+    checked_response_with(response, service, false).await
+}
+
+/// `checked_response` 的实现，回环豁免与否由调用方决定。
+///
+/// 拆出参数是为了能测：如果豁免硬编码成 `cfg!(test)`，那么测试里唯一能连上的
+/// 服务器（回环地址）恰好总是被豁免，拦截分支就永远走不到——删掉拦截，测试照样
+/// 全绿。让测试显式传 `false`，验证的才是真正那条拒绝路径。
+async fn checked_response_with(
+    response: Result<Response, reqwest::Error>,
+    service: &'static str,
+    allow_loopback: bool,
+) -> Result<Response, AuthError> {
     let response = response.map_err(|_| AuthError::Network)?;
+    /*
+     * 拒绝把响应交给调用方，除非它来自受信任的传输。
+     *
+     * ## 为什么在这里检查
+     *
+     * 这个函数是所有认证响应的**唯一**必经之路（OAuth、Xbox、XSTS、登录、
+     * 拥有的游戏、档案，六处都从这里走）。请求体里带着 refresh token 和 access
+     * token，一次明文往返就等于把它们交给路径上的任何人。
+     *
+     * 计划里的调用方都在编译期固定成 HTTPS 常量，但「现在没有明文调用」和「不会
+     * 出现明文调用」是两回事：`MicrosoftEndpoints` 可被内部代码改写，将来一次
+     * 重构、一个环境变量覆盖、一次忘记加 `s` 的手改，都会把令牌送出去，而且
+     * 事后从代码里读不出来——它只是另一个 URL 字符串。
+     *
+     * 所以把约束放在运行时：明文响应一律拒绝。代码扫描报的也是这一点
+     * （`rust/cleartext-transmission`）；与其用抑制注释让它闭嘴，不如让它指的
+     * 那条路径根本走不通。
+     *
+     * 回环地址例外，只在测试构建里：端到端测试用本地假服务器（`http://127.0.0.1`）
+     * 验证整条链路，而它不出本机、不经过任何网络接口。发布构建中 `cfg!(test)`
+     * 为 false，这个分支被编译器删掉。
+     */
+    if response.url().scheme() != "https" && !is_loopback_url(response.url(), allow_loopback) {
+        return Err(AuthError::InsecureTransport(service));
+    }
     if !response.status().is_success() {
         return Err(AuthError::Http {
             service,
@@ -199,6 +253,20 @@ pub(crate) async fn checked_response(
         });
     }
     Ok(response)
+}
+
+/// 回环地址上的明文 URL 是否被豁免。
+///
+/// `allow` 由 `checked_response` 传入 `cfg!(test)`，所以发布构建里恒为 false。
+/// 单独成函数而不是内联，是为了让「这个例外只存在于测试构建」一眼可见。
+fn is_loopback_url(url: &reqwest::Url, allow: bool) -> bool {
+    if !allow {
+        return false;
+    }
+    url.scheme() == "http"
+        && url
+            .host_str()
+            .is_some_and(|host| host == "127.0.0.1" || host == "localhost")
 }
 pub(crate) async fn decode<T: serde::de::DeserializeOwned>(
     response: Response,
