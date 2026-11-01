@@ -203,6 +203,27 @@ pub fn validate_instance_overrides(overrides: &InstanceOverrides) -> Result<(), 
             return Err("启动前命令不能包含换行或 NUL 字符。".to_owned());
         }
     }
+    /*
+     * 游戏目录。
+     *
+     * 必须拒绝相对路径：这个值会成为 `--gameDir` 和工作目录，相对路径的解释依赖
+     * 进程启动时的工作目录——那是启动器自己的目录，不是用户看到的那个。结果是
+     * 「填了相对路径，游戏把存档写到了一个想不到的地方」。空串同样是无效覆盖，
+     * 界面用空串表示「回到默认」，不该落库。
+     */
+    if let Some(directory) = &overrides.game_dir {
+        let trimmed = directory.trim();
+        if trimmed.is_empty() {
+            return Err("游戏目录不能为空；留空请直接清除这项覆盖。".to_owned());
+        }
+        if trimmed.len() > 4096 {
+            return Err("游戏目录路径过长。".to_owned());
+        }
+        let path = std::path::Path::new(trimmed);
+        if !path.is_absolute() {
+            return Err("游戏目录必须是绝对路径。".to_owned());
+        }
+    }
     Ok(())
 }
 
@@ -295,6 +316,14 @@ pub fn count_instance_overrides(overrides: &InstanceOverrides) -> usize {
     }
     if overrides
         .pre_launch_command
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty())
+    {
+        count += 1;
+    }
+    // 空串表示「回到默认」，与留空等效，不算一次改动。
+    if overrides
+        .game_dir
         .as_deref()
         .is_some_and(|text| !text.trim().is_empty())
     {
@@ -710,5 +739,51 @@ mod tests {
             ..InstanceOverrides::default()
         };
         assert_eq!(count_instance_overrides(&blank), 0);
+    }
+
+    /// 游戏目录只接受绝对路径。
+    ///
+    /// 相对路径会被解释成「相对于启动器进程的工作目录」，而用户以为它是相对于
+    /// 自己填的那个位置。结果是存档写到一个谁都想不到的地方，事后很难找回来。
+    #[test]
+    fn relative_game_directory_is_rejected() {
+        let relative = InstanceOverrides {
+            game_dir: Some("saves/another".into()),
+            ..InstanceOverrides::default()
+        };
+        assert!(
+            validate_instance_overrides(&relative).is_err(),
+            "相对路径必须被拒绝"
+        );
+
+        let absolute = InstanceOverrides {
+            game_dir: Some("/home/someone/.minecraft/shared".into()),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&absolute).is_ok());
+    }
+
+    #[test]
+    fn blank_game_directory_is_rejected_rather_than_silently_ignored() {
+        // 界面用空串表示「清除覆盖」；它不该作为一条记录落库，否则 `--gameDir`
+        // 会变成空参数，游戏退回 JVM 的默认工作目录。
+        let blank = InstanceOverrides {
+            game_dir: Some("   ".into()),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&blank).is_err());
+    }
+
+    /// 游戏目录算一项自定义，且指向实例私有目录时不影响其他设置。
+    #[test]
+    fn game_directory_counts_as_one_customisation() {
+        let overrides = InstanceOverrides {
+            game_dir: Some("/tmp/separate".into()),
+            ..InstanceOverrides::default()
+        };
+        assert_eq!(count_instance_overrides(&overrides), 1);
+        // 解析后的全局设置不受影响：目录挂在实例记录上，不参与 settings 合并。
+        let resolved = resolve_settings(&LauncherSettings::default(), &overrides);
+        assert_eq!(resolved.memory_mb, LauncherSettings::default().memory_mb);
     }
 }

@@ -175,6 +175,17 @@ pub struct LauncherSettings {
     pub announcement_policy: UpdatePolicy,
     #[serde(default)]
     pub cache_directory: Option<PathBuf>,
+    /// 游戏文件的根目录，默认 `~/.minecraft`。
+    ///
+    /// 为什么默认不是启动器自己的数据目录：绝大多数玩家已经有 `~/.minecraft`，
+    /// 里面放着手动装的模组、存档和朋友给的整合包。把实例装到
+    /// `<app-data>/instances/<uuid>/game` 意味着启动器对这个既有目录视而不见，
+    /// 用户要重新下载一遍同样的游戏，而且两边的存档互不相通。
+    ///
+    /// 隔离仍然存在：`instances/<id>` 里放版本与 libraries 的实例私有部分，
+    /// 共享根目录只承载原版客户端、资源和用户可见的 `.minecraft` 内容。
+    #[serde(default)]
+    pub game_root: Option<PathBuf>,
     /// 是否把启动器自身的日志写到固定文件（默认关闭）。
     ///
     /// 这个字段取代了原来的 `anonymous_usage`：那个开关没有任何收集实现，只是
@@ -277,6 +288,7 @@ impl Default for LauncherSettings {
             auto_language: true,
             announcement_policy: UpdatePolicy::Notify,
             cache_directory: None,
+            game_root: None,
             launcher_log_enabled: false,
             clear_finished_tasks: true,
             llama_server_path: None,
@@ -384,6 +396,15 @@ pub struct InstanceOverrides {
     pub game_args: Option<String>,
     /// Command run before the game process starts.
     pub pre_launch_command: Option<String>,
+    /// 本实例的游戏目录。
+    ///
+    /// 每个实例单独一份：`~/.minecraft` 作为默认值适合「一个主存档」，但用户
+    /// 常会想让某个实例用独立的目录——装了大量模组的测试实例不该把 `mods/` 和
+    /// 主实例混在一起，整合包也常常自带目录要求。
+    ///
+    /// 空字符串表示「删除这个覆盖，回到默认」。用 `Some("")` 而不是 `None` 来表达
+    /// 清除，是因为 `None` 已经表示「字段不存在」，两者在合并时语义不同。
+    pub game_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

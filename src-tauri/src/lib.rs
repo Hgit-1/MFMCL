@@ -494,6 +494,13 @@ fn create_instance(
     store: State<'_, LauncherStore>,
 ) -> Result<launcher_core::InstanceRecord, String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    /*
+     * 游戏根目录来自设置，默认为 `~/.minecraft`（在 `create_instance` 内部解析）。
+     *
+     * 这里不再自己算一遍：三条创建路径（新建、整合包导入、备份还原）都走
+     * `create_instance`，把根目录的解析集中在那儿，漏传一处就不会出现
+     * 「同一启动器建的实例分散在两个目录」。
+     */
     store
         .create_instance(
             &CreateInstanceInput {
@@ -790,6 +797,23 @@ async fn launch_instance(
         return Err("离线账户启动必须先由用户确认。".into());
     }
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    /*
+     * 应用实例级的游戏目录覆盖。
+     *
+     * 覆盖存在 `InstanceOverrides` 而不是 `InstanceRecord`：记录里的 `game_dir`
+     * 是创建时的默认值，用户随时可能改，而改记录需要同时挪动磁盘内容。
+     * 启动时按覆盖值替换最直接——游戏目录只是传给 JVM 的 `--gameDir` 与工作目录，
+     * 不涉及移动文件，所以用户改了立刻生效，也不会丢东西。
+     */
+    let mut instance = instance;
+    if let Some(dir) = store
+        .load_instance_overrides(&instance_id)
+        .ok()
+        .and_then(|overrides| overrides.game_dir)
+        .filter(|raw| !raw.trim().is_empty())
+    {
+        instance.game_dir = std::path::PathBuf::from(dir.trim());
+    }
     let version_dir = instance
         .instance_dir
         .join("versions")

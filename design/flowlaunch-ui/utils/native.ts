@@ -90,6 +90,8 @@ export interface LauncherSettings {
   autoLanguage: boolean
   announcementPolicy: UpdatePolicy
   cacheDirectory: string | null
+  /** 游戏根目录（默认 ~/.minecraft）；null 表示用默认值。 */
+  gameRoot: string | null
   launcherLogEnabled: boolean
   /** 启动时是否清掉已结束的下载任务记录。 */
   clearFinishedTasks: boolean
@@ -150,6 +152,13 @@ export interface InstanceOverrides {
   extraJvmArgs?: string | null
   gameArgs?: string | null
   preLaunchCommand?: string | null
+  /**
+   * 本实例的游戏目录。
+   *
+   * 空串表示「清除覆盖，回到默认」。与 `null` 区分：`null` 是「没有这个字段」，
+   * 空串是用户主动清空。
+   */
+  gameDir?: string | null
 }
 
 /** 对应 Rust `InstanceSettingsView`：原始覆盖表 + 全局值 + 合并后的生效值。 */
@@ -549,6 +558,7 @@ export function fallbackSettings(): LauncherSettings {
     autoLanguage: true,
     announcementPolicy: 'notify',
     cacheDirectory: null,
+    gameRoot: null,
     launcherLogEnabled: false,
     clearFinishedTasks: true,
     llamaServerPath: null,
@@ -630,6 +640,7 @@ export function prefsToSettings(prefs: LauncherPrefs, base: LauncherSettings): L
     showDebugHints: prefs.showDebugHints,
     announcementPolicy: prefs.announcementPolicy as UpdatePolicy,
     cacheDirectory: prefs.cacheDirectory || null,
+    gameRoot: prefs.gameDirectory.trim() || null,
     launcherLogEnabled: prefs.launcherLogEnabled,
     clearFinishedTasks: prefs.clearFinishedTasks,
     llamaServerPath: prefs.llamaServerPath || null,

@@ -43,6 +43,14 @@ export interface InstanceOverrides {
   gameArgs?: string;
   /** 启动前执行的命令。 */
   preLaunchCommand?: string;
+  /**
+   * 本实例的游戏目录。
+   *
+   * 默认不设（用共享根目录下的 `shared`）。设了就替换 `--gameDir` 与工作目录，
+   * 让这个实例的存档、模组与主实例分开——装了几百个模组的测试实例不该污染
+   * 主存档的 `mods/`。
+   */
+  gameDir?: string;
 }
 
 export type OverrideKey = keyof InstanceOverrides;
@@ -112,6 +120,16 @@ export function normalizeOverrides(raw: unknown): InstanceOverrides {
 
   const preLaunch = optionalString(raw.preLaunchCommand, 4096);
   if (preLaunch !== undefined) result.preLaunchCommand = preLaunch;
+
+  /*
+   * 游戏目录。
+   *
+   * 空串不保留：界面上把开关切到「自定义」时会先写入空串，等用户填路径。
+   * 把空串当成有效覆盖会让 `--gameDir` 变成空参数，游戏会退回到 JVM 的默认
+   * 工作目录，行为变得不可预测。留空即继承。
+   */
+  const gameDir = optionalString(raw.gameDir, 4096);
+  if (gameDir !== undefined && gameDir.trim()) result.gameDir = gameDir;
 
   return result;
 }

@@ -36,6 +36,14 @@ export interface GameInstance {
   modCount: number;
   status: 'ready' | 'installing' | 'updating' | 'error';
   icon?: string;
+  /**
+   * 这个实例实际使用的游戏目录。
+   *
+   * 来自后端的 `InstanceRecord.gameDir`（默认 `<gameRoot>/shared`）。实例设置页
+   * 用它作为「未覆盖时用哪个目录」的展示值——只显示一个空输入框的话，用户无法
+   * 知道默认值到底是什么。
+   */
+  gameDir?: string;
 }
 
 // 模组

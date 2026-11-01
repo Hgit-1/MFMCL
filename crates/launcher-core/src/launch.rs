@@ -601,6 +601,33 @@ pub fn detect_java_runtime(
     Err(last_error.unwrap_or(LaunchError::JavaNotFound))
 }
 
+/// 用户主目录，跨平台。
+///
+/// 不用 `dirs` crate：整个项目只需要这一个值，加一个依赖不划算。Windows 上
+/// `HOME` 常常不存在（那是 Unix 的变量），所以必须回退到 `USERPROFILE`；
+/// 两个都拿不到时返回 `None`，由调用方决定兜底值。
+pub fn home_directory() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+/// 默认的游戏根目录：`~/.minecraft`。
+///
+/// 这既是原版启动器的默认位置，也是玩家手动装了多年的那个目录。用作共享根目录
+/// 意味着启动器不会对既有安装视而不见——不用重下几个 GB，存档和手动装的模组也
+/// 都在原处。拿不到主目录时退回 `None`，让调用方用应用数据目录兜底。
+pub fn default_game_root() -> Option<PathBuf> {
+    home_directory().map(|home| home.join(".minecraft"))
+}
+
 fn java_candidates() -> Vec<PathBuf> {
     let executable = if cfg!(windows) { "java.exe" } else { "java" };
     let mut candidates = Vec::new();

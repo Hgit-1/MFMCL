@@ -27,8 +27,8 @@ pub use installer::{
 };
 pub use launch::{
     JavaRuntimeInfo, LaunchError, LaunchIdentity, PreparedLaunch, SystemMemoryInfo,
-    detect_java_runtime, discover_java_runtimes, inspect_java_path, prepare_authenticated_launch,
-    prepare_offline_launch, system_memory_info,
+    default_game_root, detect_java_runtime, discover_java_runtimes, home_directory,
+    inspect_java_path, prepare_authenticated_launch, prepare_offline_launch, system_memory_info,
 };
 pub use model::{
     AccountKind, AccountProfile, CreateInstanceInput, DownloadSettings, DownloadTask,
