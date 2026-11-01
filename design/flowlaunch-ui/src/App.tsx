@@ -1578,7 +1578,18 @@ function App() {
                       */}
                       {item === 'vanilla' ? <VanillaIcon size={18} /> : CATEGORY_ICONS[item]}
                     </span>
-                    <span>{t(CATEGORY_KEYS[item])}</span>
+                    <span>
+                      {/*
+                        Vanilla 分类在抽屉里显示为「版本」，而不是「原版游戏」。
+                        这一格回答的是「我要下载什么内容」，而这一项的实际情况是
+                        「按版本号安装原版游戏」——与其他四项（Mod / 整合包 /
+                        资源包 / 地图）并列时，用户扫视的是「类型」，写「原版游戏」
+                        既长又容易被读成「整个启动器是原版」。
+                        商店页内部的同一分类早就用 `store.versionPicker`（「版本」），
+                        两处文案必须一致，否则同一个分类在一屏里叫两个名字。
+                      */}
+                      {t(item === 'vanilla' ? 'store.versionPicker' : CATEGORY_KEYS[item])}
+                    </span>
                     {storeCategory === item && <Check className={styles.storeMenuCheck} size={15} />}
                   </button>
                 ))}
