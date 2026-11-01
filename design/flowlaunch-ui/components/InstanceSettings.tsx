@@ -14,7 +14,7 @@
 //     不必滚过一堆灰掉的输入框。
 //   - 所有控件都由 SegmentedChoice 渲染，保证同一列里的高度、圆角、字号一致。
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Coffee,
   HardDrive,
@@ -39,6 +39,7 @@ import { errorText, formatBytes, resetInstanceSettings } from '../utils/native';
 import type { LauncherPrefs } from '../utils/launcherPrefs';
 import {
   autoAllocateMb,
+  detectDeviceMemory,
   deviceMemoryMbSync,
   gbToSliderIndex,
   lastKnownUsedMb,
@@ -204,12 +205,24 @@ export function InstanceSettings({
     }
   };
 
-  // 设备内存只读一次，避免每次输入尺寸都触发一次探测。
-  const totalGb = useMemo(() => Math.max(2, deviceMemoryMbSync() / 1024), []);
+  // 设备内存只探测一次，避免每次输入尺寸都触发一次探测。
+  //
+  // 必须用异步探测而不是同步估算：`navigator.deviceMemory` 在 Chromium 里被封顶
+  // 在 8 GB，64 GB 的机器会在这里显示成 8 GB，滑条上限和自动值跟着一起错。
+  const [deviceTotalMb, setDeviceTotalMb] = useState(() => deviceMemoryMbSync());
+  useEffect(() => {
+    let alive = true;
+    void detectDeviceMemory().then(result => {
+      if (alive && result.source !== 'manual') setDeviceTotalMb(result.totalMb);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  const totalGb = Math.max(2, deviceTotalMb / 1024);
   const maxIndex = Math.max(MIN_SLIDER_INDEX + 1, maxSliderIndexForTotal(totalGb));
   const autoMb = useMemo(
-    () => autoAllocateMb({ totalMb: deviceMemoryMbSync(), modCount: instance.modCount, usedMb: lastKnownUsedMb() }),
-    [instance.modCount],
+    () => autoAllocateMb({ totalMb: deviceTotalMb, modCount: instance.modCount, usedMb: lastKnownUsedMb() }),
+    [instance.modCount, deviceTotalMb],
   );
 
   /**
