@@ -29,6 +29,8 @@ See [`docs/BUILDING.md`](docs/BUILDING.md) for prerequisites, frontend preview, 
 
 Signing in with a Microsoft account needs your own application client ID; [`docs/MICROSOFT_LOGIN.md`](docs/MICROSOFT_LOGIN.md) walks through registering one and the Minecraft-services approval that goes with it.
 
+Handing the project to someone else (or moving it to another machine): [`HANDOFF.md`](HANDOFF.md) covers what to carry over, what to regenerate, and the credentials that end up inside builds.
+
 UI work starts with a browser preview: run `npm run dev` and open `http://127.0.0.1:5173/`, then adjust the visuals in Design mode. The full convention is in [`UI_WORKFLOW.md`](UI_WORKFLOW.md).
 
 The root Git repository excludes the nested `/PCL/` reference checkout. Reference observations are abstracted in [`docs/REFERENCE_NOTES.md`](docs/REFERENCE_NOTES.md); no reference implementation or assets are copied.
