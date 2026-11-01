@@ -568,34 +568,15 @@ pub async fn narrate_streaming(
         let bytes = chunk.map_err(|error| LlmError::Unreachable(error.to_string()))?;
         pending.push_str(&String::from_utf8_lossy(&bytes));
 
-        while let Some(index) = pending.find('\n') {
-            let line: String = pending.drain(..=index).collect();
-            let line = line.trim_end_matches(['\r', '\n']);
-            let Some(payload) = line.strip_prefix("data: ") else {
-                continue;
-            };
-            if payload.trim() == "[DONE]" {
-                continue;
-            }
-            let Ok(value) = serde_json::from_str::<StreamChunk>(payload) else {
-                continue;
-            };
-            let Some(delta) = value
-                .choices
-                .first()
-                .and_then(|choice| choice.delta.as_ref())
-                .and_then(|delta| delta.content.as_deref())
-            else {
-                continue;
-            };
-            raw.push_str(delta);
+        for delta in take_frame_deltas(&mut pending) {
+            raw.push_str(&delta);
 
             /*
              * 实时剥离思考块后转发。
              *
              * 只有通过了 guard 的文本才会到达界面，所以用户不会先看到推理过程。
              */
-            let visible = guard.filter(delta);
+            let visible = guard.filter(&delta);
             if !visible.is_empty() {
                 on_chunk(&visible);
             }
@@ -673,6 +654,46 @@ fn decide_steps(
 // ---------------------------------------------------------------------------
 // 流式辅助
 // ---------------------------------------------------------------------------
+
+/// 从累积缓冲里取出所有**完整**的 SSE 帧，返回其中的增量文本。
+///
+/// ## 为什么要单独抽出来
+///
+/// 「一个 TCP 块可能包含半行、也可能包含多行」是流式解析里唯一真正容易写错的
+/// 地方。留在 `narrate_streaming` 里就只能靠一个本地假服务器去验证，而那需要
+/// 连 HTTP 管线一起模拟——测试因此变得脆弱（第一版就因为没读请求体而失败）。
+///
+/// 抽成纯函数之后，可以直接喂它任意切分的字节序列，包括把 `data:` 或 JSON 切
+/// 成两半这种最刁钻的情况。
+///
+/// 不完整的行会留在缓冲里等下一次调用，绝不丢弃：丢掉半行会让 JSON 解析失败，
+/// 用户就会看到文字缺一块。
+fn take_frame_deltas(pending: &mut String) -> Vec<String> {
+    let mut deltas = Vec::new();
+    while let Some(index) = pending.find('\n') {
+        let line: String = pending.drain(..=index).collect();
+        let line = line.trim_end_matches(['\r', '\n']);
+        let Some(payload) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        if payload.trim() == "[DONE]" {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<StreamChunk>(payload) else {
+            continue;
+        };
+        let Some(delta) = value
+            .choices
+            .first()
+            .and_then(|choice| choice.delta.as_ref())
+            .and_then(|delta| delta.content.as_deref())
+        else {
+            continue;
+        };
+        deltas.push(delta.to_owned());
+    }
+    deltas
+}
 
 #[derive(Deserialize)]
 struct StreamChunk {
@@ -914,5 +935,73 @@ mod streaming_tests {
         let mut visible = String::from(guard.filter("推理结束</think>答案是内存"));
         visible.push_str(&guard.finish());
         assert_eq!(visible, "推理结束答案是内存");
+    }
+
+    // --- SSE 帧解析 --------------------------------------------------------
+
+    /// 构造一帧 `data: {...}` 的 SSE 行。
+    fn frame(text: &str) -> String {
+        format!(
+            "data: {}\n\n",
+            serde_json::json!({ "choices": [{ "delta": { "content": text } }] })
+        )
+    }
+
+    #[test]
+    fn frames_yield_their_deltas_in_order() {
+        let mut pending = String::new();
+        pending.push_str(&frame("原因是"));
+        pending.push_str(&frame("内存不足"));
+        pending.push_str("data: [DONE]\n\n");
+        assert_eq!(take_frame_deltas(&mut pending), vec!["原因是", "内存不足"]);
+        // 完整的帧被消费掉：缓冲里不留下已处理的内容。
+        assert!(pending.is_empty(), "leftover: {pending:?}");
+    }
+
+    /// 帧被切成两半时必须等下一块，不能丢。
+    ///
+    /// 这是真实网络的做法：一个 TCP 块很少正好对齐一行。丢掉半行会让 JSON 解析
+    /// 失败，用户看到的解释里就会缺一块文字——而且缺的地方不固定，最难复现。
+    #[test]
+    fn a_half_frame_is_kept_until_the_rest_arrives() {
+        let mut pending = String::new();
+        let whole = frame("内存不足");
+        let split = whole.len() / 2;
+
+        pending.push_str(&whole[..split]);
+        assert!(
+            take_frame_deltas(&mut pending).is_empty(),
+            "half a frame must not be parsed"
+        );
+        // 半帧仍然在缓冲里，等后半段。
+        assert!(!pending.is_empty());
+
+        pending.push_str(&whole[split..]);
+        assert_eq!(take_frame_deltas(&mut pending), vec!["内存不足"]);
+    }
+
+    /// 多帧挤在一个块里，一次全部取出。
+    #[test]
+    fn several_frames_in_one_chunk_are_all_taken() {
+        let mut pending = String::new();
+        for piece in ["a", "b", "c"] {
+            pending.push_str(&frame(piece));
+        }
+        assert_eq!(take_frame_deltas(&mut pending), vec!["a", "b", "c"]);
+    }
+
+    /// 非 `data:` 行、坏 JSON、缺 content 的帧都要静默跳过。
+    ///
+    /// 静默是对的：SSE 里本来就有注释行与心跳，把它们当成错误会让一次正常的
+    /// 生成中途失败。
+    #[test]
+    fn noise_lines_are_ignored_without_failing() {
+        let mut pending = String::new();
+        pending.push_str(": keep-alive\n\n");
+        pending.push_str("event: message\n");
+        pending.push_str("data: {not json}\n\n");
+        pending.push_str("data: {\"choices\":[{\"delta\":{}}]}\n\n");
+        pending.push_str(&frame("最后的正文"));
+        assert_eq!(take_frame_deltas(&mut pending), vec!["最后的正文"]);
     }
 }

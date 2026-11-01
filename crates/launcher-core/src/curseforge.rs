@@ -639,11 +639,55 @@ pub async fn download_to(
     .await
 }
 
+/// 下载一个 Modrinth 的 `.mrpack` 到指定目录。
+///
+/// ## 为什么复用 CurseForge 的下载实现
+///
+/// 「下载 → 校验 SHA-1 → 原子发布」这套逻辑与来源无关，中间涉及断点、临时文件
+/// 命名、同名冲突、发布时的 rename 回滚。为 Modrinth 再写一份，等于把这个最容易
+/// 出错的部分复制一遍，两份迟早会漂移。
+///
+/// 唯一的差异是**域名与校验值来源**：Modrinth 的文件在 `cdn.modrinth.com`，校验
+/// 值是 SHA-1（与 CurseForge 相同），`CatalogVersion` 里已经带上了。所以这里只做
+/// 一层薄适配，校验逻辑完全共用。
+pub async fn download_modrinth_pack(
+    engine: &DownloadEngine,
+    version: &crate::catalog::CatalogVersion,
+    directory: &Path,
+) -> Result<String, String> {
+    /*
+     * 只接受 Modrinth 官方分发域名。
+     *
+     * `parse_versions` 已经校验过一次，但那是「读列表时」的保证；这里再校验一次
+     * 是因为这个函数可以从别处调用，而「URL 从哪来」不该由调用方决定。
+     */
+    let url = reqwest::Url::parse(&version.url).map_err(|_| "下载地址无效。".to_owned())?;
+    if url.scheme() != "https" || url.host_str() != Some("cdn.modrinth.com") {
+        return Err("文件不来自 Modrinth 官方分发域名。".into());
+    }
+    if version.sha1.len() != 40 || !version.sha1.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("此整合包缺少有效 SHA-1 校验值，无法安全下载。".into());
+    }
+    download_verified(
+        engine,
+        ContentKind::Modpack,
+        version.file_name.clone(),
+        &version.url,
+        &version.sha1,
+        version.size,
+        Some(version.version_id.as_str()),
+        "整合包",
+        directory,
+        "此目录",
+    )
+    .await
+}
+
 /// 共享的「下载 → 校验 → 原子发布」实现。
 ///
 /// `directory_hint` 只用于错误文案：实例目录叫「mods 目录」，用户自选目录叫「此目录」。
 #[allow(clippy::too_many_arguments)]
-async fn download_verified(
+pub(crate) async fn download_verified(
     engine: &DownloadEngine,
     kind: ContentKind,
     file_name: String,

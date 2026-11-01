@@ -38,6 +38,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 chrono.workspace = true
+sha2.workspace = true
 download-engine = { path = "../crates/download-engine" }
 launcher-core = { path = "../crates/launcher-core" }
 crash-ai = { path = "../crates/crash-ai" }
