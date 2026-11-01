@@ -37,6 +37,10 @@ jobs:
       - run: npm ci --prefix design/flowlaunch-ui
       - run: cargo test -p mc-metadata -p download-engine -p launcher-core -p launcher-auth
       - run: npm run build --prefix design/flowlaunch-ui
+      # 根目录的 package.json 把 `tauri` 映射到 PATH 上的命令行，但本仓库的依赖
+      # 只装在 design/flowlaunch-ui 下，全新 runner 上 PATH 里没有它。不先安装，
+      # 下一步会在每个平台都以 `tauri: not found` 失败。
+      - run: npm install --global @tauri-apps/cli@^2
       - run: npm run tauri -- build --ci --no-sign
       - uses: actions/upload-artifact@v4
         with:
