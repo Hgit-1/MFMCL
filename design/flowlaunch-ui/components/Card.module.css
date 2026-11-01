@@ -1,7 +1,15 @@
 .card {
   background: var(--color-bg-elevated);
   border-radius: var(--radius-base);
-  transition: all var(--duration-base) var(--ease);
+  /*
+   * 卡片只在悬停时抬升与加深阴影，逐条列出即可。
+   * `transform` 用 `translateY`，配合 `will-change` 之外的默认合成层即可，
+   * 不需要额外优化——这里只有一张卡在动，不是整个网格。
+   */
+  transition:
+    transform var(--duration-base) var(--ease),
+    box-shadow var(--duration-base) var(--ease),
+    border-color var(--duration-base) var(--ease);
 }
 
 .default {

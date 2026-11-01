@@ -178,3 +178,108 @@ export function vanillaJavaMajorPrecise(versionId: string): { major: number; est
   // 快照与彩蛋版没有官方值，一律标记为估算。
   return { major: vanillaJavaMajor(versionId), estimated: true };
 }
+
+// ---------------------------------------------------------------------------
+// 下拉框标签的宽度控制
+// ---------------------------------------------------------------------------
+
+/**
+ * 估算字符串的显示宽度，单位是「半角字符」。
+ *
+ * 为什么需要它：内容商店侧栏的实例下拉只有 183px，而原生 `<select>` 的选中项
+ * 文字一旦超出就被**硬裁**（`text-overflow` 对 select 的支持在各浏览器不一致），
+ * 用户看到的是「整合包（安装失败） · 1.18」这种半截版本号。办法只能是提前把文字
+ * 缩短到放得下，而这需要一个与字体无关的宽度估算。
+ *
+ * 规则很粗但够用：东亚全角字符（含中文、全角标点、假名）算 2 列，其余算 1 列。
+ * 用它代替真实测量有两个好处：没有 DOM 依赖（可在服务端与测试里跑），且不随字体
+ * 微调而失效——宽度预算本身留了余量。
+ */
+export function displayColumns(text: string): number {
+  let columns = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    columns += isFullWidth(code) ? 2 : 1;
+  }
+  return columns;
+}
+
+/**
+ * 该码位在等宽近似下是否占两列。
+ *
+ * 覆盖 CJK 统一表意文字、假名、谚文、全角标点与全角字母数字。不做完整的
+ * East Asian Width 表：这里只用来估算下拉框宽度，多算或少算一列都会被预算里的
+ * 余量吸收。
+ */
+function isFullWidth(code: number): boolean {
+  return (
+    (code >= 0x1100 && code <= 0x115f) || // 谚文字母
+    (code >= 0x2e80 && code <= 0x303e) || // CJK 部首、标点
+    (code >= 0x3041 && code <= 0x33ff) || // 假名、CJK 兼容
+    (code >= 0x3400 && code <= 0x4dbf) || // CJK 扩展 A
+    (code >= 0x4e00 && code <= 0x9fff) || // CJK 统一表意文字
+    (code >= 0xa000 && code <= 0xa4cf) || // 彝文
+    (code >= 0xac00 && code <= 0xd7a3) || // 谚文音节
+    (code >= 0xf900 && code <= 0xfaff) || // CJK 兼容表意
+    (code >= 0xfe30 && code <= 0xfe6f) || // CJK 兼容形式
+    (code >= 0xff00 && code <= 0xff60) || // 全角 ASCII
+    (code >= 0xffe0 && code <= 0xffe6) || // 全角符号
+    (code >= 0x20000 && code <= 0x3fffd) // CJK 扩展 B 及以上
+  );
+}
+
+/** 用省略号把字符串压到 `maxColumns` 列以内；已放得下时原样返回。 */
+export function truncateToColumns(text: string, maxColumns: number): string {
+  if (maxColumns <= 0) return '';
+  if (displayColumns(text) <= maxColumns) return text;
+  // 省略号本身占 1 列，先把它扣掉。
+  const budget = maxColumns - 1;
+  let columns = 0;
+  let kept = '';
+  for (const char of text) {
+    const width = isFullWidth(char.codePointAt(0) ?? 0) ? 2 : 1;
+    if (columns + width > budget) break;
+    columns += width;
+    kept += char;
+  }
+  return `${kept.trimEnd()}…`;
+}
+
+/**
+ * 下拉框里用来显示一个实例的标签，保证不会超出下拉框宽度。
+ *
+ * 两条规则：
+ *
+ * 1. **版本号必须保留。** 它决定这个实例能装哪个游戏版本的内容，是选择目标实例
+ *    时最关键的信息；被裁掉的必须是实例名而不是版本号。
+ * 2. **实例名里已经有版本时不再重复。** 「纯净生存 1.21.1 · 1.21.1」既浪费宽度
+ *    又读着别扭，而宽度在这个下拉框里正是稀缺资源。
+ *
+ * `maxColumns` 的默认值由实测得出：下拉框宽 183px、左右内边距各 8px、原生箭头约
+ * 18px，剩下约 149px。
+ *
+ * 每列取值要按**中文**算，不能按英文：12px 字号下一个汉字正好 12px（两列），
+ * 即 6px/列。最初按英文的 5.6px/列取了 26 列，结果「整合包（安装失败… · 1.18.2」
+ * 实测 149.4px，恰好顶到边界仍然被裁。24 列对应约 144px，留出真正的余量。
+ */
+export function fitInstanceLabel(name: string, version: string, maxColumns = 24): string {
+  const trimmedName = name.trim();
+  const trimmedVersion = version.trim();
+  const alreadyMentionsVersion = trimmedVersion.length > 0 && trimmedName.includes(trimmedVersion);
+
+  if (!trimmedVersion || alreadyMentionsVersion) {
+    return truncateToColumns(trimmedName, maxColumns);
+  }
+
+  // 「 · 」占 3 列，版本号本身也占宽度，两者都不能动。
+  const suffixColumns = displayColumns(` · ${trimmedVersion}`);
+  const nameBudget = maxColumns - suffixColumns;
+  if (nameBudget < 4) {
+    /*
+     * 版本号本身就快占满整个预算（例如很长的快照版本号）：此时只能整体截断，
+     * 但至少保证不留一个只有省略号的标签。
+     */
+    return truncateToColumns(`${trimmedName} · ${trimmedVersion}`, maxColumns);
+  }
+  return `${truncateToColumns(trimmedName, nameBudget)} · ${trimmedVersion}`;
+}

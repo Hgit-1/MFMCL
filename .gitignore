@@ -12,6 +12,10 @@ test-results/
 /target/
 **/target/
 
+# Desktop installers collected by hand from target/release/bundle/ for testing.
+# They are build output, not source: anyone can regenerate them.
+/dist-artifacts/
+
 # Tauri build artifacts
 src-tauri/gen/
 src-tauri/target/

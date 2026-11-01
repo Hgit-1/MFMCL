@@ -160,6 +160,8 @@
 
 .sectionHead {
   display: flex;
+  /* 放不下时把 hint 推到下一行，而不是把标题压扁。 */
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 14px 0 10px;
@@ -177,18 +179,40 @@
   color: var(--color-primary-text);
 }
 
+/*
+ * 标题按内容宽度，不参与「平均分配剩余空间」。
+ *
+ * `flex: 1` 的基数是 0，于是在 flex 计算里标题只能拿到「剩下的那点宽度」——
+ * 旁边那条 253px 的 hint 一站上来，标题就被压到 11px（实测「Instance files」）。
+ * 改成内容宽度后，标题先占住自己需要的宽度，hint 用剩下的空间并自行换行。
+ */
 .sectionHead h2 {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   color: var(--color-text-primary);
   font-size: 13px;
   font-weight: 650;
 }
 
+/*
+ * 说明文字：可以换行，也不再独占一整行宽度。
+ *
+ * 之前它是 `white-space: nowrap` 且没有收缩上限。窄屏下这条 hint 的宽度直接压过
+ * 标题——实测「Mod loader」的 h2 被挤到 **0px**、「Instance files」被挤到 11px，
+ * 区块本身还横向溢出 15px。原因是 flex 里 `flex: 1` 的标题会一直让位给
+ * min-content 就是全部文字宽度的 nowrap 项。
+ *
+ * 现在允许换行，并让父级 `flex-wrap` 在放不下时把它整体推到下一行：标题永远先
+ * 保住，hint 在宽屏仍是一行，窄屏折到第二行。用 `anywhere` 兜底极长的无空格串
+ * （例如一长串路径或标识符）。
+ */
 .sectionHead small {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--color-text-disabled);
   font-size: 10px;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .row {
@@ -332,6 +356,120 @@
   line-height: 1.55;
   outline: none;
   resize: vertical;
+}
+
+/* --- 实例图标 ------------------------------------------------------------ */
+
+/*
+ * 一行三段：预览、说明、操作。
+ *
+ * 用 `wrap` 而不是缩成一个弹性行：窄窗口下说明文字会被压成很窄的一列，而这里
+ * 的说明有两三行、后面还跟着尺寸提示。放不下时让操作按钮整体换到下一行，比
+ * 把三段都挤扁更好读。
+ */
+.iconBlock {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 0 6px;
+}
+
+/*
+ * 预览框。
+ *
+ * 和游戏库卡片用同一套视觉（同样的圆角、同样的浅色底），让用户在设置页看到的
+ * 图标就是他之后在卡片上看到的样子。加了内边距，因为加载器标志本身带留白，
+ * 贴边会显得比卡片上的更大一号。
+ */
+.iconPreview {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  flex: none;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-secondary);
+  overflow: hidden;
+}
+
+/* 自定义图片的圆角由 InstanceIcon 自己的 `.custom` 负责。
+   这里不要再给「框里所有 img」加半径：加载器标志（LoaderIcon）也要落进这个框，
+   给它加圆角会把草方块、铁砧的标志切出圆角，和游戏库卡片上的样子不一致。 */
+
+.iconCopy {
+  display: flex;
+  min-width: 160px;
+  flex: 1 1 200px;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.iconCopy strong {
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+/* 文件名可能很长，必须能断行：它是用户自己的文件，长度不可控。 */
+.iconFile {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.iconHint {
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+/*
+ * 操作按钮。
+ *
+ * 两个按钮在窄屏并排放不下时，各自占满一行——比让「恢复默认」被压成两行文字好。
+ */
+.iconActions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  /* 按钮文字不折行：中文两三个字被折成两行看起来像坏掉了。 */
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color .16s, color .16s, background .16s;
+}
+
+.iconButton:hover:not(:disabled) {
+  border-color: var(--color-primary-solid);
+  color: var(--color-primary-text);
+}
+
+.iconButton:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+/* 隐藏的文件输入：用按钮触发，而不是暴露浏览器默认的「选择文件」控件。 */
+.hiddenInput {
+  display: none;
 }
 
 .text:focus-visible {

@@ -13,7 +13,9 @@ import { CreateInstanceDialog } from '../components/CreateInstanceDialog';
 import { PluginWorkspace } from '../components/PluginWorkspace';
 import { LOCALES, useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
-import { readPrefs, DEFAULT_PREFS, type LauncherPrefs } from '../utils/launcherPrefs';
+import { readPrefs, DEFAULT_PREFS, SETTINGS_STORAGE_KEY, type LauncherPrefs } from '../utils/launcherPrefs';
+import { isOnboardingPending, markOnboardingComplete, resetOnboarding } from '../utils/onboarding';
+import { applyMotionLevel, readMotionLevel } from '../utils/motion';
 import {
   loadPluginStore,
   savePluginStore,
@@ -27,10 +29,17 @@ import {
   type InstanceOverrides,
   type OverrideMap,
 } from '../utils/instanceOverrides';
-import { BlockIcon } from '../components/BlockIcon';
 import { VanillaIcon } from '../components/VanillaIcon';
-import { LoaderIcon } from '../components/LoaderIcon';
+import { InstanceIcon } from '../components/InstanceIcon';
+import {
+  loadInstanceIcons,
+  saveInstanceIcons,
+  removeInstanceIcon,
+  type InstanceIconMap,
+} from '../utils/instanceIcons';
 import { Dashboard } from '../components/Dashboard';
+import { Onboarding } from '../components/Onboarding';
+import type { TabId } from '../components/SettingsPanel';
 import { BackgroundLayer } from '../components/BackgroundLayer';
 import { autoAccentOf } from '../components/BackgroundSection';
 import { applyAccent, DEFAULT_ACCENT } from '../utils/accent';
@@ -39,7 +48,6 @@ import {
   type BackgroundSetting,
 } from '../utils/background';
 import { iconForLoader } from '../utils/store/loaders';
-import { VANILLA_BLOCK } from '../utils/store/blocks';
 import { Image as ImageIcon, Map, Package, Puzzle } from 'lucide-react';
 import {
   DEFAULT_INSTANCE_JAVA,
@@ -287,6 +295,8 @@ function prefFromSettings(settings: LauncherSettings): LauncherPrefs {
      * 在下次刷新时消失。
      */
     downloadDirectory: settings.downloadDirectory ?? '',
+    /* 引擎路径同样必须映射：`DEFAULT_PREFS` 里是空串，不带上就会在每次刷新时被冲掉。 */
+    llamaServerPath: settings.llamaServerPath ?? '',
     launcherVisibility: settings.launcherVisibility,
     downloadSource: settings.download.source,
     maxConcurrentDownloads: settings.download.maxConcurrentDownloads,
@@ -336,11 +346,38 @@ const storeCategories = STORE_CATEGORIES;
 
 function App() {
   const { theme, setTheme, resolvedTheme } = useTheme();
+  /*
+   * 动效偏好：启动时应用一次，并在系统偏好变化时重新应用。
+   *
+   * 为什么要在 App 里做而不是只在设置面板里做：动效是**全局**状态，用户没打开过
+   * 设置也应该生效。设置面板只负责在用户改动时立刻应用；这里的首屏应用保证重启
+   * 后仍然是上次选的那一档。
+   *
+   * 监听 `prefers-reduced-motion` 变化：用户在系统里打开了「减少动态效果」，而
+   * 应用里存着 `normal`，此时应当跟随系统。`readMotionLevel` 在未显式设置过时
+   * 就是按系统给的，所以这里重读一次即可，不需要额外判断用户是否手动选过。
+   */
+  useEffect(() => {
+    applyMotionLevel(readMotionLevel());
+    if (typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const onChange = () => applyMotionLevel(readMotionLevel());
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
   const { t, language } = useI18n();
   const locale = LOCALES[language];
   const [context, setContext] = useState<AppContext>('first-run');
   const [instances, setInstances] = useState<GameInstance[]>([]);
   const [selectedInstance, setSelectedInstance] = useState<GameInstance | undefined>();
+  /**
+   * 每个实例的自定义图标元数据。
+   *
+   * 图片本身在 IndexedDB 里（见 `utils/instanceIcons.ts`），这里只保存「哪个实例
+   * 用过自定义图标、叫什么名字、什么时候换的」。用 state 而不是每次渲染都读
+   * localStorage：换图之后所有显示该实例图标的地方都要立刻更新。
+   */
+  const [instanceIcons, setInstanceIcons] = useState<InstanceIconMap>(loadInstanceIcons);
   /**
    * 主页那个大按钮要启动的实例。
    *
@@ -423,6 +460,14 @@ function App() {
   }, []);
 
   const [showSettings, setShowSettings] = useState(false);
+  /**
+   * 打设置面板时要落在哪一页。
+   *
+   * 引导里「去下载模型」需要直接跳到下载页；实例管理页的 Java 入口需要 Java 页。
+   * 用一个状态而不是给 `showSettings` 加参数：面板是从多处打开的，`initialTab`
+   * 只在打开那一刻读一次，之后再改它不会切换页签（`useState` 的初值只求值一次）。
+   */
+  const [settingsTab, setSettingsTab] = useState<TabId | undefined>();
   const [javaRuntimes, setJavaRuntimes] = useState<JavaRuntime[]>(loadJavaList);
   const [globalJavaPath, setGlobalJavaPath] = useState(() => {
     try { return JSON.parse(localStorage.getItem('flowlaunch-settings') || '{}').javaPath || ''; } catch { return ''; }
@@ -499,7 +544,7 @@ function App() {
    * 否则用户点进去找不到「更新」按钮，下次就忽略这个提示了。
    */
   const updatableCount = updatablePluginCount(pluginStore);
-  const [showFirstRun, setShowFirstRun] = useState(true);
+  const [showFirstRun, setShowFirstRun] = useState(() => isOnboardingPending());
   const [storeCategory, setStoreCategory] = useState<StoreCategory>('vanilla');
   const [storeMenuOpen, setStoreMenuOpen] = useState(false);
 
@@ -598,15 +643,21 @@ function App() {
        */
       void refreshDownloadTasks();
 
-      // 只有桌面版才存在「演示数据」之外的首次运行引导；接后端后直接进主界面。
-      setShowFirstRun(false);
+      /*
+       * 引导是否出现，已经由 `isOnboardingPending()` 在初始 state 里决定。
+       *
+       * 之前这里无条件 `setShowFirstRun(false)`，效果是「引导永远只在真正首屏前
+       * 出现一次」——但那条路径依赖后端加载完成，而旧引导其实只是欢迎页。现在
+       * 引导需要读设置、探测 Java，所以它必须在后端就绪**之后**才开始，而且不能
+       * 被这里强制关掉：那会让「重新运行引导」这个入口失效。
+       */
       /*
        * 首屏落在主页而不是游戏库。
        *
        * 打开启动器最常见的意图是「进游戏」，主页就是那个大按钮；游戏库是管理
        * 实例的地方。先给人看管理列表，等于把主路径往后推了一步。
        */
-      setContext('dashboard');
+      if (!isOnboardingPending()) setContext('dashboard');
 
       if (firstError.length) setToast(firstError[0]);
     })();
@@ -675,9 +726,41 @@ function App() {
   }, []);
 
   const completeFirstRun = () => {
+    markOnboardingComplete();
     setShowFirstRun(false);
     // 与首屏加载一致：引导结束后落在主页，而不是游戏库。
     setContext('dashboard');
+  };
+
+  /**
+   * 引导里的设置改动。
+   *
+   * 引导不暂存、直接落库：用户在每一步都能看到结果（换语言立刻换文案、换强调色
+   * 立刻换配色）。走到最后点「开始使用」时不需要再批量保存一次，也就不会出现
+   * 「设置保存失败，但人已经在主界面」这种半成品状态。
+   *
+   * 失败只提示，不回滚界面——这些值都是本机偏好，最坏情况是下次启动回到默认，
+   * 而不是数据损失。
+   */
+  const applyOnboardingPrefs = (next: LauncherPrefs) => {
+    setGlobalPrefs(next);
+    try {
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // 存储被禁用时只在本次会话生效。
+    }
+    void (async () => {
+      try {
+        const base = naturalSettings ?? (await getSettings());
+        const merged = prefsToSettings(next, base);
+        await saveSettingsNative(merged);
+        setNaturalSettings(merged);
+        setGlobalPrefs(prefFromSettings(merged));
+        setGlobalJavaPath(merged.javaPath ?? '');
+      } catch (error) {
+        setToast(errorText(error, '无法保存引导里的设置，稍后可在设置页重新调整。'));
+      }
+    })();
   };
 
   /** 新建实例：先创建记录，再跳到商店让用户挑版本并安装。 */
@@ -712,6 +795,14 @@ function App() {
       await deleteInstanceNative(instance.id, deleteFiles);
       setPendingDelete(null);
       if (selectedInstance?.id === instance.id) setSelectedInstance(undefined);
+      /*
+       * 清掉这个实例的自定义图标。
+       *
+       * 实例记录已经没了，再留着图标只会让那张图一直占着 IndexedDB 且没有任何
+       * 入口能删。放在删除成功之后调用：删除失败时实例还在，图标也应该还在。
+       * 不 await 结果——删图失败不该让「删除实例成功」这句话变成一句错误提示。
+       */
+      void clearInstanceIcon(instance.id);
       await refreshInstances();
       await refreshDownloadTasks();
       setToast(t('instance.deleted', { values: { name: instance.name } }));
@@ -895,6 +986,52 @@ function App() {
         setToast(errorText(error, '无法保存实例设置。'));
       });
   };
+
+  /**
+   * 换一个实例的自定义图标。
+   *
+   * 图片已经由 `importInstanceIcon` 校验并写进 IndexedDB，这里只负责更新元数据。
+   * 顺序很重要：先落库成功、再改 state——反过来会先让界面切到自定义图标分支，
+   * 而那时图还没写进去，用户看到一个空白框。
+   *
+   * 失败文案由调用方给出（设置页里那段有上下文），这里只管成功路径。
+   */
+  const applyInstanceIcon = (instanceId: string, record: InstanceIconMap[string]) => {
+    setInstanceIcons(current => {
+      const next = { ...current, [instanceId]: record };
+      saveInstanceIcons(next);
+      return next;
+    });
+  };
+
+  /** 恢复默认图标。 */
+  const clearInstanceIcon = async (instanceId: string) => {
+    setInstanceIcons(current => {
+      if (!current[instanceId]) return current;
+      const next = { ...current };
+      delete next[instanceId];
+      saveInstanceIcons(next);
+      return next;
+    });
+    await removeInstanceIcon(instanceId);
+  };
+
+  /**
+   * 自愈：元数据还在、图读不出来时清掉那条记录。
+   *
+   * 场景是用户清了站点数据（或换了浏览器配置），IndexedDB 里的 Blob 没了但
+   * localStorage 里的元数据还在。不清掉的话，实例管理页会照着元数据宣布
+   * 「自定义图片 · 某文件名」，旁边却显示加载器标志——界面在自相矛盾。
+   */
+  const forgetInstanceIcon = useCallback((instanceId: string) => {
+    setInstanceIcons(current => {
+      if (!current[instanceId]) return current;
+      const next = { ...current };
+      delete next[instanceId];
+      saveInstanceIcons(next);
+      return next;
+    });
+  }, []);
 
   /**
    * 实例设置页的初始数据来自后端。
@@ -1210,39 +1347,24 @@ function App() {
   if (showFirstRun) {
     return (
       <div className={styles.app}>
-        <div className={styles.firstRun}>
-          <div className={styles.firstRunContent}>
-            <div className={styles.logo}>
-              <div className={styles.logoIcon}>MFL</div>
-            </div>
-            <h1 className={styles.firstRunTitle}>{t('app.firstRunTitle')}</h1>
-            <p className={styles.firstRunDescription}>
-              {t('app.firstRunTagline')}
-              <br />
-              {t('app.firstRunSubtagline')}
-            </p>
-            <div className={styles.firstRunActions}>
-              <Button size="lg" onClick={completeFirstRun} icon={<PlayIcon />}>
-                {t('app.getStarted')}
-              </Button>
-            </div>
-            <div className={styles.firstRunFeatures}>
-              <div className={styles.feature}>
-                <ShopIcon />
-                <span>{t('app.featureInstall')}</span>
-              </div>
-              <div className={styles.feature}>
-                <SettingsIcon />
-                <span>{t('app.featureJava')}</span>
-              </div>
-              <div className={styles.feature}>
-                <LibraryIcon />
-                <span>{t('app.featureInstances')}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+        <Onboarding
+          prefs={globalPrefs}
+          onPrefsChange={applyOnboardingPrefs}
+          /* 传当前主题而不是让它读 prefs.theme：后者与真正生效的存储不同源。 */
+          theme={theme}
+          onThemeChange={setTheme}
+          onAccentChange={applyAccent}
+          runtimes={javaRuntimes}
+          onRuntimesChange={setJavaRuntimes}
+          dark={resolvedTheme === 'dark'}
+          onDone={completeFirstRun}
+          /* 先结束引导再打开设置：否则设置面板会盖在引导上，关掉后还停在引导页。 */
+          onOpenModelSettings={() => {
+            completeFirstRun();
+            setSettingsTab('download');
+            setShowSettings(true);
+          }}
+        />      </div>
     );
   }
 
@@ -1333,6 +1455,21 @@ function App() {
               `role="group"` 而不是 `menu`：这是一组导航目的地，不是对某项操作的
               命令列表；用 menu 会让读屏期待方向键在菜单项间移动。
             */}
+            {storeMenuOpen && (
+              /*
+               * 浮层遮罩：只在窄屏出现（宽屏抽屉是内联的，不需要）。
+               *
+               * 窄屏下抽屉变成下拉面板、盖住正文，所以必须有一条「点别处就收起」的
+               * 路径。用一层绝对定位的透明层而不是 document 上的 pointerdown 监听，
+               * 是因为它能自然地避免和「点侧栏其它项」抢事件——遮罩从侧栏下方开始，
+               * 顶栏本身仍然可点。
+               */
+              <div
+                className={styles.storeBackdrop}
+                onClick={() => setStoreMenuOpen(false)}
+                aria-hidden="true"
+              />
+            )}
             {storeMenuOpen && (
               <div
                 className={styles.storeDrawer}
@@ -1487,6 +1624,8 @@ function App() {
             onCreate={createNewInstance}
             onOpenLibrary={() => setContext('home')}
             iconForLoader={iconForLoader}
+            instanceIcons={instanceIcons}
+            onIconMissing={forgetInstanceIcon}
           />
         )}        {/* 空状态 - 无游戏 */}
         {context === 'home' && instances.length === 0 && (
@@ -1522,16 +1661,22 @@ function App() {
                       emoji——不同系统字形差别大，而且无法表达「这个是 Forge 还是
                       Fabric」。加载失败时退回草方块，不留破图。
 
+                      用户可以在实例管理页换成自己的图片，此时这里的加载器标志
+                      （包括它的底板、留白、像素化）都会被整张图替代。见 InstanceIcon：
+                      两条分支的视觉规则不同，不能只换 src。
+
                       状态为 error（后端 `failed`）时整枚图标去色：彩色标志会让
                       人以为实例正常，而灰化 + 右侧置灰的「安装」按钮是同一套
                       「这个实例现在不能用」的视觉语言。
                     */}
                     <div className={styles.instanceIcon}>
-                      <LoaderIcon
-                        {...iconForLoader(instance.loader)}
+                      <InstanceIcon
+                        instanceId={instance.id}
+                        loaderIcon={iconForLoader(instance.loader)}
+                        customIcon={instanceIcons[instance.id]}
                         size={48}
                         muted={instance.status === 'error'}
-                        fallback={<BlockIcon {...VANILLA_BLOCK} size={48} />}
+                        onMissing={() => forgetInstanceIcon(instance.id)}
                       />
                     </div>
                     <div className={styles.instanceInfo}>
@@ -1688,6 +1833,10 @@ function App() {
             onDelete={() => { setDeleteFilesOnDisk(false); setPendingDelete(selectedInstance); }}
             onModsChanged={() => { void refreshInstances(); }}
             onNotice={setToast}
+            customIcon={instanceIcons[selectedInstance.id]}
+            onIconChange={record => applyInstanceIcon(selectedInstance.id, record)}
+            onIconReset={() => void clearInstanceIcon(selectedInstance.id)}
+            onIconMissing={() => forgetInstanceIcon(selectedInstance.id)}
           />
         )}
 
@@ -1905,9 +2054,14 @@ function App() {
       {showSettings && <SettingsPanel
         theme={theme}
         onThemeChange={setTheme}
-        onClose={() => { setShowSettings(false); setGlobalPrefs(readPrefs()); }}
+        onClose={() => { setShowSettings(false); setSettingsTab(undefined); setGlobalPrefs(readPrefs()); }}
+        onRerunOnboarding={() => {
+          // 清掉完成标记再显示引导：否则下次启动又会因为「已完成」而跳过。
+          resetOnboarding();
+          setShowFirstRun(true);
+        }}
         instance={context === 'instance-detail' ? selectedInstance : undefined}
-        initialTab={context === 'instance-detail' ? 'java' : undefined}
+        initialTab={settingsTab ?? (context === 'instance-detail' ? 'java' : undefined)}
         onJavaRuntimesChange={setJavaRuntimes}
         onGlobalJavaChange={setGlobalJavaPath}
         onInstanceJavaChange={persistInstanceJava}

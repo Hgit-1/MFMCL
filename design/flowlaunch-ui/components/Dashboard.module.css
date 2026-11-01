@@ -31,6 +31,22 @@
   gap: 10px;
   width: min(460px, 100%);
   text-align: center;
+  /*
+   * 入场：轻微上浮 + 淡入。
+   *
+   * 只做一次（`both` 填充保留终态），不做循环——这一页停留时间最长，任何持续
+   * 动效最后都会变成干扰。位移只有 6px：再大就会在切换默认实例时有「整页跳动」
+   * 的错觉。
+   *
+   * 时长写 `calc(... * 1.6)` 而不是新增一个 token：入场比普通交互稍慢一点才显得
+   * 从容，而这个倍数同样受 `--motion-scale` 控制，关掉动效时一起归零。
+   */
+  animation: heroIn calc(var(--duration-slow) * 1.6) var(--ease-out) both;
+}
+
+@keyframes heroIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }
 
 .heroIcon {
@@ -39,6 +55,16 @@
   width: 72px;
   height: 72px;
   margin-bottom: 6px;
+  /*
+   * 图标比文字晚一拍出现，形成「先看到实例是什么，再看到它的名字」的顺序。
+   * 延迟也乘 `--motion-scale`：关闭动效时延迟为 0，否则会看到空白 80ms。
+   */
+  animation: heroIconIn calc(var(--duration-slow) * 1.4) var(--ease-out) calc(var(--duration-fast) * 0.4) both;
+}
+
+@keyframes heroIconIn {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: none; }
 }
 
 .heroName {
@@ -138,6 +164,13 @@
   padding: var(--space-md) clamp(14px, 2vw, 24px);
   border-top: 1px solid var(--color-border);
   background: var(--color-bg-elevated);
+  /* 操作区从底部滑入：它是这一页的主操作，出现得比内容稍晚一点符合阅读顺序。 */
+  animation: dockIn calc(var(--duration-slow) * 1.2) var(--ease-out) both;
+}
+
+@keyframes dockIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
 }
 
 /* 默认实例下拉：靠左，「启动什么」先于「按下去」。 */

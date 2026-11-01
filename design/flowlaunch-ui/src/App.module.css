@@ -189,8 +189,40 @@
   cursor: pointer;
   font: inherit;
   text-align: left;
-  transition: all var(--duration-fast) var(--ease);
+  /*
+   * 逐条列出要过渡的属性，不要用 `all`。
+   *
+   * ## `transition: all` 在这里会连带过渡 `font-weight`
+   *
+   * 选中行是 `font-weight: 600`，普通行是继承来的 400。`all` 让浏览器在这两个
+   * 值之间逐帧插值——实测点一下导航，字重会经过
+   * `400 → 435 → 539 → 584 → 594 → 600` 六帧。
+   *
+   * ## 为什么中间值是卡顿的来源
+   *
+   * 中文字体通常只提供 Regular 与 Bold 两个实际字重（不像西文字体常有 100–900
+   * 九档变量轴）。浏览器要画出 435、539 这些中间值，只能靠 `font-synthesis`
+   * 在 Regular 上做伪加粗，或者在有变量字体时做插值——两条路径都要重新栅格化
+   * 字形。中文每行十几个字，逐帧重算字形就是肉眼可见的一顿。
+   *
+   * 而且这种插值**没有必要**：字重的变化传达的是「选中了」，瞬时切换比渐变更有
+   * 决断力。真正需要过渡的是底色和文字颜色。
+   */
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease);
 }
+
+/*
+ * 字重不做过渡这件事，已经由上面的 `transition` 列清单保证了——它没有列
+ * `font-weight`，所以字重会瞬时切换。
+ *
+ * 这里刻意**不**写 `font-synthesis-weight: none`：试过，`getComputedStyle` 显示的
+ * 是 `font-synthesis: style small-caps`，说明这条声明在这个上下文中无效；更重要的
+ * 是，禁掉伪粗体会让中文字体（通常只有 400/700 两档）拿不到 600 的显示效果，
+ * 选中行反而不加粗了。实测选中项的文字宽度 159px vs 普通项 99px，加粗本来正常。
+ */
 
 .navItem:hover {
   background: var(--color-bg-secondary);
@@ -209,6 +241,25 @@
   background: var(--color-primary-tonal);
   color: var(--color-primary-tonal-text);
   font-weight: 600;
+}
+
+/*
+ * 悬停时图标轻微右移 1px。
+ *
+ * 位移而非缩放：缩放会让 20px 的线性图标在小数像素上重绘，边缘发虚。1px 的
+ * 位移在视觉上等同于「朝这个方向去」，且不改变绘制尺寸。
+ */
+.navItem svg {
+  transition: transform var(--duration-fast) var(--ease);
+}
+
+.navItem:hover svg {
+  transform: translateX(1px);
+}
+
+/* 按下时整体回缩一点：给点击一个物理反馈，避免「点了没反应」的错觉。 */
+.navItem:active {
+  transform: scale(0.985);
 }
 
 .navItem svg {
@@ -312,6 +363,13 @@
   margin: 2px 0 4px;
   padding: 2px 0 2px 10px;
   border-left: 2px solid var(--color-border);
+}
+
+/*
+ * 窄屏抽屉的遮罩。宽屏下不起作用（`display: none`），因为那里的抽屉是内联的。
+ */
+.storeBackdrop {
+  display: none;
 }
 
 .storeDrawerHeader {
@@ -616,6 +674,25 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/*
+ * 页面切换的入场。
+ *
+ * 用动画而不是 transition：`transition` 需要一个「旧值 → 新值」的同一元素状态
+ * 变化，而切页是挂载/卸载，元素是新的。动画在挂载时自动播放一次，正好对应
+ * 「这一页刚出现」。
+ *
+ * 位移 4px、时长 260ms：再长会让频繁切页显得拖沓，再短就看不出这是一次转场。
+ * 都乘 `--motion-scale`，关掉动效时为 0。
+ */
+.main > div:not(.mainHeader) {
+  animation: pageIn calc(var(--duration-base) * 1.3) var(--ease-out) both;
+}
+
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
 }
 
 .instanceGrid {
@@ -975,7 +1052,71 @@
   /* 窄屏侧栏退化成图标条，行内没有空间再放一个退出按钮：此时通过账户弹窗退出。 */
   .navItem .signOut { display: none; }
   .navChevron { display: none; }
-  .storeMenuWrap { flex: 0 0 40px; width: 40px; }
+  /*
+   * 内容商店抽屉在窄屏下改为下拉面板。
+   *
+   * ## 之前为什么坏
+   *
+   * 窄屏侧栏变成一行图标条，`.storeMenuWrap` 被固定成 40px 宽；而抽屉仍按宽屏的
+   * 竖排列表渲染，于是 5 个条目 + 标题被塞进 40px——文字一个词一行，侧栏高度被
+   * 撑到 379px（正常 58px），整个页面被顶下去。
+   *
+   * ## 现在的做法
+   *
+   * 抽屉脱出文档流，作为下拉面板铺满侧栏宽度、覆盖在正文之上。这样侧栏高度不再
+   * 受它影响，条目也能正常一行显示。
+   *
+   * `.storeMenuWrap` 改为 `position: static`，让定位基准落到 `.sidebar`——抽屉因此
+   * 能横跨整条侧栏，而不是被限制在那个 40px 的按钮盒子里。
+   */
+  .sidebar { position: relative; z-index: 20; }
+  .storeMenuWrap { position: static; flex: 0 0 40px; width: 40px; }
+  .storeDrawer {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 8px;
+    left: 8px;
+    z-index: 2;
+    width: auto;
+    max-height: min(60vh, 360px);
+    margin: 0;
+    padding: 6px;
+    overflow-y: auto;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-base);
+    background: var(--color-bg-elevated);
+    box-shadow: var(--shadow-lg);
+  }
+  .storeDrawerHeader { padding: 2px 8px 6px; }
+  .storeBackdrop {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    left: 0;
+    z-index: 1;
+    display: block;
+    height: 100vh;
+  }
+  /*
+   * 徽章改成图标右上角的角标。
+   *
+   * 窄屏每个导航项固定 40px，图标 20px + 一个 18px 徽章就放不下了；之前两个徽章
+   * 会被挤到盒子外面，和相邻导航项的图标叠在一起（截图里「6 1」「4 1」并排）。
+   * 定位成角标以后不再参与行内布局，也不会挤走图标。
+   *
+   * 灰色计数徽章直接隐藏：它是「库里有多少个」这种规模信息，窄屏上没有空间时
+   * 优先级最低。红色（需要修复）与蓝色（正在下载）是可执行的状态，保留。
+   */
+  .navItem .badge {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    min-width: 0;
+    height: 15px;
+    padding: 0 4px;
+    font-size: 9px;
+  }
+  .navItem .badge:not(.badgeProblem):not(.badgeLive) { display: none; }
   .sidebarFooter { flex-direction: row; gap: 4px; padding: 6px; border-top: 0; border-left: 1px solid var(--color-border); }
   .sidebarFooter .navItem { flex-basis: 40px; }
   .main { min-height: 0; }

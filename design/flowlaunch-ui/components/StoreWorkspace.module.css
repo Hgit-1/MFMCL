@@ -230,7 +230,21 @@
   border-radius: var(--radius-sm);
   background: var(--color-bg-secondary);
   color: var(--color-text-primary);
+  /*
+   * 12px 而不是继承 body 的 14px。
+   *
+   * 这个下拉框在 183px 宽的侧栏里，14px 下实测 6 个示例实例有 4 个超宽（最长
+   * 177px，可用约 145px），文字会被原生 select 硬裁成「… · 1.18」。12px 除了
+   * 多出约 14% 的宽度，也让字号与旁边的说明文字（--text-xs/--text-sm）一致。
+   */
   font: inherit;
+  font-size: var(--text-sm);
+  /*
+   * 兜底：`fitInstanceLabel` 已经把文字控制在预算内，个别字体度量更宽时仍能
+   * 优雅收尾。Chromium 支持对 select 的选中项生效，其余浏览器会忽略——所以
+   * 真正的保证来自标签本身的长度控制。
+   */
+  text-overflow: ellipsis;
   outline: none;
 }
 
@@ -401,22 +415,36 @@
   margin-top: 16px;
 }
 
+/*
+ * 搜索卡片的标题行：「搜索模组」+ 右侧的来源计数。
+ *
+ * 两个都是短文本，但右侧标签长度会变（「正在加载…」「Modrinth 20 · CurseForge 0」）。
+ * 极窄面板里（280px 视口下卡片内容区只有 230px）右侧标签会把标题挤到三四个字
+ * 一行。这里让整行可换行、标题不参与收缩，放不下时把标签推到下一行。
+ */
 .filterTitle {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 8px 16px;
+  flex-wrap: wrap;
 }
 
 .filterTitle h2 {
   color: var(--color-text-primary);
   font-size: var(--text-lg);
   font-weight: 600;
+  /* 标题按内容宽度占位：它只有四个字，不该为了给标签让路而折行。 */
+  flex: 0 1 auto;
+  min-width: max-content;
 }
 
 .filterTitle span {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .filterGrid {
@@ -875,6 +903,17 @@
 .versionRow,
 .contentRow {
   display: flex;
+  /*
+   * 允许换行。
+   *
+   * 面板宽度不是由视口直接决定的：应用侧栏 240 + 商店左栏 208 + 内外边距与间距
+   * 一起扣掉，所以 761px 视口的商店面板只剩约 268px——而 760px 的断点恰好在这
+   * 之前就失效了。结果是「宽屏行布局」落在最窄的面板上：标题列被动作区挤到
+   * 21px（实测），一行只放得下两个字。
+   *
+   * 与其再猜一个视口断点，不如让行自己判断：动作区放不下就换到下一行。
+   */
+  flex-wrap: wrap;
   align-items: center;
   gap: 14px;
   min-height: 64px;
@@ -916,8 +955,15 @@
 .versionMain,
 .contentMain {
   display: flex;
-  min-width: 0;
   flex: 1;
+  /*
+   * `min-width` 而不是 `flex-basis`。
+   *
+   * 换行计算用的是「假想主轴尺寸」，它会被 min-width 夹住；所以这个值同时决定了
+   * 「标题最少多宽」和「什么时候把动作区挤到下一行」。160px 约等于 13 个汉字，
+   * 够放一个完整的模组名，又不至于让中等宽度下的行过早换行。
+   */
+  min-width: 160px;
   flex-direction: column;
   gap: 3px;
 }
@@ -1144,7 +1190,19 @@
   }
 }
 
-@media (max-width: 760px) {
+/*
+ * 商店的双栏在 900px 就堆叠，而不是等到 760px。
+ *
+ * ## 为什么 760 太晚
+ *
+ * 面板宽度 = 视口 - 应用侧栏(240) - 商店左栏(208) - 内外边距与间距(约 54)。
+ * 760px 视口下面板只剩约 228px，而行内容（图标 40 + 标题列 + 动作区 111）
+ * 根本放不下——实测标题列被压到 21px、整行被拆成三行、行高 207px。
+ *
+ * 900px 是这条式子留出可用面板（约 398px）的临界点。早堆叠一点，代价只是
+ * 「左栏移到上面」，收益是结果列表保持可读。
+ */
+@media (max-width: 900px) {
   .workspace {
     flex-direction: column;
     gap: 12px;
@@ -1170,6 +1228,9 @@
   .panel {
     overflow: visible;
   }
+}
+
+@media (max-width: 760px) {
 
   /* 同样要排除 `filterGridEven`：见上面 980px 断点处关于层叠覆盖的说明。 */
   .filterGrid:not(.filterGridEven) {
@@ -1430,4 +1491,143 @@
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
+}
+
+/* --- 版本行（PCL2 风格紧凑布局）------------------------------------------ */
+
+/*
+ * 参考 PCL2 的 ResourceVersion.ToListItem：固定 42px 高、单行、无大图标。
+ *
+ * ## 为什么不做成大卡片
+ *
+ * 之前这里是「64px 图标 + 两行文字 + 两个按钮」，每行 120px 以上。一个模组常有
+ * 几十个版本，光版本列表就吞掉整页——用户要看的是「哪个版本号」，而不是每个
+ * 版本的封面图（而且模组版本本来就没有配图，那个图标是同一个占位方块重复 100 次）。
+ *
+ * PCL2 的做法是把密度做上去：42px 一行，一屏能扫过十几个版本，标题、加载器、
+ * 大小、更新时间全在视线里。
+ *
+ * 42px 不是随手取的：它等于「一行文字 + 上下 10px 内边距」，也是桌面应用里列表项
+ * 的常见高度（与 Windows 资源管理器接近），鼠标扫过时不容易点错行。
+ */
+.versionRowCompact {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease);
+}
+
+/*
+ * 悬停只改底色与描边，不做位移。
+ *
+ * 版本列表是密排的，任何 `translateY` 都会让相邻行跟着抖一下——而这里一次要扫过
+ * 十几行，位移累积起来就是明显的跳动。
+ */
+.versionRowCompact:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 40%, var(--color-border));
+  background: var(--color-bg-secondary);
+}
+
+/* 标题与元信息挤在一行里：标题优先占空间，元信息不够时可省略。 */
+.versionRowCompact .versionMain {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.versionRowCompact .versionTitle {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/*
+ * 标题不折行、超长省略。
+ * 版本号通常很短，真正长的是 `fabric-api-0.115.1+1.21.1` 这种带项目名的文件名，
+ * 折行会让行高从 42px 变成 58px，破坏整个列表的节奏。
+ */
+.versionRowCompact .versionTitle strong {
+  overflow: hidden;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * 元信息行：单行、可省略、不换行。
+ *
+ * 用 `white-space: nowrap` + `text-overflow: ellipsis` 而不是 `flex-wrap`：
+ * 换行会把行高撑开，而这一行的定位是「扫一眼就能带走的信息」，扫不到的部分
+ * 悬停有 title。
+ */
+.versionRowCompact .versionMeta {
+  flex: 1 1 auto;
+  overflow: hidden;
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 发布类型标记：只在 beta/alpha 时出现。 */
+.releaseTag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.releaseBeta {
+  background: color-mix(in srgb, var(--color-warning-500, #f59e0b) 16%, transparent);
+  color: color-mix(in srgb, var(--color-warning-500, #f59e0b) 78%, var(--color-text-primary));
+}
+
+.releaseAlpha {
+  background: color-mix(in srgb, var(--color-danger-500) 14%, transparent);
+  color: var(--color-danger-500);
+}
+
+/*
+ * 窄屏：标题与元信息改回上下两行。
+ *
+ * 320px 下两者并排会让标题只剩两三个字，而版本号被省略掉就失去了意义。
+ * 换行后行高变高，但至少在窄屏上仍然可读——这比「紧凑但看不清」好。
+ */
+@media (max-width: 560px) {
+  .versionRowCompact .versionMain {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .versionRowCompact .versionMeta {
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
+}
+
+/* 关闭动效时不要过渡（与全局 .motion-off 同一条思路，这里更具体）。 */
+:where([data-motion='off']) .versionRowCompact {
+  transition: none;
+}
+
+/* 版本列表顶部的一行说明。低对比、紧贴列表，不占视觉重量。 */
+.versionListHint {
+  margin: 0 0 4px;
+  padding: 0 10px;
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  line-height: 1.5;
 }
