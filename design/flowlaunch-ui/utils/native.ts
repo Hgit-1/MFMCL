@@ -19,6 +19,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import type { InstanceOverrides as UiInstanceOverrides } from './instanceOverrides'
 import type { LauncherPrefs } from './launcherPrefs'
 import { PREVIEW_DATA } from './preview'
+import { previewModelSources, previewModelStatus } from './modelPreview'
 import { autoAllocateMb, deviceMemoryMbSync, lastKnownUsedMb } from './memory'
 
 // ---------------------------------------------------------------------------
@@ -89,7 +90,9 @@ export interface LauncherSettings {
   autoLanguage: boolean
   announcementPolicy: UpdatePolicy
   cacheDirectory: string | null
-  anonymousUsage: boolean
+  launcherLogEnabled: boolean
+  /** 用户指定的 llama-server 可执行文件；空表示自动查找。 */
+  llamaServerPath: string | null
   opacity: number
   hiddenTheme: boolean
   showLauncherLogo: boolean
@@ -311,6 +314,13 @@ export interface ModQuery {
    */
   projectType?: 'mod' | 'resourcepack' | 'shader' | 'datapack' | 'modpack'
   gameVersion?: string
+  /**
+   * 不按游戏版本筛选（「全部版本」）。
+   *
+   * 与「`gameVersion` 留空」不是同一件事：留空表示跟随目标实例，而这个布尔表示
+   * 明确不看版本。两者在请求里长得像，语义相反，所以用一个独立字段表达。
+   */
+  allVersions?: boolean
   loader?: string
   category?: string
   index?: 'relevance' | 'downloads' | 'newest' | 'updated' | 'follows'
@@ -326,6 +336,16 @@ export interface CatalogVersion {
   url: string
   sha1: string
   size: number
+  /** `release` / `beta` / `alpha`。界面据此显示测试版标记。 */
+  versionType?: 'release' | 'beta' | 'alpha'
+  /** 这个文件支持的游戏版本。 */
+  gameVersions?: string[]
+  /** 这个文件支持的加载器。 */
+  loaders?: string[]
+  /** 下载次数。CurseForge 常返回 0，不能当排序依据。 */
+  downloads?: number
+  /** 前置依赖条数。 */
+  dependencyCount?: number
 }
 
 /** 对应 Rust `ModFile`。 */
@@ -527,7 +547,8 @@ export function fallbackSettings(): LauncherSettings {
     autoLanguage: true,
     announcementPolicy: 'notify',
     cacheDirectory: null,
-    anonymousUsage: false,
+    launcherLogEnabled: false,
+    llamaServerPath: null,
     opacity: 100,
     hiddenTheme: false,
     showLauncherLogo: true,
@@ -606,7 +627,8 @@ export function prefsToSettings(prefs: LauncherPrefs, base: LauncherSettings): L
     showDebugHints: prefs.showDebugHints,
     announcementPolicy: prefs.announcementPolicy as UpdatePolicy,
     cacheDirectory: prefs.cacheDirectory || null,
-    anonymousUsage: prefs.anonymousUsage,
+    launcherLogEnabled: prefs.launcherLogEnabled,
+    llamaServerPath: prefs.llamaServerPath || null,
     opacity: prefs.opacity,
     hiddenTheme: prefs.hiddenTheme,
     showLauncherLogo: prefs.showLauncherLogo,
@@ -1151,7 +1173,16 @@ export async function searchMods(
     if (!target) throw new Error('找不到所选实例。')
     const projectType = request.projectType ?? 'mod'
     // 与后端同一套 facet 构造。空关键词同样允许：Modrinth 支持只带 facet 的浏览。
-    const gameVersion = request.gameVersion?.trim() || target.gameVersion
+    /*
+     * 「全部版本」优先于实例版本。
+     *
+     * 与后端 `search_mods` 同一套优先级：显式全部版本 → 显式版本 → 跟随实例。
+     * 预览和桌面必须给出一致的结果，否则「预览里能搜到、桌面版搜不到」这种差异
+     * 会让人以为是后端的问题。
+     */
+    const gameVersion = request.allVersions
+      ? ''
+      : (request.gameVersion?.trim() || target.gameVersion)
     /*
      * 资源包/光影包/数据包的版本里 `loaders` 是 `["minecraft"]`，按 `fabric` 筛会
      * 得到空列表。只有模组与整合包才带加载器 facet。
@@ -1195,6 +1226,112 @@ export async function searchMods(
   return invoke<CatalogMod[]>('search_mods', { instanceId, request })
 }
 
+/**
+ * 没有目标实例时的搜索（商店「直连下载」模式）。
+ *
+ * 与 `searchMods` 返回同样的 `CatalogMod[]`，调用方不必区分两种结果的形状。
+ * 区别在后端：不做实例级收窄，版本与加载器只能由调用方显式给出；都没给时表示
+ * 「不限」，由用户在版本列表里自己挑。
+ */
+export async function searchModsUnscoped(request: ModQuery): Promise<CatalogMod[]> {
+  if (!isDesktopShell()) {
+    if (!PREVIEW_DATA) throw new NativeUnavailableError('搜索模组')
+    /*
+     * 预览模式：不带 game_versions / loaders 参数直接查 Modrinth。
+     * 与桌面版语义一致——不选实例就是「不限版本与加载器」。
+     */
+    const projectType = request.projectType ?? 'mod'
+    const facets: string[][] = [[`project_type:${projectType}`]]
+    if (request.category) facets.push([`categories:${request.category}`])
+    const params: Record<string, string> = {
+      facets: JSON.stringify(facets),
+      limit: '20',
+      index: request.index || 'relevance',
+    }
+    if (request.offset) params.offset = String(request.offset)
+    const trimmed = (request.query ?? '').trim()
+    if (trimmed) params.query = trimmed
+    const body = await modrinthGet<{
+      hits?: Array<{
+        project_id?: unknown; title?: unknown; description?: unknown; author?: unknown;
+        downloads?: unknown; follows?: unknown; icon_url?: unknown;
+      }>
+    }>('/search', params)
+    return (body.hits ?? [])
+      .filter(hit => typeof hit.project_id === 'string' && typeof hit.title === 'string')
+      .map(hit => ({
+        projectId: hit.project_id as string,
+        title: hit.title as string,
+        description: typeof hit.description === 'string' ? hit.description : '',
+        author: typeof hit.author === 'string' ? hit.author : '',
+        downloads: typeof hit.downloads === 'number' ? hit.downloads : 0,
+        follows: typeof hit.follows === 'number' ? hit.follows : 0,
+        iconUrl: typeof hit.icon_url === 'string' ? hit.icon_url : null,
+      }))
+  }
+  return invoke<CatalogMod[]>('search_mods_unscoped', { request })
+}
+
+/** Modrinth `/version` 响应的一个条目。只声明我们实际用到的字段。 */
+interface ModrinthVersionJson {
+  id?: unknown
+  version_number?: unknown
+  version_type?: unknown
+  date_published?: unknown
+  game_versions?: unknown
+  loaders?: unknown
+  downloads?: unknown
+  dependencies?: unknown
+  files?: Array<{
+    url?: unknown; filename?: unknown; size?: unknown; primary?: unknown;
+    hashes?: Record<string, unknown>;
+  }>
+}
+
+/**
+ * Modrinth 版本 → 界面模型。
+ *
+ * 抽成一个函数给两条路径共用（按实例筛的 `listModVersions` 与不筛的
+ * `listProjectVersions`）：两边原本各抄了一遍解析循环，加字段时只改一处、
+ * 另一处就会静默缺字段——实测就发生过：桌面版有加载器与下载量，预览版没有。
+ *
+ * 校验与后端 `parse_versions` 保持一致：只信任 `cdn.modrinth.com`、要求 40 位
+ * SHA-1。预览和桌面看到的是同一批数据，也必须守同一套规则。
+ */
+function mapModrinthVersions(raw: ModrinthVersionJson[]): CatalogVersion[] {
+  const out: CatalogVersion[] = []
+  const takeStrings = (value: unknown, limit: number, maxLen: number): string[] =>
+    Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === 'string').slice(0, limit).map(s => s.slice(0, maxLen))
+      : []
+  for (const version of raw.slice(0, 100)) {
+    const file = version.files?.find(item => item.primary === true) ?? version.files?.[0]
+    if (!file || typeof file.url !== 'string' || typeof file.filename !== 'string') continue
+    let host = ''
+    try { host = new URL(file.url).hostname } catch { continue }
+    if (host !== 'cdn.modrinth.com') continue
+    const sha1 = file.hashes?.sha1
+    if (typeof sha1 !== 'string' || sha1.length !== 40) continue
+    const type = typeof version.version_type === 'string' ? version.version_type.toLowerCase() : ''
+    out.push({
+      versionId: typeof version.id === 'string' ? version.id : '',
+      versionNumber: typeof version.version_number === 'string' ? version.version_number : '',
+      dateCreated: typeof version.date_published === 'string' ? version.date_published : '',
+      fileName: file.filename,
+      url: file.url,
+      sha1,
+      size: typeof file.size === 'number' ? file.size : 0,
+      // 未知类型按 release 处理：把正常版本标成测试版比漏标更糟（用户会不敢装）。
+      versionType: type === 'beta' ? 'beta' : type === 'alpha' ? 'alpha' : 'release',
+      gameVersions: takeStrings(version.game_versions, 16, 32),
+      loaders: takeStrings(version.loaders, 8, 32),
+      downloads: typeof version.downloads === 'number' ? version.downloads : 0,
+      dependencyCount: Array.isArray(version.dependencies) ? version.dependencies.length : 0,
+    })
+  }
+  return out
+}
+
 export async function listModVersions(
   instanceId: string,
   projectId: string,
@@ -1212,31 +1349,8 @@ export async function listModVersions(
     if ((kind === 'mod' || kind === 'modpack') && target.loader !== 'vanilla') {
       params.loaders = JSON.stringify([target.loader])
     }
-    const raw = await modrinthGet<Array<{
-      id?: unknown; version_number?: unknown; date_published?: unknown;
-      files?: Array<{ url?: unknown; filename?: unknown; size?: unknown; primary?: unknown; hashes?: Record<string, unknown> }>;
-    }>>(`/project/${projectId}/version`, params)
-    const out: CatalogVersion[] = []
-    for (const version of raw.slice(0, 100)) {
-      const file = version.files?.find(item => item.primary === true) ?? version.files?.[0]
-      if (!file || typeof file.url !== 'string' || typeof file.filename !== 'string') continue
-      // 只信任 Modrinth 自己的分发域名，与后端 `parse_versions` 的校验一致。
-      let host = ''
-      try { host = new URL(file.url).hostname } catch { continue }
-      if (host !== 'cdn.modrinth.com') continue
-      const sha1 = file.hashes?.sha1
-      if (typeof sha1 !== 'string' || sha1.length !== 40) continue
-      out.push({
-        versionId: typeof version.id === 'string' ? version.id : '',
-        versionNumber: typeof version.version_number === 'string' ? version.version_number : '',
-        dateCreated: typeof version.date_published === 'string' ? version.date_published : '',
-        fileName: file.filename,
-        url: file.url,
-        sha1,
-        size: typeof file.size === 'number' ? file.size : 0,
-      })
-    }
-    return out
+    const raw = await modrinthGet<ModrinthVersionJson[]>(`/project/${projectId}/version`, params)
+    return mapModrinthVersions(raw)
   }
   return invoke<CatalogVersion[]>('list_mod_versions', {
     instanceId,
@@ -1654,6 +1768,49 @@ export async function downloadAndImportModpack(
 }
 
 /**
+ * 列出 Modrinth 项目的全部版本，**不**按当前实例过滤。
+ *
+ * 只用于整合包：它自带游戏版本与加载器，导入时会据此创建新实例。模组必须与实例
+ * 版本一致，所以模组仍然走 `listModVersions`（那个会过滤）。
+ */
+export async function listProjectVersions(
+  projectId: string,
+  projectType: 'modpack' | 'mod' | 'resourcepack' = 'modpack',
+): Promise<CatalogVersion[]> {
+  /*
+   * 预览模式直接查真实的 Modrinth：版本清单是公开事实，不涉及用户私有数据，
+   * 浏览器里也能拿到。这与 `listModVersions` 的做法一致——那条路径同样在预览里
+   * 走真实接口，所以「版本列表」在两种环境里是同一份数据。
+   *
+   * 区别只有一个：这里**不**带 game_versions / loaders 参数。整合包自带它们，
+   * 带上去会让预览只显示某个 MC 版本的包，与桌面版行为不一致。
+   */
+  if (!isDesktopShell()) {
+    if (!/^[A-Za-z0-9]{6,16}$/.test(projectId)) throw new Error('项目标识无效。')
+    const raw = await modrinthGet<ModrinthVersionJson[]>(`/project/${projectId}/version`, {})
+    return mapModrinthVersions(raw)
+  }
+  return invoke<CatalogVersion[]>('project_versions', { projectId, projectType })
+}
+
+/**
+ * 下载并导入一个 Modrinth 的 `.mrpack` 为新实例。
+ *
+ * 与 `downloadAndImportModpack`（CurseForge）最终走同一套导入事务，区别只在包
+ * 从哪来。前端同样不接触临时文件。
+ */
+export async function downloadAndImportModrinthPack(
+  version: CatalogVersion,
+  instanceHint?: string,
+): Promise<InstanceRecord> {
+  requireDesktop('下载并导入整合包')
+  return invoke<InstanceRecord>('download_and_import_modrinth_pack', {
+    version,
+    instanceHint: instanceHint ?? null,
+  })
+}
+
+/**
  * 实例里可以被「打开文件夹」定位的子目录。
  *
  * 用固定枚举而不是自由的相对路径：后端只接受这几个值，路径由它自己拼出来。
@@ -1805,6 +1962,42 @@ export async function restoreBackup(path: string, archiveSha256: string, name: s
 export async function summarizeDiagnostics(instanceId: string): Promise<DiagnosticSummary> {
   requireDesktop('生成诊断摘要')
   return invoke<DiagnosticSummary>('summarize_diagnostics', { instanceId })
+}
+
+/** 对应 Rust `launcher_log_info` 的返回值。 */
+export interface LauncherLogInfo {
+  /** 日志写入器当前是否开启。 */
+  enabled: boolean
+  /** 日志文件完整路径。 */
+  path: string
+  /** 所在目录。 */
+  directory: string
+  bytes: number
+}
+
+/**
+ * 查询启动器日志状态。
+ *
+ * 预览模式返回一个空状态而不是抛错：开关本身在预览里仍然要能调外观，只是没有
+ * 真实文件可写。
+ */
+export async function launcherLogInfo(): Promise<LauncherLogInfo> {
+  if (!isDesktopShell()) {
+    return { enabled: false, path: '', directory: '', bytes: 0 }
+  }
+  return invoke<LauncherLogInfo>('launcher_log_info')
+}
+
+/** 在文件管理器中打开日志目录。 */
+export async function openLauncherLogFolder(): Promise<void> {
+  requireDesktop('打开日志目录')
+  await invoke('launcher_log_open_folder')
+}
+
+/** 清空日志文件。原本开启时会被重新打开。 */
+export async function clearLauncherLog(): Promise<void> {
+  requireDesktop('清空日志')
+  await invoke('launcher_log_clear')
 }
 
 export async function exportDiagnostics(instanceId: string, destinationDir: string): Promise<string> {
@@ -1975,6 +2168,282 @@ export async function clearLaunchHistory(): Promise<number> {
   if (!isDesktopShell()) return 0
   return invoke<number>('clear_launch_history')
 }
+
+// ---------------------------------------------------------------------------
+// 本地 AI 模型（崩溃分析的推理引擎用）
+// ---------------------------------------------------------------------------
+
+/** 对应 Rust `ModelStatus`。 */
+export interface ModelStatus {
+  id: string
+  name: string
+  fileName: string
+  /** 模型文件应落在的完整路径。 */
+  path: string
+  /** 模型目录。 */
+  directory: string
+  expectedBytes: number
+  /** 文件存在且大小与期望一致。 */
+  installed: boolean
+  /** 磁盘上的实际字节数；文件不存在时为 null。 */
+  bytesOnDisk: number | null
+  downloading: boolean
+  sha256: string
+}
+
+/** 对应 Rust `ModelSourceStatus`：一个下载源及其测速结果。 */
+export interface ModelSourceStatus {
+  label: string
+  url: string
+  /** 实测吞吐（字节/秒）；不可用时为 null。 */
+  bytesPerSecond: number | null
+  /** 不可用的原因；可用时为 null。 */
+  problem: string | null
+}
+
+/** 对应 Rust `ModelProgress`（`crash-ai-model-progress` 事件载荷）。 */
+export interface ModelProgress {
+  stage: 'probing' | 'downloading' | 'verifying' | 'completed' | 'failed'
+  received: number
+  total: number
+  /** 正在使用的源名；测速阶段为 null。 */
+  source: string | null
+  /** 实测速度（字节/秒）。 */
+  bytesPerSecond: number | null
+}
+
+/** 查询本地模型是否已下载。 */
+export async function getModelStatus(): Promise<ModelStatus> {
+  if (!isDesktopShell()) {
+    // 预览数据在 `modelPreview.ts` 里就地构造，生产构建中会被整体删除。
+    const preview = previewModelStatus()
+    if (preview) return preview
+    // 生产构建走不到这里：没有桌面外壳意味着出错了，给一个明确的空状态而不是崩。
+    return {
+      id: 'unavailable',
+      name: '',
+      fileName: '',
+      path: '',
+      directory: '',
+      expectedBytes: 0,
+      installed: false,
+      bytesOnDisk: null,
+      downloading: false,
+      sha256: '',
+    }
+  }
+  return invoke<ModelStatus>('crash_ai_model_status')
+}
+
+/**
+ * 测速并返回按吞吐排序的下载源。
+ *
+ * 界面在下载**之前**调用它，用来显示「将从最快的源下载」；全部不可用时也能把
+ * 具体原因摆出来，而不是让用户对着一个必然失败的按钮猜。
+ *
+ * 预览模式返回一份标注为「无法测速」的示例列表：源列表这块布局（每项的名字、
+ * 速度、失败原因）在浏览器里必须能看和调，但绝不能伪造真实速度数字——那会让人
+ * 以为测速在预览里也能用。
+ */
+export async function probeModelSources(): Promise<ModelSourceStatus[]> {
+  if (!isDesktopShell()) return previewModelSources()
+  return invoke<ModelSourceStatus[]>('crash_ai_model_sources')
+}
+
+/** 下载模型。会先自动测速，选最快的源。 */
+export async function downloadModel(): Promise<ModelStatus> {
+  if (!isDesktopShell()) {
+    throw new NativeUnavailableError('下载本地模型')
+  }
+  return invoke<ModelStatus>('crash_ai_model_download')
+}
+
+/** 取消正在进行的模型下载。 */
+export async function cancelModelDownload(): Promise<void> {
+  if (!isDesktopShell()) return
+  await invoke('crash_ai_model_cancel')
+}
+
+/** 删除已下载的模型文件。 */
+export async function removeModel(): Promise<ModelStatus> {
+  if (!isDesktopShell()) {
+    throw new NativeUnavailableError('删除本地模型')
+  }
+  return invoke<ModelStatus>('crash_ai_model_remove')
+}
+
+/** 模型下载进度。 */
+export const onModelProgress = (handler: (payload: ModelProgress) => void) =>
+  subscribe<ModelProgress>('crash-ai-model-progress', handler)
+
+/** 模型下载失败的通知（失败原因走事件而非返回值，便于后台下载时提示）。 */
+export const onModelFailed = (handler: (payload: string) => void) =>
+  subscribe<string>('crash-ai-model-failed', handler)
+
+// ---------------------------------------------------------------------------
+// 崩溃分析（本地规则 + 可选本地模型）
+// ---------------------------------------------------------------------------
+
+/** 对应 Rust `Environment`：分析时能提供的上下文，全部可选。 */
+export interface CrashEnvironment {
+  javaVersion?: string | null
+  javaBits?: number | null
+  memoryMb?: number | null
+  gameVersion?: string | null
+  loader?: string | null
+  modCount?: number | null
+  mods?: string[]
+  instanceDir?: string | null
+  freeDiskMb?: number | null
+}
+
+/** 一条命中的规则。 */
+export interface CrashFinding {
+  id: string
+  title: string
+  confidence: 'high' | 'medium' | 'low'
+  explanation: string
+  suggestions: string[]
+  evidence: string[]
+}
+
+/** 堆栈因果分析的结论。 */
+export interface CrashCause {
+  kind: string
+  summary: string
+  detail?: string | null
+}
+
+/** 模型给出的解释。与规则结论分开呈现，绝不混为一谈。 */
+export interface CrashNarrative {
+  /** 一段完整的解释文字。 */
+  text: string
+  /** 模型自评置信度，最高只到 medium。 */
+  confidence: 'low' | 'medium'
+  model: string
+}
+
+/** 模型能不能在这台机器上跑。 */
+export interface CrashModelAssessment {
+  feasibility: 'viable' | 'slow' | 'notViable' | 'unknown'
+  summary: string
+  reason: string
+  estimatedMb: number
+  disableModel: boolean
+}
+
+/** 对应 Rust `Analysis`。 */
+export interface CrashAnalysis {
+  findings: CrashFinding[]
+  cause: CrashCause | null
+  modelStatus: CrashModelAssessment | null
+  narrative: CrashNarrative | null
+  /** 从日志里读出的事实。 */
+  facts: { excerpt?: string; detectedGameVersion?: string | null; exception?: string | null; mods?: string[] }
+  modelUsed: boolean
+  warnings: string[]
+}
+
+/**
+ * 分析进度（`crash-ai-progress` 事件载荷）。
+ *
+ * `chunk.text` 是**增量**：前端把每次收到的片段追加到已经显示的文本后面即可。
+ * 后端不推累积值，是因为累积值让每帧载荷随回答长度线性增长。
+ */
+export type CrashProgress =
+  | { kind: 'rules'; analysis: CrashAnalysis }
+  | { kind: 'chunk'; text: string }
+  | { kind: 'modelDone'; reason: string | null }
+
+/**
+ * 流式分析一份崩溃日志。
+ *
+ * 返回值仍是完整结果；过程中通过 `crash-ai-progress` 推出规则结论与模型增量。
+ * 预览模式没有后端，调用会抛错——这不是缺陷，规则分析需要一个真实进程去探测硬件。
+ */
+export async function analyseCrashLogStreaming(
+  log: string,
+  environment: CrashEnvironment | undefined,
+  useModel: boolean,
+): Promise<CrashAnalysis> {
+  requireDesktop('崩溃日志分析')
+  return invoke<CrashAnalysis>('crash_ai_analyse_stream', { log, environment, useModel })
+}
+
+/** 分析进度事件。规则结论先到，模型文字随后逐段到达。 */
+export const onCrashProgress = (handler: (payload: CrashProgress) => void) =>
+  subscribe<CrashProgress>('crash-ai-progress', handler)
+
+/** 对应 Rust `InstanceReport`：实例目录里最近的一份崩溃报告。 */
+export interface CrashInstanceReport {
+  found: boolean
+  name: string | null
+  content: string | null
+}
+
+/**
+ * 读取实例最近的崩溃报告。
+ *
+ * 后端只搜 `<game>/crash-reports`，不接受任意路径——「分析这个实例的崩溃」因此
+ * 始终安全，也不会因为路径输错而失败。
+ */
+export async function getInstanceCrashReport(instanceId: string): Promise<CrashInstanceReport> {
+  if (!isDesktopShell()) return { found: false, name: null, content: null }
+  return invoke<CrashInstanceReport>('crash_ai_instance_report', { instanceId })
+}
+
+/** 推理引擎的解析状态。对应 Rust `LlamaRuntimeStatus`。 */
+export interface LlamaRuntimeStatus {
+  /** 找到了可执行的引擎。 */
+  available: boolean
+  path: string | null
+  /** 路径来自哪：`settings` / `env` / `bundled` / `appdata` / `path`。 */
+  source: string | null
+  /** 当前有启动器拉起的引擎在运行。 */
+  managedRunning: boolean
+  /** 不可用的原因。 */
+  problem: string | null
+}
+
+/** 对应 Rust `CrashAiStatus`。 */
+export interface CrashAiStatus {
+  /** 模型服务是否在线。与「本机跑不跑得动」是两件事。 */
+  ok: boolean
+  model: string
+  endpoint: string
+  error: string | null
+  /** 本机能不能跑这个模型。 */
+  feasibility: CrashModelAssessment
+  /** 推理引擎能不能被启动（需要时会自动拉起）。 */
+  runtime: LlamaRuntimeStatus
+  /** 模型文件是否已下载。 */
+  modelInstalled: boolean
+}
+
+/**
+ * 模型状态 + 本机可行性。
+ *
+ * 界面必须先知道「这台机器跑不跑得动」，才能把「未下载模型」和「下载了也跑不动」
+ * 分开说。两者对用户意味着完全不同的行动：前者去下载，后者不必浪费一次 2 GB 的
+ * 传输和一个小时的等待。
+ *
+ * 预览模式没有后端、也没有真实硬件，返回 null，由调用方决定不显示可行性提示。
+ */
+export async function getCrashAiStatus(): Promise<CrashAiStatus | null> {
+  if (!isDesktopShell()) return null
+  return invoke<CrashAiStatus>('crash_ai_status')
+}
+
+/**
+ * 停止由启动器拉起的推理引擎。
+ *
+ * 「即用即启」的另一半：不使用时应把 1.8 GB 还回去，而不是等空闲回收。
+ */
+export async function stopCrashAiEngine(): Promise<void> {
+  if (!isDesktopShell()) return
+  await invoke('crash_ai_stop_engine')
+}
+
 
 // ---------------------------------------------------------------------------
 // 小工具

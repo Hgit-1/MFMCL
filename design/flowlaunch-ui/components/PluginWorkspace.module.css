@@ -130,6 +130,16 @@
   box-shadow: inset 0 0 0 1px var(--color-border);
 }
 
+/*
+ * 「安装插件」按钮。
+ *
+ * `white-space: nowrap` + `flex: none` 是这两个属性共同在保护一件事：按钮的宽度
+ * 必须由文字决定。窄屏媒体查询里它拿到 `flex: 1`，如果不锁住 `nowrap`，flex 会
+ * 把它压到 60px、中文标签折成五行（320px 视口实测）。按钮文字不是可以随便折的
+ * 段落，折行按钮看起来像坏掉了。
+ *
+ * 宽度不够时正确的降级是「整条占一行」，而不是「变窄变高」。
+ */
 .install {
   display: inline-flex;
   align-items: center;
@@ -145,6 +155,7 @@
   font: inherit;
   font-size: 11px;
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -719,9 +730,15 @@
     flex-basis: 100%;
   }
 
+  /*
+   * 窄屏下按钮独占一行。
+   *
+   * 它和筛选条并排时，320px 视口只剩不到 60px，而按钮文字需要约 82px。与其把
+   * 它压扁，不如让它整条占一行——主操作占满宽度反而更好点。
+   */
   .install {
     margin-left: 0;
-    flex: 1;
+    flex: 1 1 100%;
     justify-content: center;
   }
 

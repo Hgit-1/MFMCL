@@ -14,11 +14,12 @@
 //     不必滚过一堆灰掉的输入框。
 //   - 所有控件都由 SegmentedChoice 渲染，保证同一列里的高度、圆角、字号一致。
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   Coffee,
   HardDrive,
   Cpu,
+  Image as ImageIcon,
   MemoryStick,
   Monitor,
   Package,
@@ -30,10 +31,11 @@ import {
   Trash2,
   Wrench,
   FolderTree,
+  Upload,
 } from 'lucide-react';
 import type { GameInstance } from '../types';
 import { useI18n } from '../utils/i18n';
-import { errorText, resetInstanceSettings } from '../utils/native';
+import { errorText, formatBytes, resetInstanceSettings } from '../utils/native';
 import type { LauncherPrefs } from '../utils/launcherPrefs';
 import {
   autoAllocateMb,
@@ -64,6 +66,15 @@ import { ExportPackCard, InstanceFiles } from './InstanceFiles';
 import { OverrideChoice } from './OverrideChoice';
 import { SegmentedChoice } from './SegmentedChoice';
 import { TriStateSwitch } from './TriStateSwitch';
+import { InstanceIcon } from './InstanceIcon';
+import { iconForLoader } from '../utils/store/loaders';
+import {
+  ICON_ACCEPT,
+  MAX_ICON_BYTES,
+  importInstanceIcon,
+  type IconRejectReason,
+  type InstanceIconRecord,
+} from '../utils/instanceIcons';
 import styles from './InstanceSettings.module.css';
 
 interface InstanceSettingsProps {
@@ -87,6 +98,14 @@ interface InstanceSettingsProps {
   onModsChanged: () => void;
   /** 模组页的提示与错误统一走父组件的提示条。 */
   onNotice: (message: string) => void;
+  /** 当前实例的自定义图标元数据；没有则为 undefined（使用加载器标志）。 */
+  customIcon?: InstanceIconRecord;
+  /** 换图标。图片已经由父组件校验并落库，这里只回报结果。 */
+  onIconChange: (record: InstanceIconRecord) => void;
+  /** 恢复默认图标。 */
+  onIconReset: () => void;
+  /** 元数据在、图读不出来时清掉那条失效记录。 */
+  onIconMissing: () => void;
 }
 
 function formatGb(mb: number): string {
@@ -109,10 +128,17 @@ export function InstanceSettings({
   onDelete,
   onModsChanged,
   onNotice,
+  customIcon,
+  onIconChange,
+  onIconReset,
+  onIconMissing,
 }: InstanceSettingsProps) {
   const { t } = useI18n();
   /** 重置进行中，用于禁用按钮避免重复提交。 */
   const [resetting, setResetting] = useState(false);
+  /** 换图标进行中（解码 + 落库），用于禁用按钮与显示进度。 */
+  const [iconBusy, setIconBusy] = useState(false);
+  const iconInputRef = useRef<HTMLInputElement>(null);
 
   /**
    * 重置全部覆盖。
@@ -131,6 +157,50 @@ export function InstanceSettings({
       onNotice(errorText(error, '无法恢复默认设置。'));
     } finally {
       setResetting(false);
+    }
+  };
+
+  /**
+   * 换图标。
+   *
+   * 校验（类型、大小、能否解码）与写库都在 `importInstanceIcon` 里完成，只有它
+   * 返回成功才改界面。这样失败时用户看到的是「没变」加一条具体原因，而不是
+   * 一个先变了又变回去的图标。
+   *
+   * 失败原因逐条对应一段文案，而不是把浏览器的英文报错直接抛给用户。
+   */
+  const pickIcon = async (file: File | undefined) => {
+    if (!file) return;
+    setIconBusy(true);
+    try {
+      const result = await importInstanceIcon(instance.id, file);
+      if (result.ok) {
+        onIconChange(result.record);
+        onNotice(t('icon.applied', { values: { name: instance.name } }));
+      } else {
+        const keys: Record<IconRejectReason, Parameters<typeof t>[0]> = {
+          type: 'icon.rejectedType',
+          size: 'icon.rejectedSize',
+          decode: 'icon.rejectedDecode',
+          storage: 'icon.rejectedStorage',
+        };
+        onNotice(t(keys[result.reason], { values: { size: formatBytes(MAX_ICON_BYTES) } }));
+      }
+    } finally {
+      setIconBusy(false);
+      // 清空 value：否则选同一张图不会触发 change，用户会以为没反应。
+      if (iconInputRef.current) iconInputRef.current.value = '';
+    }
+  };
+
+  /** 恢复默认图标。 */
+  const resetIcon = async () => {
+    setIconBusy(true);
+    try {
+      await onIconReset();
+      onNotice(t('icon.cleared', { values: { name: instance.name } }));
+    } finally {
+      setIconBusy(false);
     }
   };
 
@@ -252,6 +322,68 @@ export function InstanceSettings({
               : t('override.followAll')}
           </span>
         </div>
+
+        {/*
+          图标放在最前面，紧随只读摘要。
+
+          它是这一页唯一的「身份」设置，其余都是「这次怎么启动」与「里面装了什么」。
+          放在行为设置之前，用户想改图标时不必先划过三组参数；同时它又不在页头，
+          因为页头已经有四个按钮，再塞一个 48px 的图标框会把标题挤窄。
+
+          也刻意不放进「高级」：换图标是常见操作，藏进高级参数里等于没有入口。
+        */}
+        <section className={styles.section}>
+          <div className={styles.sectionHead}>
+            <span className={styles.sectionIcon}><ImageIcon size={16} strokeWidth={1.8} /></span>
+            <h2>{t('icon.sectionTitle')}</h2>
+            <small>{t('icon.sectionHint')}</small>
+          </div>
+          <div className={styles.iconBlock}>
+            <div className={styles.iconPreview}>
+              <InstanceIcon
+                instanceId={instance.id}
+                loaderIcon={iconForLoader(instance.loader)}
+                customIcon={customIcon}
+                size={56}
+                onMissing={onIconMissing}
+              />
+            </div>
+            <div className={styles.iconCopy}>
+              <strong>{customIcon ? t('icon.custom') : t('icon.loaderDefault')}</strong>
+              {/* 没有自定义图标时说明「为什么现在显示的是这个」，而不是只留一个空文件名。 */}
+              <span className={styles.iconFile}>{customIcon ? customIcon.name : t('icon.inheritHint')}</span>
+              <span className={styles.iconHint}>{t('icon.hint', { values: { size: formatBytes(MAX_ICON_BYTES) } })}</span>
+            </div>
+            <div className={styles.iconActions}>
+              <button
+                type="button"
+                className={styles.iconButton}
+                disabled={iconBusy}
+                onClick={() => iconInputRef.current?.click()}
+              >
+                <Upload size={13} /> {customIcon ? t('icon.replace') : t('icon.choose')}
+              </button>
+              {customIcon && (
+                <button
+                  type="button"
+                  className={styles.iconButton}
+                  disabled={iconBusy}
+                  onClick={() => void resetIcon()}
+                >
+                  <RotateCcw size={13} /> {t('icon.reset')}
+                </button>
+              )}
+            </div>
+          </div>
+          <input
+            ref={iconInputRef}
+            type="file"
+            accept={ICON_ACCEPT}
+            className={styles.hiddenInput}
+            aria-label={t('icon.choose')}
+            onChange={event => void pickIcon(event.target.files?.[0])}
+          />
+        </section>
 
         <section className={styles.section}>
           <div className={styles.sectionHead}>

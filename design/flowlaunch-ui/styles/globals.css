@@ -98,11 +98,24 @@
   --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1), 0 4px 6px rgba(0, 0, 0, 0.05);
   --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.1), 0 10px 10px rgba(0, 0, 0, 0.04);
   
-  /* 动画 */
-  --duration-fast: 150ms;
-  --duration-base: 200ms;
-  --duration-slow: 300ms;
+  /* 动画
+   *
+   * `--motion-scale` 是全局的时长倍数，由 `utils/motion.ts` 写到根元素上：
+   * 关闭动效 = 0，缓慢 = 1.6，快速 = 0.6。
+   *
+   * 三个 duration token 都乘它，所以「关掉动画」只需要改一个变量，而不是逐个
+   * 组件写条件——后者永远做不完整，新增一个组件就会漏掉。
+   *
+   * 用 `calc` 而不是让组件自己乘：组件里仍然写 `var(--duration-base)`，
+   * 已有的几十处 transition 不用改一行就全部跟随。
+   */
+  --motion-scale: 1;
+  --duration-fast: calc(150ms * var(--motion-scale));
+  --duration-base: calc(200ms * var(--motion-scale));
+  --duration-slow: calc(300ms * var(--motion-scale));
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  /* 进入动效用的回弹曲线：比标准 ease 更有「落定」感，只用于入场。 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* 深色主题 */
@@ -148,12 +161,36 @@
   --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.5), 0 10px 10px rgba(0, 0, 0, 0.3);
 }
 
-/* 减少动效 */
+/*
+ * 关闭动效。
+ *
+ * 两条规则并存：
+ *   1. `.motion-off` 是我们自己的开关（用户在设置里关掉）。它把时长压到 0，
+ *      并让动画只跑一次——循环动画否则会在 0 时长下疯狂空转，白占 CPU。
+ *   2. 媒体查询是系统级偏好。它比应用内开关更强势：系统要求减少时，即使用户在
+ *      应用里选了「缓慢」也应当尊重系统（无障碍偏好优先于应用偏好）。
+ *
+ * 为什么用 `0.01ms` 而不是 `0`：`transitionend` / `animationend` 在 0 时长下
+ * 某些浏览器不会派发，而代码里有依赖这些事件的地方（例如折叠动画结束后移除
+ * 节点）。0.01ms 既不可感知，又保证事件仍然触发。
+ */
+.motion-off *,
+.motion-off *::before,
+.motion-off *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  * {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 

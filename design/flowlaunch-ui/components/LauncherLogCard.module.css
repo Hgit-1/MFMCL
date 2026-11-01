@@ -1,0 +1,269 @@
+/* 启动器日志卡片。
+ *
+ * 与设置面板里其它卡片同一套视觉（同边框、同圆角、同字号阶梯）。开关单独放在
+ * 标题右侧：它是这张卡唯一的状态，放在行尾比另起一行更容易和「这部分是否开启」
+ * 对应起来。
+ */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-secondary);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-primary-500) 12%, var(--color-bg-secondary));
+  color: var(--color-primary-text);
+}
+
+.headCopy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.headCopy strong {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.headCopy p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+/* --- 开关 ---------------------------------------------------------------- */
+
+/*
+ * 与设置面板其它开关同一形状（38×22 轨道 + 16px 圆钮）。
+ * `flex: none` 保证它不会被长标题挤窄——一个被压成椭圆的开关看起来像坏掉了。
+ */
+.switch {
+  width: 38px;
+  height: 22px;
+  flex: none;
+  margin-top: 3px;
+  padding: 3px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--color-border);
+  cursor: pointer;
+  transition: background .18s;
+}
+
+.switch i {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / .2);
+  transition: transform .18s;
+}
+
+.switchOn {
+  background: var(--color-primary-solid);
+}
+
+.switchOn i {
+  transform: translateX(16px);
+}
+
+.switch:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary-500) 60%, transparent);
+  outline-offset: 2px;
+}
+
+/* --- 事实行 -------------------------------------------------------------- */
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin: 0;
+}
+
+.facts > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.facts dt {
+  color: var(--color-text-disabled);
+  font-size: 9px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 路径很长：占满一行、单行省略，完整值在 title 里。 */
+.path {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 10px !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- 三步引导 ------------------------------------------------------------ */
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-elevated);
+  list-style: none;
+}
+
+.steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/*
+ * 编号圆点。
+ *
+ * 用数字而不是图标：这三步有先后顺序，数字本身就在表达「先这个，再那个」。
+ * 固定宽高让三步的文字左边缘严格对齐——否则「1」比「10」窄，第二行就会缩进
+ * 不同，读起来像两段不相干的文字。
+ */
+.stepNum {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-primary-500) 16%, transparent);
+  color: var(--color-primary-text);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.stepBody {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.stepBody strong {
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.stepBody p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+/* 发出前的提醒用警示色、但不带底色：它不是错误，只是需要被读到的一句话。 */
+.warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: color-mix(in srgb, var(--color-warning-500, #f59e0b) 75%, var(--color-text-primary)) !important;
+}
+
+.warn svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.issueLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--color-primary-500) 40%, var(--color-border));
+  border-radius: var(--radius-sm);
+  color: var(--color-primary-text);
+  font-size: 10px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background .16s, border-color .16s;
+}
+
+.issueLink:hover {
+  border-color: var(--color-primary-500);
+  background: color-mix(in srgb, var(--color-primary-500) 8%, transparent);
+}
+
+/* --- 操作 ---------------------------------------------------------------- */
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.note {
+  margin: 0;
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+/* --- 窄屏 ---------------------------------------------------------------- */
+
+/*
+ * 窄屏只做一件事：让步骤里的数字和文字不再挤在同一行。
+ * 卡片本身在设置面板的单列布局里，宽度已经有限；这里不再压缩字号。
+ */
+@media (max-width: 460px) {
+  .steps {
+    padding: 10px;
+  }
+
+  .actions > * {
+    flex: 1 1 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch,
+  .switch i,
+  .issueLink {
+    transition: none;
+  }
+}

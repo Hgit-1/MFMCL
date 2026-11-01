@@ -268,6 +268,33 @@ pub async fn search_mods(
     launcher_core::catalog::search_mods(&client, &target, &request).await
 }
 
+/// 没有目标实例时的搜索（商店的「直连下载」模式）。
+///
+/// 与 `search_mods` 的区别只有两点：不要求实例、不做实例级 operation 锁
+/// （没有实例可锁）。返回同样的 `CatalogMod`，前端不必区分两种结果的形状。
+#[tauri::command]
+pub async fn search_mods_unscoped(
+    request: launcher_core::catalog::ModQuery,
+) -> Result<Vec<launcher_core::CatalogMod>, String> {
+    let client = launcher_core::catalog::catalog_client()?;
+    launcher_core::catalog::search_mods_unscoped(&client, &request).await
+}
+
+/// 没有目标实例时列出版本（直连下载模式）。
+///
+/// 模组/资源包在直连模式下也需要版本列表，而 `list_mod_versions` 依赖实例的
+/// 游戏版本与加载器。这里走 `project_versions`：不按实例收窄，由用户在文件列表里
+/// 自己挑合适的版本——这正是「不装进任何实例」的含义。
+#[tauri::command]
+pub async fn list_project_versions(
+    project_id: String,
+    project_type: Option<String>,
+) -> Result<Vec<launcher_core::CatalogVersion>, String> {
+    let client = launcher_core::catalog::catalog_client()?;
+    let kind = project_type.unwrap_or_else(|| "mod".to_owned());
+    launcher_core::catalog::project_versions(&client, &project_id, &kind).await
+}
+
 #[tauri::command]
 pub async fn list_mod_versions(
     instance_id: String,
@@ -568,6 +595,72 @@ pub async fn download_and_import_modpack(
     .await;
 
     // 无论成败都清理暂存目录。导入流程已经把需要的文件读进内存/实例目录了。
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+/// 列出 Modrinth 项目的**全部**版本（不按实例过滤）。
+///
+/// 整合包自带游戏版本与加载器，导入时会据此创建新实例。按当前实例去筛会让用户
+/// 看不到「装一个别的 MC 版本的整合包」，而那正是整合包最常见的用法。
+#[tauri::command]
+pub async fn project_versions(
+    project_id: String,
+    project_type: Option<String>,
+) -> Result<Vec<launcher_core::CatalogVersion>, String> {
+    let client = launcher_core::catalog::catalog_client()?;
+    let kind = project_type.unwrap_or_else(|| "modpack".to_owned());
+    launcher_core::catalog::project_versions(&client, &project_id, &kind).await
+}
+
+/// 下载并导入一个 Modrinth 的 `.mrpack` 为新实例。
+///
+/// 与 `download_and_import_modpack`（CurseForge）的关系：两者最终都走
+/// `import_modpack_inner` 这同一套事务（校验结构 → 建实例 → 下载文件 → 失败回滚），
+/// 区别只在「包从哪里来」。所以这里只负责把文件取到本地，其余完全复用。
+#[tauri::command]
+pub async fn download_and_import_modrinth_pack(
+    version: launcher_core::CatalogVersion,
+    instance_hint: Option<String>,
+    app: AppHandle,
+    store: State<'_, LauncherStore>,
+    operations: State<'_, Operations>,
+    downloads: State<'_, Arc<crate::downloads::Downloads>>,
+) -> Result<InstanceRecord, String> {
+    let task_owner = instance_hint.unwrap_or_else(|| "modpack-download".to_owned());
+    let staging = std::env::temp_dir().join(format!("mfmcl-mrpack-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&staging).map_err(|e| format!("无法创建下载目录：{e}"))?;
+
+    let result = async {
+        let engine = engine(store.inner())?;
+        let control = downloads.start(
+            &task_owner,
+            &format!("下载整合包 {}", version.file_name),
+            store.inner(),
+            &app,
+        )?;
+        let engine = engine.with_control(control);
+        let (tx, progress_task) =
+            task_progress(&task_owner, &app, store.inner(), downloads.inner());
+
+        let downloaded =
+            launcher_core::curseforge::download_modrinth_pack(&engine, &version, &staging).await;
+        drop(tx);
+        let _ = progress_task.await;
+        downloads.finish(&task_owner, downloaded.is_ok(), store.inner(), &app)?;
+        let path = downloaded?;
+
+        import_modpack_inner(
+            path.into(),
+            &app,
+            store.inner(),
+            &operations,
+            downloads.inner(),
+        )
+        .await
+    }
+    .await;
+
     let _ = std::fs::remove_dir_all(&staging);
     result
 }

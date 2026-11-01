@@ -5,6 +5,7 @@ members = [
   "crates/download-engine",
   "crates/launcher-core",
   "crates/launcher-auth",
+  "crates/crash-ai",
   "src-tauri",
 ]
 
@@ -30,4 +31,4 @@ regex = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "fs", "net", "io-util"] }
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }

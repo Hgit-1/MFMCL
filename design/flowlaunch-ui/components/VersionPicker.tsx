@@ -45,10 +45,29 @@ interface VersionPickerProps {
   label: string;
   placeholder?: string;
   id?: string;
+  /**
+   * 「全部版本」这一项的文字。给了才显示这个选项。
+   *
+   * 可选而不是必选：这个选择器也被用在「新建实例」这类必须选一个具体版本的
+   * 地方，那里「全部版本」没有意义。
+   */
+  allLabel?: string;
 }
 
 /** 下拉最多同时展示多少项。900 个版本一次性铺开会让滚动变得没有意义。 */
 const MAX_VISIBLE = 300;
+
+/**
+ * 「全部版本」的哨兵值。
+ *
+ * 为什么不用空串：空串在这里已经表示「跟随实例」。两者在数据上都是「没有具体
+ * 版本」，但语义相反——一个是「用实例的版本筛」，一个是「完全不筛」。共用一个
+ * 值会让界面上写着「全部版本」而请求仍按实例版本过滤。
+ *
+ * 选 `*` 而不是别的原因：它不是合法的 Minecraft 版本号，即使被误当成版本号提交，
+ * 也只会查不到结果，不会静默变成另一个版本。导出给父组件，两处判断同一个值。
+ */
+export const ALL_VERSIONS = '*';
 
 export function VersionPicker({
   value,
@@ -60,6 +79,7 @@ export function VersionPicker({
   label,
   placeholder,
   id,
+  allLabel,
 }: VersionPickerProps) {
   const { t, language } = useI18n();
   /** 输入框里的文字。与已提交值分开：用户打字的过程中不该立刻触发重搜。 */
@@ -71,12 +91,21 @@ export function VersionPicker({
 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
+  /** 整个浮层（含「跟随实例」「全部版本」两个模式按钮）。 */
+  const popoverRef = useRef<HTMLDivElement>(null);
   const generatedId = useId();
   const listId = `${generatedId}-list`;
 
   // 外部值变化（例如「重置条件」）时同步输入框。用值本身做依赖即可：
   // 用户打字不会改变 `value`，所以不会把正在输入的内容冲掉。
-  useEffect(() => { setText(value); }, [value]);
+  /*
+   * 输入框显示的是「具体版本号」，不显示哨兵。
+   *
+   * 选「全部版本」时如果原样把 `*` 填进输入框，用户会以为可以输入通配符；而实际
+   * 上它只是一个表示「不筛」的内部值。所以哨兵在框里一律显示为空，真正的状态
+   * 由下面的 followHint 说明。
+   */
+  useEffect(() => { setText(value === ALL_VERSIONS ? '' : value); }, [value]);
 
   /*
    * 按发布时间倒序。
@@ -140,7 +169,17 @@ export function VersionPicker({
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (inputRef.current?.contains(target)) return;
-      if (listRef.current?.contains(target)) return;
+      /*
+       * 整个浮层都算「内部」。
+       *
+       * 之前只排除了输入框与 `<ul>` 列表，而「跟随实例」「全部版本」两个按钮在
+       * `<ul>` **之外**（它们是列表上方的模式项）。点它们时 pointerdown 先触发，
+       * 浮层被卸载，按钮自身的 click 永远不会执行——「全部版本」因此完全点不动。
+       *
+       * 「跟随实例」看起来正常只是因为巧：pointerdown 那条路径会提交输入框里的
+       * 空串，而空串恰好就是「跟随实例」的值。语义对，机制错。
+       */
+      if (popoverRef.current?.contains(target)) return;
       setOpen(false);
       /*
        * 收起时把输入框里的内容提交掉。
@@ -165,7 +204,7 @@ export function VersionPicker({
   }, [active, open]);
 
   const commit = (next: string) => {
-    setText(next);
+    setText(next === ALL_VERSIONS ? '' : next);
     setOpen(false);
     setActive(-1);
     if (next !== value) onChange(next);
@@ -180,6 +219,16 @@ export function VersionPicker({
    */
   const commitTyped = () => {
     const next = text.trim();
+    /*
+     * 输入框为空时**不要**把「全部版本」改成「跟随实例」。
+     *
+     * 选完全部版本后，输入框按设计是空的。此时若用户点一下输入框再点别处（或者
+     * 按 Tab 离开），旧的实现会把空串提交上去，筛选条件就悄悄从「全部版本」变成了
+     * 「跟随实例」——界面上唯一的提示也随之改变，但用户什么都没做。
+     *
+     * 空输入 + 当前是全部版本 → 保持原状。
+     */
+    if (!next && value === ALL_VERSIONS) return;
     if (next !== value) onChange(next);
   };
 
@@ -208,8 +257,8 @@ export function VersionPicker({
       event.preventDefault();
       setOpen(false);
       setActive(-1);
-      // 放弃未提交的输入，回到已生效的值。
-      setText(value);
+      // 放弃未提交的输入，回到已生效的值（哨兵仍然显示为空）。
+      setText(value === ALL_VERSIONS ? '' : value);
     }
   };
 
@@ -242,6 +291,16 @@ export function VersionPicker({
           onFocus={() => {
             if (!open) openList();
           }}
+          /*
+           * 点击也要能打开。
+           *
+           * 选中任意一项之后，输入框仍然持有焦点（下拉项用了 `preventDefault`
+           * 阻止焦点转移），于是再点输入框不会产生新的 `focus` 事件，浮层就再也
+           * 打不开——表现是「选完一个版本后，想换一个却点不动」。
+           */
+          onClick={() => {
+            if (!open) openList();
+          }}
           onKeyDown={onKeyDown}
           onBlur={() => {
             /*
@@ -272,11 +331,18 @@ export function VersionPicker({
         </button>
       </div>
 
-      {/* 当前生效的版本说明。输入框为空时这是唯一的「实际在用什么版本」的线索。 */}
+      {/*
+        当前生效的筛选说明。输入框为空时这是唯一的线索：
+          - 跟随实例 → 显示「跟随实例 · 1.20.1」；
+          - 全部版本 → 显示「全部版本」。
+        两者在输入框里都是空的，所以这句必须区分开，否则用户看不出区别。
+      */}
       {value === '' && <span className={styles.followHint}>{followLabel}</span>}
+      {value === ALL_VERSIONS && allLabel && <span className={styles.followHint}>{allLabel}</span>}
 
       {open && rect && createPortal(
         <div
+          ref={popoverRef}
           className={styles.popover}
           style={{ top: rect.top, left: rect.left, width: Math.max(rect.width, 240), maxHeight: listHeight }}
         >
@@ -290,6 +356,24 @@ export function VersionPicker({
             <span>{followLabel}</span>
             {value === '' && <Check size={14} aria-hidden="true" />}
           </button>
+
+          {/*
+            「全部版本」。
+            排在「跟随实例」之后、版本列表之前：两者是并列的两种「不看具体版本」，
+            而跟随实例是默认值，仍然第一位。它在视觉上要能一眼与列表项区分开——
+            用同一套 `followOption` 样式，因为它们都是「模式」而不是「某个版本」。
+          */}
+          {allLabel && (
+            <button
+              type="button"
+              className={`${styles.followOption} ${value === ALL_VERSIONS ? styles.optionActive : ''}`}
+              onMouseDown={event => event.preventDefault()}
+              onClick={() => commit(ALL_VERSIONS)}
+            >
+              <span>{allLabel}</span>
+              {value === ALL_VERSIONS && <Check size={14} aria-hidden="true" />}
+            </button>
+          )}
 
           {state === 'loading' && <p className={styles.status}>{t('common.loading')}</p>}
           {state === 'error' && <p className={styles.statusError}>{t('store.versionListFailed')}</p>}

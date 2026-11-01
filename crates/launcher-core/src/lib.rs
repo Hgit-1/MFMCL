@@ -5,6 +5,7 @@ mod diagnostics;
 pub mod forge_install;
 mod installer;
 mod launch;
+pub mod launcher_log;
 pub mod loaders;
 pub mod logs;
 pub mod mod_updates;

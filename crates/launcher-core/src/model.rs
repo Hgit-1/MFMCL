@@ -175,8 +175,22 @@ pub struct LauncherSettings {
     pub announcement_policy: UpdatePolicy,
     #[serde(default)]
     pub cache_directory: Option<PathBuf>,
+    /// 是否把启动器自身的日志写到固定文件（默认关闭）。
+    ///
+    /// 这个字段取代了原来的 `anonymous_usage`：那个开关没有任何收集实现，只是
+    /// 一个无法兑现的隐私承诺。现在它对应一件真的会发生的事——写本地日志文件，
+    /// 由用户自己决定要不要把文件贴到 issue 里。没有任何数据离开这台机器。
     #[serde(default)]
-    pub anonymous_usage: bool,
+    pub launcher_log_enabled: bool,
+    /// 用户指定的 `llama-server` 可执行文件路径。
+    ///
+    /// 为什么需要它：llama.cpp 的发布物按平台与加速后端分叉，安装包不可能全带上。
+    /// 允许用户指定自己那份（自编译、LM Studio 自带、发行版包管理器装的），
+    /// 是让「本地 AI 分析」在任意机器上都能真的用起来的唯一通用做法。
+    ///
+    /// 为 `None` 时启动器会依次尝试环境变量、附带资源、应用数据目录与 `PATH`。
+    #[serde(default)]
+    pub llama_server_path: Option<PathBuf>,
     #[serde(default = "default_opacity")]
     pub opacity: u8,
     #[serde(default)]
@@ -253,7 +267,8 @@ impl Default for LauncherSettings {
             auto_language: true,
             announcement_policy: UpdatePolicy::Notify,
             cache_directory: None,
-            anonymous_usage: false,
+            launcher_log_enabled: false,
+            llama_server_path: None,
             opacity: 100,
             hidden_theme: false,
             show_launcher_logo: true,

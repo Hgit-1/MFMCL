@@ -33,13 +33,13 @@ import { BlockIcon } from './BlockIcon';
 import { VanillaIcon } from './VanillaIcon';
 import { CurseForgePanel } from './CurseForgePanel';
 import { CurseForgeKeyCard } from './CurseForgeKeyCard';
-import { VersionPicker } from './VersionPicker';
+import { ALL_VERSIONS, VersionPicker } from './VersionPicker';
 import { InstallPlan } from './InstallPlan';
 import { StoreLogo } from './StoreLogo';
 import { blockForVersion, VANILLA_BLOCK } from '../utils/store/blocks';
 import { useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
-import { kindOfVersion, VERSION_KINDS, VERSION_KIND_KEYS } from '../utils/store/format';
+import { fitInstanceLabel, kindOfVersion, VERSION_KINDS, VERSION_KIND_KEYS } from '../utils/store/format';
 import type { VersionKind } from '../utils/store/types';
 import type { GameInstance } from '../types';
 import {
@@ -56,6 +56,9 @@ import {
   installModVersion,
   isDesktopShell,
   listModVersions,
+  searchModsUnscoped,
+  listProjectVersions,
+  downloadAndImportModrinthPack,
   listVersions,
   openDownloadFolder,
   pickDirectory,
@@ -99,10 +102,120 @@ function projectTypeOf(category: StoreCategory): 'mod' | 'resourcepack' | 'modpa
   }
 }
 
+/**
+ * 每页条数。
+ *
+ * 原版版本列表与模组搜索共用：两处都是「一屏放得下的条目数」，用同一个值让
+ * 翻页控件在两处的位置与语义完全一致。后端 `MAX_RESULTS` 也是 20，三者对齐。
+ */
+/**
+ * 去掉压缩包扩展名。
+ *
+ * 与 PCL2 的 `.BeforeLastOfAny({ ".zip", ".jar", ".mrpack", ".litemod" })` 同一个
+ * 做法：版本列表里「fabric-api-0.115.1+1.21.1.jar」显示成
+ * 「fabric-api-0.115.1+1.21.1」。扩展名对玩家没有信息量，而它占的位置常常正好
+ * 把版本号挤进省略号。
+ *
+ * 只剥这四种已知后缀，不用通用的 `lastIndexOf('.')`：版本号自身就带点
+ * （`0.165.1+26.4`），按最后一个点切会把 `26.4` 当扩展名切掉。
+ */
+function stripArchiveExtension(fileName: string): string {
+  const lower = fileName.toLowerCase();
+  for (const ext of ['.mrpack', '.litemod', '.jar', '.zip']) {
+    if (lower.endsWith(ext)) return fileName.slice(0, -ext.length);
+  }
+  return fileName;
+}
+
+/**
+ * 组装版本行的元信息行。
+ *
+ * 顺序即优先级，参考 PCL2 的 `ToListItem`：加载器 → 游戏版本 → 大小 →
+ * 前置数 → 下载量 → 更新时间。
+ *
+ * - **加载器排第一**：装错加载器是最常见的失败原因（Forge 的 jar 放进 Fabric
+ *   实例会直接崩），它比其他任何信息都更该先被看到。
+ * - **游戏版本只在「文件与文件名不一致」时显示**：`0.165.1+26.4` 里的 `26.4`
+ *   已经说明了 MC 版本，再写一遍是噪音。这条判断也来自 PCL2。
+ * - **下载量用「万」而不是完整数字**：`29462万` 比 `294,620,270` 更快被读出
+ *   量级，而这个数字在版本选择里只用于「哪个更常用」的排序感。
+ */
+function buildVersionMeta(
+  version: CatalogVersion,
+  locale: string,
+  t: (key: MessageKey, options?: { values?: Record<string, string | number>; count?: number }) => string,
+  /**
+   * 是否显示加载器。
+   *
+   * 由调用方按「整页是否有多个加载器」决定——单个加载器的列表里它是纯噪音，
+   * 而多加载器时它是防装错的关键信息。
+   */
+  showLoader: boolean,
+): string {
+  const parts: string[] = [];
+
+  /*
+   * 加载器：只在「这一页里有多个加载器」时才显示。
+   *
+   * 单个模组的版本列表里，加载器几乎总是同一个值（`fabric-api` 的每一版都是
+   * `fabric`）。把它写 36 遍不提供任何区分度，反而挤掉了后面真正有用的信息
+   * （大小、下载量、更新时间）——实测一屏 16 行，每行都以同一个 `fabric` 开头。
+   *
+   * 反过来，一个同时发布 Forge 与 Fabric 版本的模组，这里的差异就是用户最需要
+   * 看到的东西：装错加载器会直接崩。所以判据是「整页是否只有一种加载器」，
+   * 由 `showLoader` 传入，而不是无条件显示。
+   *
+   * PCL2 的 `ToListItem` 同样无条件输出加载器，但它的列表通常同时混有多个来源
+   * （CurseForge 的文件可能跨加载器），前提不同。
+   */
+  if (showLoader && version.loaders && version.loaders.length > 0) {
+    // Modrinth 对资源包返回 `["minecraft"]`，那不是加载器，显示出来只会让人困惑。
+    const real = version.loaders.filter(loader => loader !== 'minecraft');
+    if (real.length > 0) parts.push(real.join('、'));
+  }
+
+  const gameVersions = version.gameVersions ?? [];
+  if (gameVersions.length > 0) {
+    const name = stripArchiveExtension(version.fileName);
+    // 文件名里已经包含该版本号时不再重复（PCL2 的 `Title <> FileName` 判断）。
+    if (!gameVersions.every(v => name.includes(v))) {
+      parts.push(gameVersions.join('、'));
+    }
+  }
+
+  if (version.size > 0) parts.push(formatBytes(version.size));
+  if ((version.dependencyCount ?? 0) > 0) {
+    parts.push(t('store.depsCount', { count: version.dependencyCount!, values: { count: version.dependencyCount! } }));
+  }
+  if ((version.downloads ?? 0) > 0) {
+    const n = version.downloads!;
+    const shown = n >= 100_000 ? `${(n / 10_000).toLocaleString(locale, { maximumFractionDigits: 0 })}万` : n.toLocaleString(locale);
+    parts.push(t('store.downloadsTimes', { values: { value: shown } }));
+  }
+  if (version.dateCreated) {
+    parts.push(t('store.updatedOn', {
+      values: { date: new Date(version.dateCreated).toLocaleDateString(locale) },
+    }));
+  }
+  return parts.join(' · ');
+}
+
 const PAGE_SIZE = 20;
-/** 与后端 `MAX_RESULTS` 一致：一次搜索最多返回 20 条。 */
-const SEARCH_LIMIT = 20;
-void SEARCH_LIMIT;
+
+/**
+ * 一个整合包最多展开多少个版本。
+ *
+ * 30 个足够覆盖「最近几个大版本」，再多就不是在挑版本而是在读变更史了。
+ */
+const MR_PACK_VERSION_LIMIT = 30;
+
+/**
+ * 模组/资源包版本列表的渲染上限。
+ *
+ * 有实例时后端已按版本与加载器收窄，通常只有几十条；直连模式不筛，实测可到 100。
+ * 40 条足够覆盖「最近几个版本」，再多也不会有人逐条读完。
+ */
+const VERSION_PREVIEW_LIMIT = 40;
 
 /**
  * 搜索面板的「类型」选项。
@@ -163,6 +276,14 @@ export function StoreWorkspace({
   // 目标实例：安装模组必须有实例，因为后端要按它的版本与加载器筛选。
   const [targetInstanceId, setTargetInstanceId] = useState(selectedInstance?.id ?? '');
   const target = instances.find(instance => instance.id === targetInstanceId);
+  /**
+   * 直连下载模式：没有目标实例。
+   *
+   * 组件层的这一份用于渲染（隐藏「安装」按钮、显示直连提示）；搜索函数内部还会
+   * 各自算一次，因为那个闭包需要与请求参数保持一致。两处判据同一个表达式，
+   * 不会分叉。
+   */
+  const directMode = !targetInstanceId;
 
   /**
    * 「版本」筛选的全量清单。
@@ -331,6 +452,26 @@ export function StoreWorkspace({
   // 模组搜索
   // -------------------------------------------------------------------------
   const [mods, setMods] = useState<CatalogMod[]>([]);
+  /**
+   * 模组结果的页码（从 0 开始）。
+   *
+   * 与「原版版本列表」的 `page` 分开：两者属于不同分类，共用一个页码会让切分类时
+   * 停在上一个列表的页码上，打开就是空白。
+   *
+   * 翻页是**服务端**的：Modrinth 的 `/search` 只返回一页，`offset` 决定从第几条
+   * 开始。早期这里只发一次请求、把返回的 20 条直接当成全部结果，界面上既没有翻页
+   * 也没有「还有更多」的提示——用户想找第 21 个模组时无从下手。
+   */
+  const [modPage, setModPage] = useState(0);
+  /**
+   * 每个来源是否可能还有下一页。
+   *
+   * 用「本页是否满额」判断而不是读总数：Modrinth 的 `total_hits` 与 CurseForge 的
+   * `pagination.totalCount` 语义不同（前者是去重后的项目数，后者含分页元数据），
+   * 混用会出现「最后一页永远有下一页」这种循环。满额即可能还有下一页，是两站都
+   * 成立的保守判断。
+   */
+  const [modHasMore, setModHasMore] = useState(false);
   const [modsState, setModsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [modsError, setModsError] = useState('');
   /** 当前展开版本列表的模组。同一时刻只展开一个，避免整 page 变成版本墙。 */
@@ -443,6 +584,19 @@ export function StoreWorkspace({
    */
   const [packQuery, setPackQuery] = useState('');
   const [packHits, setPackHits] = useState<CurseForgeMod[]>([]);
+  /*
+   * Modrinth 的整合包结果，与 CurseForge 分开存。
+   *
+   * 两个来源的条目形状不同（`CurseForgeMod` 有 projectId/downloads，
+   * `CatalogMod` 有 projectId/follows），合并成一个数组需要先定义一个两边都能
+   * 表达的中间类型，再在渲染时按来源分支——那等于把两份类型定义拼成一个更差的
+   * 第三个。分开存 + 分栏渲染，代价只是多一个 state。
+   */
+  const [mrPackHits, setMrPackHits] = useState<CatalogMod[]>([]);
+  /** 当前展开文件列表的 Modrinth 整合包项目 id。 */
+  const [expandedMrPack, setExpandedMrPack] = useState<string | null>(null);
+  const [mrPackVersions, setMrPackVersions] = useState<CatalogVersion[]>([]);
+  const [mrPackVersionsState, setMrPackVersionsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [packSearchState, setPackSearchState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [packSearchError, setPackSearchError] = useState('');
   /** 当前展开文件列表的整合包项目。 */
@@ -476,8 +630,34 @@ export function StoreWorkspace({
     });
   }, [instanceIds, selectedInstance?.id]);
 
-  // 切分类要回到第一页：原版的页码和模组搜索的页码语义完全不同。
-  useEffect(() => { setPage(0); }, [category]);
+  /*
+   * 切分类 = 换上下文，不只是换一个筛选条件。
+   *
+   * 需要重置三样东西，否则会带着上一个分类的语义去查新分类：
+   *
+   *  1. **页码**：原版的页码和模组搜索的页码语义完全不同；模组第 3 页的 offset
+   *     对资源包毫无意义，继续用会让新分类从第 41 条开始取，看起来像「没有结果」。
+   *  2. **加载器筛选**：`loader` facet 只对模组/整合包成立。资源包的 `loaders`
+   *     是 `["minecraft"]`，带着 `categories:fabric` 去查会得到空列表——而界面
+   *     不显示「你被加载器过滤了」，用户只会以为资源包不存在。
+   *  3. **分类 facet**：Modrinth 的 category slug 是按项目类型分的（模组有
+   *     `optimization`、资源包有 `16x`），跨类型使用同样查不到东西。
+   *
+   * 用「上一次的 category」比较，跳过首次挂载：挂载时这些值本来都是空的。
+   */
+  const prevCategory = useRef(category);
+  useEffect(() => {
+    setPage(0);
+    setModPage(0);
+    setExpandedMod(null);
+    setExpandedCfMod(null);
+    setModVersions([]);
+    setCfVersions([]);
+    if (prevCategory.current === category) return;
+    prevCategory.current = category;
+    setModLoader('');
+    setModCategory('');
+  }, [category]);
 
   /**
    * 搜索模组，按勾选的来源并行请求。
@@ -493,21 +673,47 @@ export function StoreWorkspace({
    * 直接调用会读到上一次的闭包值，导致第一次搜索用旧关键词、空关键词时甚至
    * 搜不出东西。显式传入当前输入即可避开这个时序问题。
    */
-  const runModSearch = useCallback(async (queryOverride?: string) => {
-    if (!targetInstanceId) {
-      /*
-       * 没有目标实例时必须清空旧结果。
-       *
-       * 之前只设了错误、没清列表：用户在下拉里把实例清空后，界面上同时出现
-       * 「上一次的搜索结果」和「请先选择一个实例」——结果区和错误提示互相矛盾，
-       * 看起来像是数据没刷新。清空后点击「重试」的语义也才对得上。
-       */
-      setMods([]);
-      setCfMods([]);
-      setModsState('error');
-      setModsError('请先选择一个实例：模组搜索需要按它的游戏版本与加载器筛选。');
-      return;
-    }
+  /**
+   * 搜索请求的序号，用来丢弃「过期的响应」。
+   *
+   * ## 为什么必须有它
+   *
+   * 切分类时会有**两个** effect 同时触发搜索：
+   *   - `[category, targetInstanceId]` —— 进入分类要搜一次；
+   *   - `[category, modFilters..., sourcesKey]` —— 筛选条件（含分类）变化要搜一次。
+   *
+   * 两者都会调用 `runModSearch`，于是同时发出两个请求。它们返回顺序不确定，
+   * 谁后到谁写入 state——如果旧分类的请求后到，就会出现「侧栏与标题都是
+   * Resource packs，结果列表却是 Fabric API / Sodium」。
+   *
+   * ## 做法
+   *
+   * 每次发起时自增一个序号并记下本次的号；响应回来时如果号已经不是最新的，
+   * 直接丢弃、不写任何 state。这比「加锁串行化」简单，也比「取消请求」可靠：
+   * 后者需要 AbortController 贯穿到 `searchMods` 与 CurseForge 两条调用链，
+   * 而 `invoke` 的取消语义在各平台并不一致。
+   */
+  const searchSeq = useRef(0);
+
+  const runModSearch = useCallback(async (queryOverride?: string, pageOverride?: number) => {
+    /*
+     * 页码从参数取，缺省用当前页。
+     *
+     * 显式传参而不是把 `modPage` 放进依赖：翻页处理器要能「先算出目标页再请求」，
+     * 而用 state 需要等一次重渲染才能拿到新值，那样会先请求旧页再请求新页。
+     */
+    const page = pageOverride ?? modPage;
+    /*
+     * 没有目标实例 = 直连下载模式，**仍然搜索**。
+     *
+     * 之前这里直接设成一个错误并返回，于是「不装进任何实例、只把文件存到磁盘」
+     * 这种用法在界面上根本走不通：用户能把下拉清空，然后结果区报「请先选择一个
+     * 实例」。而搜索本身并不需要实例——需要实例的只是「装到哪」那一步。
+     *
+     * 直连模式下调用的后端路径不加版本/加载器 facet（见 search_mods_unscoped），
+     * 也就是「不限版本与加载器」，由用户在版本列表里自己挑。
+     */
+    // 复用组件层那份判据（同一个表达式，不存在分叉）。
     if (sources.length === 0) {
       setMods([]);
       setCfMods([]);
@@ -515,6 +721,13 @@ export function StoreWorkspace({
       setModsError(t('store.noSourceSelected'));
       return;
     }
+    /*
+     * 领一个序号。从这里开始的所有写入都要先确认自己仍是最新的一次搜索。
+     */
+    const seq = ++searchSeq.current;
+    /** 本次结果是否还应当写入界面。 */
+    const fresh = () => searchSeq.current === seq;
+
     setModsState('loading');
     setModsError('');
     setCfMods([]);
@@ -529,17 +742,30 @@ export function StoreWorkspace({
     const request: ModQuery = {
       query: trimmed,
       projectType,
-      gameVersion: modVersion.trim() || undefined,
+      /*
+       * 「全部版本」用独立字段表达，而不是把 `gameVersion` 传空。
+       *
+       * 传空的含义是「跟随实例」，后端会自动补上实例的版本——那正是用户选
+       * 「全部版本」时想要避开的行为。
+       */
+      allVersions: modVersion === ALL_VERSIONS,
+      gameVersion: modVersion === ALL_VERSIONS ? undefined : (modVersion.trim() || undefined),
       loader: modLoader === 'any' ? 'any' : (modLoader.trim() || undefined),
       category: modCategory,
       index: sort,
+      offset: page * PAGE_SIZE,
     };
 
     const wantsModrinth = sources.includes('modrinth');
     const wantsCurseForge = sources.includes('curseforge');
 
     const [modrinthResult, curseForgeResult] = await Promise.allSettled([
-      wantsModrinth ? searchMods(targetInstanceId, request) : Promise.resolve([]),
+      wantsModrinth
+        ? (directMode
+            // 直连模式：后端不加版本/加载器 facet，等于「不限」。
+            ? searchModsUnscoped(request)
+            : searchMods(targetInstanceId, request))
+        : Promise.resolve([]),
       /*
        * CurseForge 现在也支持浏览模式：不传 searchFilter + sortField=6 会返回
        * 该版本/加载器下按总下载量排序的列表（已在真实接口上验证）。
@@ -549,18 +775,43 @@ export function StoreWorkspace({
         ? curseforgeSearch({
             kind: projectType === 'resourcepack' ? 'resourcepack' : 'mod',
             query: trimmed,
-            gameVersion: modVersion.trim() || target?.version,
+            /*
+             * 直连模式不能用实例的值兜底：没有实例。此时只保留用户显式选的版本/
+             * 加载器，都没选就不传——与 Modrinth 那条路径的语义保持一致，否则两站
+             * 在同一个模式下会按不同条件过滤，结果无法互相解释。
+             */
+            gameVersion: modVersion === ALL_VERSIONS
+              ? undefined
+              : (modVersion.trim() || (directMode ? undefined : target?.version)),
             // 资源包没有加载器维度，传了会被服务端当成额外的筛选条件而漏结果。
             loader: projectType === 'resourcepack'
               ? undefined
-              : (modLoader === 'any' ? undefined : (modLoader.trim() || target?.loader)),
-            // 第一页足够：合并视图不做深翻，两站的页码语义不同，深翻会让
-            // 「第 3 页」变成两套不同偏移量的混合体。
-            index: 0,
-            pageSize: 20,
+              : (modLoader === 'any'
+                  ? undefined
+                  : (modLoader.trim() || (directMode ? undefined : target?.loader))),
+            /*
+             * CurseForge 的 `index` 是**偏移量**，不是页码——传页码会让每一页都
+             * 从第 1 条开始取，翻页看起来完全没生效。
+             *
+             * 依据是后端自己的分页上限检查：`index + pageSize <= 10000`，只有当
+             * `index` 是条目偏移时这个式子才成立（页号乘页大小才换算成偏移）。
+             *
+             * 与 Modrinth 的 `offset` 是同一个量，所以两站用同一个乘积。
+             */
+            index: page * PAGE_SIZE,
+            pageSize: PAGE_SIZE,
           })
         : Promise.resolve([]),
     ]);
+
+    /*
+     * 过期响应一律丢弃。
+     *
+     * 这是修复「分类切了、结果没切」的最后一道闸：即使两个请求都成功返回，
+     * 也只有序号最新的那次能写界面。放在这里而不是每个 setState 前判断，
+     * 是因为从这里往下全是「本次请求的结果」——漏判一处就会重新出现旧数据。
+     */
+    if (!fresh()) return;
 
     const errors: string[] = [];
     if (modrinthResult.status === 'fulfilled') {
@@ -590,6 +841,17 @@ export function StoreWorkspace({
       errors.push(errorText(curseForgeResult.reason, t('cf.searchFailed')));
     }
 
+    /*
+     * 是否还有下一页：任一来源的当前页是满的，就认为可能还有。
+     *
+     * 满额判断在两个来源上都成立，而读取各自的 total 字段需要两套不同的解析，
+     * 且 CurseForge 在缺 key 时根本不返回分页元数据。保守判断的代价只是最后
+     * 一页可能多一次「翻过去发现是空的」，比「明明还有却翻不到」好得多。
+     */
+    setModHasMore(
+      (modrinthResult.status === 'fulfilled' && modrinthResult.value.length >= PAGE_SIZE)
+      || (curseForgeResult.status === 'fulfilled' && curseForgeResult.value.length >= PAGE_SIZE),
+    );
     setModsState('ready');
     // 只在一个来源都拿不到时算整体失败；部分失败在各自栏里说明。
     const attempted = [wantsModrinth, wantsCurseForge].filter(Boolean).length;
@@ -597,7 +859,18 @@ export function StoreWorkspace({
       setModsError(errors.join(' '));
       setModsState('error');
     }
-  }, [modCategory, modLoader, modSort, modVersion, sources, submittedQuery, t, target, targetInstanceId]);
+    /*
+     * `category` 必须在依赖里。
+     *
+     * 这是一个**陈旧闭包**陷阱：`projectTypeOf(category)` 在函数体内读取
+     * `category`，而 memo 缓存的是「定义时那一帧」的闭包。少写这一项，
+     * `searchRef.current` 在分类切换后仍指向旧闭包，于是界面上标题变成
+     * 「Resource packs」，请求却还在查 `project_type:mod`——实测切到资源包后
+     * 结果里仍是 Fabric API / Sodium / Iris Shaders。
+     *
+     * `directMode` 同理：它由 `targetInstanceId` 推导，而那个已在依赖里。
+     */
+  }, [category, modCategory, modLoader, modSort, modVersion, sources, submittedQuery, t, target, targetInstanceId]);
 
   /*
    * 进入模组分类就自动搜索一次。
@@ -614,8 +887,16 @@ export function StoreWorkspace({
   searchRef.current = runModSearch;
   useEffect(() => {
     if (!MODRINTH_CATEGORIES.includes(category)) return;
-    if (!targetInstanceId) return;
+    /*
+     * 不要在这里判断 `targetInstanceId`。
+     *
+     * 直连模式（不选实例）同样需要搜索，而 `runModSearch` 已经自己区分了两条
+     * 路径。之前这里有一个 `if (!targetInstanceId) return`，效果是：把下拉切到
+     * 「不安装到实例」时**一次请求都不发**，界面停在切之前的实例结果上，而提示
+     * 已经改成「直连下载模式」——两边互相矛盾。
+     */
     void searchRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category, targetInstanceId]);
   /**
    * CurseForge key 状态变化的处理。
@@ -648,7 +929,8 @@ export function StoreWorkspace({
     sourcesKey,
   });
   useEffect(() => {
-    if (!MODRINTH_CATEGORIES.includes(category) || !targetInstanceId) return;
+    // 同上：直连模式也要重搜。实例 id 只影响后端如何收窄，不影响「要不要搜」。
+    if (!MODRINTH_CATEGORIES.includes(category)) return;
     const previous = prevFilters.current;
     if (
       previous.modCategory === modCategory
@@ -660,7 +942,14 @@ export function StoreWorkspace({
       return;
     }
     prevFilters.current = { modCategory, modVersion, modLoader, modSort, sourcesKey };
-    void searchRef.current();
+    /*
+     * 筛选条件变了就回到第一页。
+     *
+     * 换了个加载器或版本之后，后续页大概率是空的——继续停在第 3 页会让用户以为
+     * 「这个筛选没有结果」，而首页其实有。
+     */
+    setModPage(0);
+    void searchRef.current(undefined, 0);
   }, [category, modCategory, modSort, modVersion, modLoader, sourcesKey, targetInstanceId]);
 
   /**
@@ -677,6 +966,7 @@ export function StoreWorkspace({
     setModVersion('');
     setModLoader('');
     setModSort('downloads');
+    setModPage(0);
     prevFilters.current = {
       modCategory: '',
       modVersion: '',
@@ -685,7 +975,7 @@ export function StoreWorkspace({
       // 重置不动来源，所以这里沿用当前值，避免被误判成「来源变了」多搜一次。
       sourcesKey,
     };
-    void searchRef.current('');
+    void searchRef.current('', 0);
   };
 
   const openModVersions = async (mod: CatalogMod) => {
@@ -694,8 +984,18 @@ export function StoreWorkspace({
     setModVersionsState('loading');
     setModVersions([]);
     try {
-      // 透传当前分类的项目类型：资源包不能按加载器筛，否则拿到的永远是空列表。
-      setModVersions(await listModVersions(targetInstanceId, mod.projectId, projectTypeOf(category)));
+      /*
+       * 直连模式下列出**全部**版本，不按实例过滤。
+       *
+       * `listModVersions` 会用实例的游戏版本与加载器筛；没有实例时它无从筛起，
+       * 而用任何默认值代替都等于静默收窄——用户在界面上看不到「你正在被过滤」。
+       * 直连模式的语义就是「我自己挑」，所以给出完整列表。
+       *
+       * 资源包没有加载器维度，两条路径都透传当前分类的项目类型。
+       */
+      setModVersions(await (targetInstanceId
+        ? listModVersions(targetInstanceId, mod.projectId, projectTypeOf(category))
+        : listProjectVersions(mod.projectId, projectTypeOf(category) === 'modpack' ? 'modpack' : 'mod')));
       setModVersionsState('ready');
     } catch (error) {
       setModVersionsState('error');
@@ -849,8 +1149,25 @@ export function StoreWorkspace({
   const submitSearch = () => {
     setSubmittedQuery(query);
     setPage(0);
+    /*
+     * 换关键词必然回到第一页。
+     *
+     * 不重置的话，在第 3 页改成新关键词会从第 41 条开始取——那个新关键词可能
+     * 根本没那么多结果，用户看到的是空白，而首页其实有内容。
+     */
+    setModPage(0);
     // 传入当前输入，避免闭包里读到的还是上一次的提交值。
-    void runModSearch(query);
+    void runModSearch(query, 0);
+  };
+
+  /** 翻到模组结果的上一页/下一页。页码是服务端的，请求时带 offset。 */
+  const goToModPage = (next: number) => {
+    if (next < 0) return;
+    setModPage(next);
+    setExpandedMod(null);
+    // 展开的版本列表属于上一页的项目，翻页后应当收起。
+    setModVersions([]);
+    void runModSearch(submittedQuery, next);
   };
 
   const pickPack = async () => {
@@ -910,22 +1227,103 @@ export function StoreWorkspace({
     setPackSearchState('loading');
     setPackSearchError('');
     setPackHits([]);
+    setMrPackHits([]);
     setExpandedPack(null);
-    try {
-      const hits = await curseforgeSearch({
-        kind: 'modpack',
-        query: packQuery.trim(),
-        // 整合包跨版本可用，不按实例的版本/加载器收窄——否则会漏掉大量实际能装的包。
-        index: 0,
-        pageSize: 20,
-      });
+    setExpandedMrPack(null);
+
+    const query = packQuery.trim();
+    /*
+     * 两个来源并发查。
+     *
+     * Modrinth 需要一个实例来做 facet 构造（后端签名如此），但它只需要游戏版本与
+     * 加载器；整合包不按这些筛，所以传当前目标实例即可，拿到的结果里后端**不**加
+     * 版本/加载器 facet（整合包走的是 `project_versions` 与不加版本 facet 的搜索）。
+     */
+    const wantsCf = sources.includes('curseforge');
+    const [cfResult, mrResult] = await Promise.allSettled([
+      wantsCf
+        ? curseforgeSearch({
+            kind: 'modpack',
+            query,
+            // 整合包跨版本可用，不按实例的版本/加载器收窄——否则会漏掉大量实际能装的包。
+            index: 0,
+            pageSize: 20,
+          })
+        : Promise.resolve([] as CurseForgeMod[]),
+      targetInstanceId
+        ? searchMods(targetInstanceId, {
+            query,
+            projectType: 'modpack',
+            // 不传 gameVersion / loader：整合包自带它们，按实例筛会漏掉大量能装的包。
+            gameVersion: undefined,
+            loader: 'any',
+            index: 'downloads',
+          })
+        : Promise.resolve([] as CatalogMod[]),
+    ]);
+
+    const errors: string[] = [];
+    if (cfResult.status === 'fulfilled') {
       // 服务端排序是近似降序，本地再排一次，避免「第 4 名下载量比第 3 名高」。
-      setPackHits([...hits].sort((a, b) => b.downloads - a.downloads));
-      setPackSearchState('ready');
-    } catch (error) {
-      setPackHits([]);
-      setPackSearchError(errorText(error, t('cf.searchFailed')));
+      setPackHits([...cfResult.value].sort((a, b) => b.downloads - a.downloads));
+    } else {
+      // CurseForge 缺 key 是常态，不该让整页变成错误——Modrinth 的结果仍然有用。
+      errors.push(errorText(cfResult.reason, t('cf.searchFailed')));
+    }
+    if (mrResult.status === 'fulfilled') {
+      setMrPackHits([...mrResult.value].sort((a, b) => b.downloads - a.downloads));
+    } else {
+      errors.push(errorText(mrResult.reason, t('store.modrinthUnavailable')));
+    }
+
+    const attempted = (wantsCf ? 1 : 0) + (targetInstanceId ? 1 : 0);
+    if (attempted > 0 && errors.length === attempted) {
       setPackSearchState('error');
+      setPackSearchError(errors.join(' '));
+      return;
+    }
+    // 部分失败在各自栏里说明，不把整页标成错误。
+    setPackSearchError(errors.join(' '));
+    setPackSearchState('ready');
+  };
+
+  /** 展开一个 Modrinth 整合包的文件列表。 */
+  const openMrPackVersions = async (hit: CatalogMod) => {
+    if (expandedMrPack === hit.projectId) { setExpandedMrPack(null); return; }
+    setExpandedMrPack(hit.projectId);
+    setMrPackVersionsState('loading');
+    setMrPackVersions([]);
+    try {
+      setMrPackVersions(await listProjectVersions(hit.projectId, 'modpack'));
+      setMrPackVersionsState('ready');
+    } catch (error) {
+      setMrPackVersionsState('error');
+      setPackSearchError(errorText(error, '无法读取该整合包的版本列表。'));
+    }
+  };
+
+  /** 下载并导入一个 Modrinth 整合包。 */
+  const installMrPack = async (version: CatalogVersion) => {
+    setInstallingPack(version.versionId);
+    try {
+      const record = await downloadAndImportModrinthPack(version, targetInstanceId || undefined);
+      onNotice(`整合包已导入为实例「${record.name}」。`);
+      // 与 CurseForge 那条路径一致：导入会创建实例并触发安装任务，刷新后跳过去看。
+      onTasksChanged();
+      onCreated({
+        id: record.id,
+        name: record.name,
+        version: record.gameVersion,
+        loader: 'vanilla',
+        javaVersion: '',
+        playTime: 0,
+        modCount: 0,
+        status: 'ready',
+      });
+    } catch (error) {
+      onNotice(errorText(error, '下载并导入整合包失败。'));
+    } finally {
+      setInstallingPack('');
     }
   };
 
@@ -1146,27 +1544,46 @@ export function StoreWorkspace({
                     setTargetInstanceId(next);
                     onSelectInstance(next);
                   }}
+                  /*
+                   * 标签可能因为宽度不够被截断（见 `fitInstanceLabel`），
+                   * 悬停时给完整名称，截断就不算丢信息。
+                   */
+                  title={target ? `${target.name} · ${target.version}` : undefined}
                 >
                   {/*
-                    没有实例时才给一个空占位项。
-                    之前这个 `<option value="">—</option>` 一直存在，用户可以直接
-                    选中它，把目标实例清成空——之后左侧显示「—」、搜索却还留着上
-                    一次的结果并报「找不到所选实例」，自相矛盾。把「无实例」表达成
-                    一个 disabled 占位项，而不是一个可选择的值。
+                    「不安装到实例」是一个**可选项**，不是一个禁用占位。
+
+                    之前它在没有实例时才出现、且是 disabled：用户看到的是一个
+                    灰色选项，既不知道它有什么用，也不能选它。而它对应的正是
+                    「直连下载」这个真实用法——不装进任何实例，只把文件存到磁盘。
+
+                    放在第一项：选它之后整页会切到直连模式（搜索不再按实例的版本
+                    与加载器收窄，版本列表也不过滤），这是最彻底的语义变化，放在
+                    顶部才不会让人误以为是某个实例的别名。
                   */}
+                  <option value="">{t('store.noInstanceOption')}</option>
                   {instances.length === 0 && (
                     <option value="" disabled>{t('store.noInstances')}</option>
                   )}
                   {instances.map(instance => (
                     <option key={instance.id} value={instance.id}>
-                      {instance.name} · {instance.version}
+                      {fitInstanceLabel(instance.name, instance.version)}
                     </option>
                   ))}
                 </select>
+                {/*
+                  两种提示，二选一：
+                    - 没选实例 → 说明现在是直连模式（什么被改变、什么没被改变）；
+                    - 选了原版实例 → 说明模组需要带加载器的实例。
+
+                  都是 i18n 键。原来这一句是硬编码中文，而其余界面文案已经本地化，
+                  切换语言时它会单独留在中文。
+                */}
+                {!target && (
+                  <p className={styles.needKey}>{t('store.directModeHint')}</p>
+                )}
                 {category === 'mod' && target && target.loader === 'vanilla' && (
-                  <p className={styles.needKey}>
-                    该实例是原版；模组目录需要 Fabric 或 Quilt 实例。
-                  </p>
+                  <p className={styles.needKey}>{t('store.needModLoader')}</p>
                 )}
               </div>
 
@@ -1526,6 +1943,8 @@ export function StoreWorkspace({
                     onRequestVersions={requestVersionList}
                     label={t('store.filterVersion')}
                     placeholder={t('store.versionPlaceholder')}
+                    /* 「全部版本」只在按版本筛选有意义的地方出现。 */
+                    allLabel={t('store.versionAll')}
                   />
                 </div>
                 {/*
@@ -1716,7 +2135,21 @@ export function StoreWorkspace({
                       </Button>
                     </div>
 
-                    {expandedMod === mod.projectId && (
+                    {expandedMod === mod.projectId && (() => {
+                      /*
+                       * 这一页的版本是否跨多个加载器。
+                       *
+                       * 用 IIFE 而不是在组件顶层算：它只在这一个模组展开时才需要，
+                       * 而展开状态随时变化；放在这里不必为「未展开」的情况维护
+                       * 一份空的派生值。
+                       */
+                      const loaders = new Set(
+                        modVersions
+                          .flatMap(version => (version.loaders ?? []).filter(l => l !== 'minecraft'))
+                          .map(l => l.toLowerCase()),
+                      );
+                      const pagesHaveMultipleLoaders = loaders.size > 1;
+                      return (
                       <div className={styles.versionListInner}>
                         {modVersionsState === 'loading' && (
                           <div className={styles.versionMeta}>{t('store.loading')}</div>
@@ -1724,30 +2157,89 @@ export function StoreWorkspace({
                         {modVersionsState === 'ready' && modVersions.length === 0 && (
                           <div className={styles.versionMeta}>{t('cf.noVersion')}</div>
                         )}
-                        {modVersions.map(version => (
-                          <div key={version.versionId} className={styles.versionRow}>
-                            <Package size={22} className={styles.logoPlaceholder} />
+                        {/*
+                          一行说明：这一列到底是「装进实例」还是「只下载」。
+                          用户看到的按钮不同（有实例时两个、直连时一个），不解释的话
+                          会以为功能少了一个。
+                        */}
+                        {modVersionsState === 'ready' && modVersions.length > 0 && (
+                          <p className={styles.versionListHint}>{t('store.versionListHint')}</p>
+                        )}
+                        {/*
+                          直连模式的版本列表不按实例过滤，条数可能上百（实测 100）。
+                          只渲染前 40 个并说明剩余数量：全铺开会让页面长达数千像素，
+                          而用户要找的是最近几个版本。
+                        */}
+                        {/*
+                          整页是否含多种加载器。用于决定元信息里要不要写加载器
+                          （见 buildVersionMeta 的说明）。在 map 外算一次，
+                          避免对 36 个版本各扫一遍。
+                        */}
+                        {modVersions.slice(0, VERSION_PREVIEW_LIMIT).map(version => (
+                          /*
+                           * 版本行：紧凑单行，参考 PCL2 的 ResourceVersion.ToListItem。
+                           *
+                           * PCL2 的版本项固定 42px 高、单行展示，标题去掉扩展名，
+                           * 右侧一行逗号分隔的元信息（加载器、前置数、下载量、更新
+                           * 时间、发布类型）。关键是**一屏能扫过十几个版本**——
+                           * 之前这里是「大图标 + 两行文字 + 两个按钮」的卡车式行，
+                           * 每个占 120px 以上，一个模组的版本列表就吞掉整页。
+                           *
+                           * 现在值本身也带上来了（versionType/loaders/downloads），
+                           * 所以那行元信息是真信息，而不是只有文件名和大小。
+                           */
+                          <div key={version.versionId} className={styles.versionRowCompact}>
                             <div className={styles.versionMain}>
                               <div className={styles.versionTitle}>
-                                <strong>{version.versionNumber}</strong>
+                                {/*
+                                  标题按 PCL2 的做法去掉 `.jar` 后缀：扩展名对玩家
+                                  没有信息量，而它占掉的那 4 个字符常常正好把版本号
+                                  挤到省略号里。
+                                */}
+                                <strong>{stripArchiveExtension(version.fileName)}</strong>
+                                {/*
+                                  发布类型标记。只在非 release 时出现——给每个正式版
+                                  都挂一个「正式」标签等于没有标签。
+                                */}
+                                {(version.versionType === 'beta' || version.versionType === 'alpha') && (
+                                  <span
+                                    className={`${styles.releaseTag} ${version.versionType === 'alpha' ? styles.releaseAlpha : styles.releaseBeta}`}
+                                    title={t(version.versionType === 'alpha' ? 'store.releaseAlpha' : 'store.releaseBeta')}
+                                  >
+                                    {version.versionType === 'alpha' ? 'alpha' : 'beta'}
+                                  </span>
+                                )}
                               </div>
+                              {/*
+                                元信息：逗号分隔的一行，与 PCL2 一致。
+                                顺序按「用户判断时最关心的在前」：加载器 → 游戏版本 →
+                                大小 → 前置数 → 下载量 → 更新时间。加载器排第一，
+                                因为它是最常见的「装错版本」原因。
+                              */}
                               <span className={styles.versionMeta}>
-                                {version.fileName} · {formatBytes(version.size)} ·{' '}
-                                {new Date(version.dateCreated).toLocaleDateString(locale)}
+                                {buildVersionMeta(version, locale, t, pagesHaveMultipleLoaders)}
                               </span>
                             </div>
                             <div className={styles.versionActions}>
+                              {/*
+                                直连模式不显示「安装」。
+                                没有目标实例，`installModVersion` 无从写入——留一个
+                                点了必然报错的按钮，比不显示更糟。此时只剩「仅下载」，
+                                而这正是直连模式的定义。
+                              */}
+                              {!directMode && (
+                                <Button
+                                  size="sm"
+                                  disabled={installing === version.versionId}
+                                  icon={<Download size={13} />}
+                                  onClick={() => void installVersion(version)}
+                                >
+                                  {installing === version.versionId ? t('store.loading') : t('store.install')}
+                                </Button>
+                              )}
                               <Button
                                 size="sm"
-                                disabled={installing === version.versionId}
-                                icon={<Download size={13} />}
-                                onClick={() => void installVersion(version)}
-                              >
-                                {installing === version.versionId ? t('store.loading') : t('store.install')}
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="secondary"
+                                variant={directMode ? undefined : 'secondary'}
                                 disabled={installing === version.versionId}
                                 icon={<FolderDown size={13} />}
                                 title={t('store.directDownloadHint')}
@@ -1758,8 +2250,17 @@ export function StoreWorkspace({
                             </div>
                           </div>
                         ))}
+                        {modVersions.length > VERSION_PREVIEW_LIMIT && (
+                          <div className={styles.versionMeta}>
+                            {t('store.moreVersions', {
+                              count: modVersions.length - VERSION_PREVIEW_LIMIT,
+                              values: { count: modVersions.length - VERSION_PREVIEW_LIMIT },
+                            })}
+                          </div>
+                        )}
                       </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 ))}
 
@@ -1838,6 +2339,56 @@ export function StoreWorkspace({
                   </div>
                 ))}
               </div>
+
+              {/*
+                翻页。
+                只在「有结果」且（不是第一页或还有下一页）时出现：只有一页结果时
+                摆一对永远禁用的按钮，等于告诉用户「这里本该有更多」。
+              */}
+              {modsState === 'ready'
+                && (mods.length > 0 || cfMods.length > 0)
+                && (modPage > 0 || modHasMore) && (
+                  <nav className={styles.pager} aria-label={t('store.pageNavLabel')}>
+                    <span className={styles.pagerRange}>
+                      {t('store.pageRange', {
+                        values: {
+                          from: modPage * PAGE_SIZE + 1,
+                          // 「到第几项」按本页实际条数算，而不是写死 PAGE_SIZE——
+                          // 最后一页通常不满，写死会报一个不存在的位置。
+                          to: modPage * PAGE_SIZE + Math.max(mods.length, cfMods.length),
+                          /*
+                           * 「共 N 项」用 `store.pageRange` 的两种形态表达：
+                           * 还有下一页时 N 后面带一个「+」，表示至少这么多。
+                           * 不去读两站各自的总数——它们的语义不同，混用会出现
+                           * 「最后一页永远有下一页」。
+                           */
+                          total: `${modPage * PAGE_SIZE + Math.max(mods.length, cfMods.length)}${modHasMore ? '+' : ''}`,
+                        },
+                      })}
+                    </span>
+                    <div className={styles.pagerControls}>
+                      <button
+                        type="button"
+                        className={styles.pagerButton}
+                        disabled={modPage === 0}
+                        onClick={() => goToModPage(modPage - 1)}
+                      >
+                        <ChevronLeft size={15} />{t('store.pagePrev')}
+                      </button>
+                      <span className={styles.pagerInfo}>
+                        {t('store.pageInfo', { values: { page: modPage + 1, pages: modHasMore ? '…' : modPage + 1 } })}
+                      </span>
+                      <button
+                        type="button"
+                        className={styles.pagerButton}
+                        disabled={!modHasMore}
+                        onClick={() => goToModPage(modPage + 1)}
+                      >
+                        {t('store.pageNext')}<ChevronRight size={15} />
+                      </button>
+                    </div>
+                  </nav>
+                )}
             </div>
           )}
 
@@ -1916,12 +2467,15 @@ export function StoreWorkspace({
               {(packSearchState !== 'idle' || packHits.length > 0) && (
                 <div className={styles.resultsCard}>
                   <div className={styles.resultsHeader}>
-                    <h2>CurseForge 整合包</h2>
-                    <span>
+                    <h2>{t('store.modpackResults')}</h2>
+                    <span className={styles.resultsBreakdown}>
                       {packSearchState === 'loading'
                         ? t('store.loading')
                         : packSearchState === 'ready'
-                          ? t('store.resultCount', { count: packHits.length })
+                          ? [
+                              sources.includes('curseforge') ? `CurseForge ${packHits.length}` : '',
+                              `Modrinth ${mrPackHits.length}`,
+                            ].filter(Boolean).join(' · ')
                           : '—'}
                     </span>
                   </div>
@@ -1930,8 +2484,8 @@ export function StoreWorkspace({
                     <div className={styles.errorRow} role="alert"><span>{packSearchError}</span></div>
                   )}
 
-                  {packSearchState === 'ready' && packHits.length === 0 && (
-                    <div className={styles.empty}>没有找到匹配的整合包。</div>
+                  {packSearchState === 'ready' && packHits.length === 0 && mrPackHits.length === 0 && (
+                    <div className={styles.empty}>{t('store.noModpackResults')}</div>
                   )}
 
                   <div className={styles.versionList}>
@@ -2034,6 +2588,101 @@ export function StoreWorkspace({
                                 ))}
                               </div>
                             ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+
+                    {/*
+                      Modrinth 整合包。
+                      与上面的 CurseForge 条目分开渲染，因为两者的数据形状不同：
+                      Modrinth 的下载量字段是 `downloads`、文件列表走
+                      `listProjectVersions`（不按实例过滤），CurseForge 走
+                      `curseforgeFiles`。合并成一个数组要先把两边归一化成第三种
+                      形状，那比多一段渲染更差。
+                    */}
+                    {mrPackHits.map(hit => (
+                      <div key={`mr-${hit.projectId}`}>
+                        <div className={styles.contentRow}>
+                          {hit.iconUrl
+                            ? <img className={styles.blockIcon} src={hit.iconUrl} alt="" width={36} height={36} loading="lazy" />
+                            : <span className={styles.versionMeta}>MR</span>}
+                          <div className={styles.contentMain}>
+                            <div className={styles.contentTitleLine}>
+                              <strong>{hit.title}</strong>
+                              <span className={`${styles.sourceBadge} ${styles.badgeModrinth}`}>Modrinth</span>
+                            </div>
+                            <p>{hit.description || t('store.noSummary')}</p>
+                            <span className={styles.contentMeta}>
+                              {t('store.downloadsShort', {
+                                values: { value: hit.downloads.toLocaleString(locale) },
+                                count: hit.downloads,
+                              })}
+                              {hit.author ? ` · ${hit.author}` : ''}
+                            </span>
+                          </div>
+                          <Button
+                            size="sm"
+                            disabled={installingPack !== ''}
+                            onClick={() => void openMrPackVersions(hit)}
+                          >
+                            {expandedMrPack === hit.projectId ? t('cf.collapse') : t('cf.chooseVersion')}
+                          </Button>
+                        </div>
+
+                        {expandedMrPack === hit.projectId && (
+                          <div className={styles.versionListInner}>
+                            {mrPackVersionsState === 'loading' && (
+                              <div className={styles.versionMeta}>{t('store.loading')}</div>
+                            )}
+                            {mrPackVersionsState === 'ready' && mrPackVersions.length === 0 && (
+                              <div className={styles.versionMeta}>{t('cf.noVersion')}</div>
+                            )}
+                            {/*
+                              只渲染前 30 个版本。
+                              一个成熟整合包常有上百个历史版本（Fabulously Optimized
+                              实测 100 个），全铺开会把页面撑成几千像素，而用户真正
+                              想装的是最近那几个。超出的部分明确说明，而不是静默截断——
+                              静默截断会让人以为「这个包没有我要的版本」。
+                            */}
+                            {mrPackVersions.slice(0, MR_PACK_VERSION_LIMIT).map(version => (
+                              <div key={version.versionId} className={styles.versionRow}>
+                                <div className={styles.versionMain}>
+                                  <div className={styles.versionTitle}>
+                                    <strong>{version.versionNumber || version.fileName}</strong>
+                                  </div>
+                                  <span className={styles.versionMeta}>
+                                    {[
+                                      version.fileName,
+                                      version.size > 0 ? formatBytes(version.size) : '',
+                                      version.dateCreated
+                                        ? new Date(version.dateCreated).toLocaleDateString(locale)
+                                        : '',
+                                    ].filter(Boolean).join(' · ')}
+                                  </span>
+                                </div>
+                                <div className={styles.versionActions}>
+                                  <Button
+                                    size="sm"
+                                    disabled={installingPack !== ''}
+                                    icon={<Download size={13} />}
+                                    onClick={() => void installMrPack(version)}
+                                  >
+                                    {installingPack === version.versionId
+                                      ? t('store.loading')
+                                      : t('store.downloadAndImport')}
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                            {mrPackVersions.length > MR_PACK_VERSION_LIMIT && (
+                              <div className={styles.versionMeta}>
+                                {t('store.moreVersions', {
+                                  count: mrPackVersions.length - MR_PACK_VERSION_LIMIT,
+                                  values: { count: mrPackVersions.length - MR_PACK_VERSION_LIMIT },
+                                })}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

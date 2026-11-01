@@ -36,6 +36,31 @@ pub struct CatalogVersion {
     pub url: String,
     pub sha1: String,
     pub size: u64,
+    /*
+     * 以下字段是给「版本选择」这一屏用的，参考 PCL2 的 ResourceVersion.ToListItem。
+     *
+     * PCL2 把「加载器、前置数量、下载量、更新时间、发布类型」拼成一行逗号分隔的
+     * 说明。要做到同样的信息密度，这些值必须从接口带上来——只靠版本号和文件名，
+     * 用户无法判断「这个 beta 我该不该用」「这个 jar 是不是给别的加载器的」。
+     *
+     * 全部 `serde(default)`：旧存档、旧前端、以及 CurseForge 那条路径都可能不带
+     * 这些字段，缺省时退化成空数组或 0，而不是让整个解析失败。
+     */
+    /// `release` / `beta` / `alpha`。Modrinth 的 `version_type`。
+    #[serde(default)]
+    pub version_type: String,
+    /// 这个文件支持的游戏版本，例如 `["1.21.1"]`。
+    #[serde(default)]
+    pub game_versions: Vec<String>,
+    /// 这个文件支持的加载器，例如 `["fabric"]`。
+    #[serde(default)]
+    pub loaders: Vec<String>,
+    /// 该版本的下载次数。CurseForge 常返回 0，所以不能当作排序依据。
+    #[serde(default)]
+    pub downloads: u64,
+    /// 前置依赖的数量。PCL2 用它提示「N 项前置」。
+    #[serde(default)]
+    pub dependency_count: u32,
 }
 
 pub fn catalog_client() -> Result<reqwest::Client, String> {
@@ -90,6 +115,17 @@ pub struct ModQuery {
     /// 游戏版本。`None` 表示用目标实例的版本。
     #[serde(default)]
     pub game_version: Option<String>,
+    /// 是否**不按游戏版本筛选**。
+    ///
+    /// 为什么需要单独一个布尔，而不是「把 `game_version` 传空」：空值现在的含义
+    /// 是「跟随目标实例」，两者语义相反。用户选「全部版本」时想看的是「这个模组
+    /// 有没有适合别的 MC 版本的版本」，如果沿用空值，后端会拿实例的 1.21.1 去筛，
+    /// 结果里一个别的版本都不会出现——而界面明明写着「全部版本」。
+    ///
+    /// 与加载器的关系：选了全部版本，加载器仍按实例走。这是有意的——跨版本浏览
+    /// 通常是为了判断「要不要换版本玩」，而加载器是玩家已经定下的选择。
+    #[serde(default)]
+    pub all_versions: bool,
     /// 加载器（fabric / quilt / forge / neoforge）。`None` 表示用目标实例的加载器。
     #[serde(default)]
     pub loader: Option<String>,
@@ -154,6 +190,113 @@ fn resolve_loader<'a>(requested: Option<&'a str>, instance: &'a InstanceRecord) 
     }
 }
 
+/// 没有目标实例时按给定条件搜索。
+///
+/// ## 为什么需要一条不依赖实例的路径
+///
+/// 商店的「直连下载」模式允许用户不选实例——他只想把某个模组/资源包存到磁盘，
+/// 不装进任何实例。这种用法是正当的（备份、放进别的启动器、留给朋友），而
+/// `search_mods` 强制要求 `InstanceRecord`，导致这个模式根本搜不出东西。
+///
+/// 与 `search_mods` 的唯一区别是**版本与加载器的来源**：
+///   - 有实例时：未指定就沿用实例的版本与加载器；
+///   - 无实例时：只能用调用方显式给出的值；都没给就**不加**这两个 facet。
+///
+/// 不加 facet 是有意的：那表示「不限版本与加载器」，用户自己会在版本列表里挑。
+/// 如果硬塞一个默认值（例如最新正式版 + fabric），搜出来的东西会被静默收窄，
+/// 而用户在界面上看不到任何提示说「你正在被过滤」。
+pub async fn search_mods_unscoped(
+    client: &reqwest::Client,
+    request: &ModQuery,
+) -> Result<Vec<CatalogMod>, String> {
+    let query = request.query.trim();
+    if query.chars().count() > MAX_QUERY {
+        return Err("搜索词不能超过 128 个字符。".into());
+    }
+    let project_type = normalize_project_type(&request.project_type)?;
+    // 无实例路径：没有实例可跟随，`all_versions` 与「不传版本」等价。
+    let game_version = request
+        .game_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
+    /*
+     * 加载器：无实例时不能从实例推断，只能用调用方显式给的。
+     * `any` 与空都表示「不限加载器」，此时不加 facet——这与有实例时的语义一致
+     * （`resolve_loader` 对 `any` 也返回 `None`）。
+     */
+    let loader = if filters_by_loader(project_type) {
+        request
+            .loader
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("any"))
+    } else {
+        None
+    };
+    validate_search_inputs(game_version, loader, &request.category)?;
+
+    let mut facets = vec![format!("[\"project_type:{project_type}\"]")];
+    if let Some(loader) = loader {
+        facets.push(format!("[\"categories:{loader}\"]"));
+    }
+    if !game_version.is_empty() {
+        facets.push(format!("[\"versions:{game_version}\"]"));
+    }
+    if !request.category.is_empty() {
+        facets.push(format!("[\"categories:{}\"]", request.category));
+    }
+
+    let offset = request.offset.min(10_000);
+    let mut params: Vec<(&str, String)> = vec![
+        ("facets", format!("[{}]", facets.join(","))),
+        ("limit", MAX_RESULTS.to_string()),
+        ("index", sort_index(request.index.as_deref()).to_owned()),
+        ("offset", offset.to_string()),
+    ];
+    if !query.is_empty() {
+        params.push(("query", query.to_owned()));
+    }
+    let url = reqwest::Url::parse_with_params(&format!("{API}/search"), &params)
+        .map_err(|_| "搜索地址无效。")?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| "无法连接 Modrinth。")?
+        .error_for_status()
+        .map_err(|_| "Modrinth 拒绝了搜索请求。")?;
+    let bytes = bounded(response, MAX_RESPONSE).await?;
+    parse_search(&bytes)
+}
+
+/// 搜索参数的共用校验。
+///
+/// 抽出来是因为两条搜索路径（有实例 / 无实例）必须用同一套规则：一处放宽、另一处
+/// 收紧，会变成「换个模式就能注入 facet」那种漏洞。
+fn validate_search_inputs(
+    game_version: &str,
+    loader: Option<&str>,
+    category: &str,
+) -> Result<(), String> {
+    if game_version.len() > 64
+        || loader.is_some_and(|loader| {
+            loader.len() > 32
+                || !loader
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+        || category.len() > 64
+        || !category
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("搜索条件无效。".into());
+    }
+    Ok(())
+}
+
 /// 搜索模组。
 ///
 /// 与之前只接受关键词的版本相比，这里允许**空关键词**：Modrinth 的搜索接口在
@@ -170,13 +313,25 @@ pub async fn search_mods(
         return Err("搜索词不能超过 128 个字符。".into());
     }
     let project_type = normalize_project_type(&request.project_type)?;
-    // 未指定时沿用目标实例的版本，保持「搜的就是能装进这个实例的」。
-    let game_version = request
-        .game_version
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(instance.game_version.as_str());
+    /*
+     * 版本 facet 的三种来源，优先级从高到低：
+     *   1. 调用方明确要「全部版本」→ 不加 facet（空串即跳过下面的 push）；
+     *   2. 调用方指定了版本 → 用它；
+     *   3. 都没给 → 跟随目标实例。
+     *
+     * 第 1 条必须排在最前：它和「空 `game_version`」在数据上看起来一样，但语义
+     * 相反。混在一起就会出现「界面上写着全部版本、实际按实例版本筛」。
+     */
+    let game_version = if request.all_versions {
+        ""
+    } else {
+        request
+            .game_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(instance.game_version.as_str())
+    };
     /*
      * 加载器只在模组/整合包上生效。
      *
@@ -189,21 +344,8 @@ pub async fn search_mods(
     } else {
         None
     };
-    if game_version.len() > 64
-        || loader.is_some_and(|loader| {
-            loader.len() > 32
-                || !loader
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
-        })
-        || request.category.len() > 64
-        || !request
-            .category
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
-        return Err("搜索条件无效。".into());
-    }
+    // 校验规则集中在一处，两条搜索路径（有实例 / 无实例）共用。
+    validate_search_inputs(game_version, loader, &request.category)?;
 
     // 每个 facet 组之间是 AND，组内多个值是 OR。
     let mut facets = vec![format!("[\"project_type:{project_type}\"]")];
@@ -339,6 +481,56 @@ pub async fn mod_versions_of(
     parse_versions(&bytes)
 }
 
+/// 列出一个项目的**全部**版本，不按实例的游戏版本与加载器收窄。
+///
+/// ## 为什么整合包需要这个
+///
+/// 模组必须与实例的版本一致，所以 `mod_versions_of` 按实例过滤是对的。但整合包
+/// 相反：它**自带**游戏版本与加载器，导入时会据此创建新实例——用当前实例去筛，
+/// 用户就看不到「换一个 MC 版本的整合包」这种正当需求，而这是整合包最常见的用法。
+///
+/// 之前整合包页只接了 CurseForge，所以这个问题被掩盖了：CurseForge 的
+/// `curseforge_files` 走的是另一条不筛版本的路。接上 Modrinth 后必须区分开。
+pub async fn project_versions(
+    client: &reqwest::Client,
+    project_id: &str,
+    project_type: &str,
+) -> Result<Vec<CatalogVersion>, String> {
+    let project_type = normalize_project_type(project_type)?;
+    if project_id.is_empty()
+        || project_id.len() > 128
+        || !project_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("项目标识无效。".into());
+    }
+    let url = format!("{API}/project/{project_id}/version");
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|_| "无法连接 Modrinth。")?
+        .error_for_status()
+        .map_err(|_| "Modrinth 项目查询失败。")?;
+    let bytes = bounded(response, MAX_RESPONSE).await?;
+    let _ = project_type; // 版本列表本身不按类型过滤；参数保留以便将来按类型收窄。
+    parse_versions(&bytes)
+}
+
+/// 发布类型归一化。
+///
+/// 只认 `release` / `beta` / `alpha` 三档：界面用它决定要不要显示「测试版」标记，
+/// 以及用什么颜色。空值与未知值一律按 `release` 处理——把一个正常版本标成测试版
+/// 比漏标更糟（用户会因此不敢装）。
+fn normalize_version_type(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "beta" => "beta".to_owned(),
+        "alpha" => "alpha".to_owned(),
+        _ => "release".to_owned(),
+    }
+}
+
 fn parse_versions(bytes: &[u8]) -> Result<Vec<CatalogVersion>, String> {
     #[derive(Deserialize)]
     struct File {
@@ -357,6 +549,18 @@ fn parse_versions(bytes: &[u8]) -> Result<Vec<CatalogVersion>, String> {
         date_created: String,
         #[serde(default)]
         files: Vec<File>,
+        /// `release` / `beta` / `alpha`。缺失时按 `release` 处理（老接口没有这个字段）。
+        #[serde(default)]
+        version_type: String,
+        #[serde(default)]
+        game_versions: Vec<String>,
+        #[serde(default)]
+        loaders: Vec<String>,
+        #[serde(default)]
+        downloads: u64,
+        /// 前置依赖条数。Modrinth 的 `dependencies` 是数组，只取长度。
+        #[serde(default)]
+        dependencies: Vec<serde_json::Value>,
     }
     let parsed: Vec<Version> =
         serde_json::from_slice(bytes).map_err(|_| "Modrinth 版本列表无效。")?;
@@ -392,6 +596,22 @@ fn parse_versions(bytes: &[u8]) -> Result<Vec<CatalogVersion>, String> {
                 url: file.url.clone(),
                 sha1: sha1.clone(),
                 size: file.size,
+                version_type: normalize_version_type(&version.version_type),
+                // 只用于展示，不需要严格校验；但要限长，避免一个异常响应把界面撑破。
+                game_versions: version
+                    .game_versions
+                    .into_iter()
+                    .take(16)
+                    .map(|v| truncate(&v, 32))
+                    .collect(),
+                loaders: version
+                    .loaders
+                    .into_iter()
+                    .take(8)
+                    .map(|v| truncate(&v, 32))
+                    .collect(),
+                downloads: version.downloads,
+                dependency_count: version.dependencies.len().min(u32::MAX as usize) as u32,
             })
         })
         .collect()
@@ -522,6 +742,11 @@ mod tests {
             url: "https://cdn.modrinth.com/taken.jar".into(),
             sha1: "0".repeat(40),
             size: 1,
+            version_type: "release".into(),
+            game_versions: vec![],
+            loaders: vec![],
+            downloads: 0,
+            dependency_count: 0,
         };
         let engine = download_engine::DownloadEngine::new(Default::default()).unwrap();
         let result = install_mod_version(&version, &root.join("mods"), &engine).await;
@@ -547,6 +772,11 @@ mod tests {
             url: "https://cdn.modrinth.com/taken.jar".into(),
             sha1: "0".repeat(40),
             size: 1,
+            version_type: "release".into(),
+            game_versions: vec![],
+            loaders: vec![],
+            downloads: 0,
+            dependency_count: 0,
         };
         let engine = download_engine::DownloadEngine::new(Default::default()).unwrap();
         // 与安装路径共用同一套保护：同名文件绝不被覆盖。

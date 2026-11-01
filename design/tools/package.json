@@ -3,7 +3,12 @@
   "private": true,
   "version": "1.0.0",
   "description": "Schema validation and local rendering for editable Sketch design deliverables",
-  "scripts": { "build": "python3 generate_design.py", "validate": "node validate.cjs" },
+  "scripts": {
+    "build": "python3 generate_design.py",
+    "validate": "node validate.cjs",
+    "scan:width": "node ui-width-scan.cjs",
+    "scan:depth": "node ui-depth-scan.cjs"
+  },
   "devDependencies": {
     "@sketch-hq/sketch-file-format": "6.5.0",
     "ajv": "8.20.0",
