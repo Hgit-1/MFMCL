@@ -127,6 +127,46 @@ pub fn list_mods(
     mods::list_mods(&instance(&store, &instance_id)?)
 }
 
+/// 查询实例的 Fabric API 状态（是否适用、是否已装、可装哪个版本）。
+///
+/// 拆成「查」与「装」两条命令而不是一条：界面需要在用户点击之前就告诉他是
+/// 「已安装」还是「可以安装」，装完之后还要重新查一次来刷新显示。
+#[tauri::command]
+pub async fn fabric_api_status(
+    instance_id: String,
+    store: State<'_, LauncherStore>,
+) -> Result<launcher_core::fabric_api::FabricApiStatus, String> {
+    let target = instance(&store, &instance_id)?;
+    launcher_core::fabric_api::fabric_api_status(&target).await
+}
+
+/// 安装 Fabric API 到实例的 mods 目录。
+#[tauri::command]
+pub async fn install_fabric_api(
+    instance_id: String,
+    app: AppHandle,
+    store: State<'_, LauncherStore>,
+    operations: State<'_, Operations>,
+    downloads: State<'_, Arc<crate::downloads::Downloads>>,
+) -> Result<String, String> {
+    let _guard = operations.acquire(&instance_id)?;
+    let target = instance(&store, &instance_id)?;
+    if !launcher_core::fabric_api::instance_uses_fabric(&target) {
+        return Err("只有 Fabric 或 Quilt 实例需要 Fabric API。".into());
+    }
+    let engine = engine(&store)?.with_control(downloads.start(
+        &instance_id,
+        "安装 Fabric API",
+        &store,
+        &app,
+    )?);
+    let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
+    let result = launcher_core::fabric_api::install_fabric_api(&target, &engine, Some(tx)).await;
+    let _ = progress_task.await;
+    downloads.finish(&instance_id, result.is_ok(), &store, &app)?;
+    result
+}
+
 /// Static, best-effort mod compatibility findings (deps/conflicts). Reads JAR
 /// metadata only; never loads classes or executes mod code.
 #[tauri::command]

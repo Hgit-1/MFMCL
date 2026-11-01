@@ -518,6 +518,44 @@ pub async fn project_versions(
     parse_versions(&bytes)
 }
 
+/// 查询某个项目的版本，**按调用方给出的加载器名筛选**。
+///
+/// 与 [`mod_versions_of`] 的区别：后者按实例自己的加载器筛选，而这个函数接受
+/// 一个明确的加载器名。Fabric API 需要它——Quilt 实例的加载器名是 `quilt`，
+/// 但 Fabric API 在 Modrinth 上只标了 `fabric`，用实例名去筛会得到空列表。
+/// Quilt 向下兼容 Fabric 模组，所以必须固定按 `fabric` 查询。
+pub async fn project_versions_for_loader(
+    client: &reqwest::Client,
+    project_id: &str,
+    game_version: &str,
+    loader: &str,
+) -> Result<Vec<CatalogVersion>, String> {
+    if project_id.is_empty()
+        || project_id.len() > 128
+        || !project_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("项目标识无效。".into());
+    }
+    let params: Vec<(&str, String)> = vec![
+        ("game_versions", format!("[\"{game_version}\"]")),
+        ("loaders", format!("[\"{loader}\"]")),
+    ];
+    let url =
+        reqwest::Url::parse_with_params(&format!("{API}/project/{project_id}/version"), &params)
+            .map_err(|_| "版本地址无效。")?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| "无法连接 Modrinth。")?
+        .error_for_status()
+        .map_err(|_| "Modrinth 项目查询失败。")?;
+    let bytes = bounded(response, MAX_RESPONSE).await?;
+    parse_versions(&bytes)
+}
+
 /// 发布类型归一化。
 ///
 /// 只认 `release` / `beta` / `alpha` 三档：界面用它决定要不要显示「测试版」标记，
@@ -546,6 +584,15 @@ fn parse_versions(bytes: &[u8]) -> Result<Vec<CatalogVersion>, String> {
     struct Version {
         id: String,
         version_number: String,
+        /*
+         * 时间字段名在两个端点间不一致，所以两个都接受。
+         *
+         * `/project/{id}/version` 返回的是 `date_published`，而
+         * `/version/{id}` 返回 `date_created`。只写 `date_created` 会让带
+         * `game_versions` / `loaders` 筛选的查询整体反序列化失败——表现为
+         * 「Modrinth 版本列表无效」，而实际响应完全正常。
+         */
+        #[serde(default, alias = "date_created", alias = "date_published")]
         date_created: String,
         #[serde(default)]
         files: Vec<File>,
@@ -727,6 +774,21 @@ mod tests {
         ] {
             assert!(parse_versions(bad.as_bytes()).is_err(), "{bad}");
         }
+    }
+
+    /// `/project/{id}/version` 用 `date_published`，不是 `date_created`。
+    ///
+    /// 这条曾经是一个真实故障：带 `game_versions` / `loaders` 筛选的查询（商店的
+    /// 版本列表、Fabric API 安装）全部报「版本列表无效」，因为反序列化要求
+    /// `date_created` 必填，而那个端点的响应里根本没有这个键。未筛选的查询恰好
+    /// 走另一个端点，所以问题只在筛选路径上出现。
+    #[test]
+    fn versions_accept_the_date_published_spelling() {
+        let body = r#"[{"id":"v1","version_number":"0.92.12+1.20.1","date_published":"2026-09-01T10:05:43Z","files":[{"url":"https://cdn.modrinth.com/m.jar","filename":"fabric-api-0.92.12+1.20.1.jar","primary":true,"size":10,"hashes":{"sha1":"%HASH%"}}]}]"#;
+        let good = body.replace("%HASH%", &"a".repeat(40));
+        let parsed = parse_versions(good.as_bytes()).expect("date_published must be accepted");
+        assert_eq!(parsed[0].version_number, "0.92.12+1.20.1");
+        assert_eq!(parsed[0].date_created, "2026-09-01T10:05:43Z");
     }
 
     #[tokio::test]
