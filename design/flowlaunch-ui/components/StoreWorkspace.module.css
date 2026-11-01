@@ -991,6 +991,33 @@
   font-size: var(--text-sm);
 }
 
+/*
+ * 版本列表的失败提示。
+ *
+ * 不用纯文字：这条消息解释的是「为什么下面什么都没有」，在满是灰色说明的列表里
+ * 很容易被当成又一条元信息略过。用错误色边框圈起来，并允许换行（后端文案可能
+ * 较长，例如「API Key 缺失或无效，请在内容商店里重新填写」）。
+ */
+.versionError {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 4px 0;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-danger-500) 38%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-danger-500) 8%, transparent);
+  color: var(--color-danger-500);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.versionError > span {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
 .foolNote {
   color: var(--color-primary-text);
   font-size: var(--text-sm);

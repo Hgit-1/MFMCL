@@ -563,6 +563,8 @@ export function StoreWorkspace({
   const [expandedCfMod, setExpandedCfMod] = useState<string | null>(null);
   const [cfVersions, setCfVersions] = useState<CurseForgeVersion[]>([]);
   const [cfVersionsState, setCfVersionsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  /** 展开失败时的原因（缺少 key、没有目标实例、网络等）。 */
+  const [cfVersionsError, setCfVersionsError] = useState('');
 
   // -------------------------------------------------------------------------
   // 整合包导入
@@ -1067,16 +1069,36 @@ export function StoreWorkspace({
   /** 展开/收起某个 CurseForge 项目的文件列表。 */
   const openCfVersions = async (mod: CurseForgeMod) => {
     if (expandedCfMod === mod.projectId) { setExpandedCfMod(null); return; }
-    if (!target) return;
     setExpandedCfMod(mod.projectId);
     setCfVersionsState('loading');
     setCfVersions([]);
+    setCfVersionsError('');
+    /*
+     * 没有目标实例时也要展开，并说明原因。
+     *
+     * 原来这里直接 `return`：按钮点下去毫无反应，用户无法判断是「没反应」还是
+     * 「加载失败」。而 CurseForge 的查询必须带游戏版本与加载器，没有实例就无从
+     * 得知该按什么筛选——所以正确做法不是静默失败，而是把这件事写出来，
+     * 并给一个「去选择实例」的去处。
+     */
+    if (!target) {
+      setCfVersionsState('error');
+      setCfVersionsError(t('cf.needInstance'));
+      return;
+    }
     try {
       setCfVersions(await curseforgeFiles(mod.projectId, target.version, target.loader));
       setCfVersionsState('ready');
     } catch (error) {
+      /*
+       * 失败原因留在行内，不只弹一条会消失的 toast。
+       *
+       * 缺少/失效 API Key 是最常见的原因，而后端的错误文案已经写清了怎么办
+       * （「请在内容商店里重新填写」）。用 toast 呈现意味着用户读完就没了，
+       * 而列表区是一片空白——看起来像「这个模组没有文件」。
+       */
       setCfVersionsState('error');
-      onNotice(errorText(error, t('cf.versionsFailed')));
+      setCfVersionsError(errorText(error, t('cf.versionsFailed')));
     }
   };
 
@@ -2294,6 +2316,33 @@ export function StoreWorkspace({
                         )}
                         {cfVersionsState === 'ready' && cfVersions.length === 0 && (
                           <div className={styles.versionMeta}>{t('cf.noVersion')}</div>
+                        )}
+                        {/*
+                          失败时把原因写在这里。
+                          之前只有一条 toast，列表区留空——用户会以为这个模组没有
+                          可下载文件，而实际原因是缺少 CurseForge API Key。
+                        */}
+                        {cfVersionsState === 'error' && (
+                          <div className={styles.versionError} role="alert">
+                            <span>{cfVersionsError}</span>
+                            {/*
+                              缺少 key 时给一个直达入口：滚动到页面顶部那张 Key 卡片。
+                              只在「确实没有 key」时显示——其它失败（网络、限流）
+                              跳过去也没有可操作的东西。
+                            */}
+                            {cfKeyReady === false && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  document.querySelector('[class*="cfKeySlot"]')
+                                    ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }}
+                              >
+                                {t('cf.openKeySettings')}
+                              </Button>
+                            )}
+                          </div>
                         )}
                         {cfVersions.map(version => (
                           <div key={version.versionId} className={styles.versionRow}>

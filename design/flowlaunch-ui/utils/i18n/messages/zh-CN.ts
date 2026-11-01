@@ -271,6 +271,7 @@ export const zhCN = {
   'cf.searchFailed': 'CurseForge 搜索失败。',
   'cf.versionsFailed': '无法读取该项目的文件列表。',
   'cf.noVersion': '这个项目没有适用于该实例的文件。',
+  'cf.openKeySettings': '去填写 API Key',
   'cf.chooseVersion': '选择版本',
   'cf.collapse': '收起',
   'cf.restricted': '作者禁止第三方下载，需到网页手动获取',
