@@ -255,6 +255,25 @@ impl LauncherStore {
             .map_err(StoreError::Database)
     }
 
+    /// 删除所有已结束的下载任务记录（完成 / 失败 / 取消 / 中断）。
+    ///
+    /// 为什么按状态而不是按时间清：任务列表是「这台机器上发生过什么」的记录，
+    /// 用户想清掉的是「没用了的那些」，而「多久算旧」没有客观答案——昨天失败的
+    /// 那个可能正要拿来排查，十分钟前完成的那个已经该走了。状态是确定的。
+    ///
+    /// `running` / `paused` 一律保留：前者正在写文件，后者用户可以继续。删掉记录
+    /// 会让界面失去正在进行的任务，也丢掉「本次启动是中断的」这条线索。
+    ///
+    /// 返回删除的行数，让界面能说「清掉了 N 条」，而不是给一个含糊的成功提示。
+    pub fn clear_finished_download_tasks(&self) -> Result<usize, StoreError> {
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let removed = connection.execute(
+            "DELETE FROM download_tasks WHERE state IN ('completed', 'failed', 'cancelled', 'interrupted')",
+            [],
+        )?;
+        Ok(removed)
+    }
+
     pub fn save_settings(&self, settings: &LauncherSettings) -> Result<(), StoreError> {
         crate::validate_settings(settings, None).map_err(StoreError::Invalid)?;
         let json = serde_json::to_string(settings)?;
@@ -778,6 +797,50 @@ mod tests {
         );
         drop(recovered);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// 清理只删「已结束」的记录，进行中的任务必须留在表里。
+    ///
+    /// 这条边界是这个功能唯一会出错的地方：如果按时间或按「不是 running」粗判，
+    /// 一次正在写入的任务会被删掉，界面随即失去进度，文件却在继续下载。
+    #[test]
+    fn clearing_finished_tasks_keeps_running_and_paused_ones() {
+        let store = LauncherStore::open(":memory:").unwrap();
+        let now = Utc::now().to_rfc3339();
+        let make = |id: &str, state: DownloadTaskState| DownloadTask {
+            id: id.to_string(),
+            instance_id: "inst".into(),
+            label: format!("task {id}"),
+            source: None,
+            state,
+            completed_bytes: 0,
+            total_bytes: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        for (id, state) in [
+            ("done", DownloadTaskState::Completed),
+            ("bad", DownloadTaskState::Failed),
+            ("gone", DownloadTaskState::Cancelled),
+            ("stale", DownloadTaskState::Interrupted),
+            ("live", DownloadTaskState::Running),
+            ("held", DownloadTaskState::Paused),
+        ] {
+            store.save_download_task(&make(id, state)).unwrap();
+        }
+
+        let removed = store.clear_finished_download_tasks().unwrap();
+        assert_eq!(removed, 4, "four finished records should be deleted");
+
+        let remaining: Vec<String> = store
+            .list_download_tasks()
+            .unwrap()
+            .into_iter()
+            .map(|task| task.id)
+            .collect();
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.contains(&"live".to_string()));
+        assert!(remaining.contains(&"held".to_string()));
     }
 
     #[test]

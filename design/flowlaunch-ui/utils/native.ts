@@ -91,6 +91,8 @@ export interface LauncherSettings {
   announcementPolicy: UpdatePolicy
   cacheDirectory: string | null
   launcherLogEnabled: boolean
+  /** 启动时是否清掉已结束的下载任务记录。 */
+  clearFinishedTasks: boolean
   /** 用户指定的 llama-server 可执行文件；空表示自动查找。 */
   llamaServerPath: string | null
   opacity: number
@@ -548,6 +550,7 @@ export function fallbackSettings(): LauncherSettings {
     announcementPolicy: 'notify',
     cacheDirectory: null,
     launcherLogEnabled: false,
+    clearFinishedTasks: true,
     llamaServerPath: null,
     opacity: 100,
     hiddenTheme: false,
@@ -628,6 +631,7 @@ export function prefsToSettings(prefs: LauncherPrefs, base: LauncherSettings): L
     announcementPolicy: prefs.announcementPolicy as UpdatePolicy,
     cacheDirectory: prefs.cacheDirectory || null,
     launcherLogEnabled: prefs.launcherLogEnabled,
+    clearFinishedTasks: prefs.clearFinishedTasks,
     llamaServerPath: prefs.llamaServerPath || null,
     opacity: prefs.opacity,
     hiddenTheme: prefs.hiddenTheme,
@@ -1924,6 +1928,18 @@ export async function listDownloadTasks(): Promise<DownloadTask[]> {
     return PREVIEW_DOWNLOAD_TASKS.map(task => ({ ...task }))
   }
   return invoke<DownloadTask[]>('list_download_tasks')
+}
+
+/**
+ * 删除已结束的任务记录，返回清掉的条数。
+ *
+ * 只清「完成 / 失败 / 取消 / 中断」：正在进行和已暂停的任务还在占有意义——
+ * 前者正在写文件，后者用户可以继续。判断依据交给后端的状态字段，不在界面上
+ * 按时间猜，因为「多久算旧」没有客观答案。
+ */
+export async function clearFinishedDownloadTasks(): Promise<number> {
+  if (!isDesktopShell()) return 0
+  return invoke<number>('clear_finished_download_tasks')
 }
 
 /**
