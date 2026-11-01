@@ -1,0 +1,73 @@
+/* 加载器标志的图标框。 */
+
+/*
+ * 外框固定为调用方给的 size，图片在框内居中。
+ *
+ * 为什么要分「框」和「图」两层，而不是直接给 img 设宽高：
+ * 各标志的留白比例不同，需要按比例缩小才能视觉等重。如果直接缩小 img，
+ * 那么它周围的空间就由调用方的布局决定了——同一列里的图标会因为外框尺寸
+ * 不同而基线错位。固定外框 + 内部缩放，让每个图标占的格子始终一样大。
+ */
+.frame {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  /* 框本身不画任何东西：底板和圆角属于调用方（例如实例卡片）。 */
+  line-height: 0;
+}
+
+.icon {
+  display: block;
+  /* contain 而不是 cover：标志的宽高比各不相同，裁切会切掉轮廓。 */
+  object-fit: contain;
+  object-position: center;
+  user-select: none;
+}
+
+/* 小尺寸像素画需要硬边放大；插画与矢量保持平滑。 */
+.pixelated {
+  image-rendering: pixelated;
+  -ms-interpolation-mode: nearest-neighbor;
+}
+
+/*
+ * 深色标志的对比底板。
+ *
+ * 只在标志本身是深色时使用（目前是 Forge 的藏青铁砧）。底板用语义化的
+ * 浅色而不是写死的白：浅色主题下它和卡片背景几乎同色，不会显得突兀；
+ * 深色主题下才明显浮起来。圆角比外框小一档，让它看起来是「图标垫在
+ * 一张纸上」而不是「多了一个方块」。
+ */
+.plate {
+  border-radius: calc(var(--radius-sm) + 2px);
+  background: color-mix(in srgb, var(--color-text-primary) 88%, transparent);
+}
+
+/* 底板在浅色主题下要反过来：深色图标需要浅底，但浅色主题的卡片本身已经是
+ * 浅的，此时用纯白底板 + 一点点描边才能把藏青铁砧和卡片分开。 */
+[data-theme="light"] .plate {
+  background: #FFFFFF;
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+
+/*
+ * 去色：用于「实例当前不可用」（安装失败）。
+ *
+ * 用 `grayscale(1)` 而不是换成另一张灰色素材，有两个理由：
+ *   1. 加载器身份仍然可读——用户还能看出这是哪个加载器，只是知道它坏了；
+ *   2. 不需要为每个加载器再维护一套灰色版本。
+ * 同时压一点亮度和不透明度，让它在卡片上退到背景层，和右侧置灰的「安装」
+ * 按钮形成同一层的视觉。
+ */
+.muted {
+  filter: grayscale(1) brightness(0.92);
+  opacity: 0.55;
+}
+
+/* 灰化时底板也要降级，否则浅色底板会比灰图标更抢眼。
+ * `plate` 与 `mutedFrame` 落在同一个元素上（LoaderIcon 把两者都加在外框），
+ * 所以用复合选择器。 */
+.mutedFrame.plate {
+  background: color-mix(in srgb, var(--color-text-primary) 12%, transparent);
+  box-shadow: none;
+}

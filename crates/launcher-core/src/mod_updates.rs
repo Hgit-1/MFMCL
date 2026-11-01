@@ -271,6 +271,22 @@ pub fn is_safe_mod_name(name: &str) -> bool {
         && !name.starts_with('.')
 }
 
+/// 整合包文件名校验：接受 `.zip` 与 `.mrpack`。
+///
+/// 与 [`is_safe_mod_name`] 的区别只在扩展名。整合包是压缩包，用 `.jar` 的规则
+/// 会把每一个真实的整合包都拒掉——CurseForge 分发的是 `.zip`（内含
+/// `manifest.json`），Modrinth 分发的是 `.mrpack`。
+///
+/// 其余约束（长度、禁止路径分隔符与冒号、禁止隐藏文件）完全保留：这些是防止
+/// 落盘路径穿越与隐藏文件的关键，与扩展名无关。
+pub fn is_safe_pack_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && (name.ends_with(".zip") || name.ends_with(".mrpack"))
+        && !name.contains(['/', '\\', ':', '\0'])
+        && !name.starts_with('.')
+}
+
 /// Verified download + atomic replacement. The previous file is kept as
 /// `<name>.jar.old` so a broken update stays recoverable, mirroring PCL2's
 /// "find the old mod in the recycle bin" promise without shell APIs.
@@ -382,6 +398,28 @@ mod tests {
     }
 
     #[test]
+    fn pack_names_accept_zip_and_mrpack_only() {
+        // 整合包是压缩包：CurseForge 发 .zip、Modrinth 发 .mrpack。
+        for good in ["pack.zip", "pack.mrpack", "All the Mods 9 - ATM9-1.0.0.zip"] {
+            assert!(is_safe_pack_name(good), "{good}");
+        }
+        // 与模组同样的路径穿越与隐藏文件约束必须保留。
+        for bad in [
+            "",
+            "pack.jar",
+            "pack.zip.jar",
+            "../pack.zip",
+            "a/b.zip",
+            r"a\b.zip",
+            "c:pack.zip",
+            ".hidden.zip",
+            "pack.zip.disabled",
+        ] {
+            assert!(!is_safe_pack_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
     fn loader_name_maps_only_supported_kinds() {
         let mut instance = crate::InstanceRecord {
             id: "i".into(),
@@ -393,6 +431,7 @@ mod tests {
             isolated: true,
             state: crate::InstanceState::Ready,
             created_at: String::new(),
+            last_launched_at: None,
         };
         assert_eq!(instance_loader_name(&instance), None);
         instance.loader = "fabric@0.16.10".into();
@@ -418,6 +457,7 @@ mod tests {
             isolated: true,
             state: crate::InstanceState::Ready,
             created_at: String::new(),
+            last_launched_at: None,
         };
         let update = ModUpdate {
             file_name: "missing.jar".into(),

@@ -33,15 +33,17 @@ FlowLaunch 是一个现代化的 Minecraft 启动器 UI 设计原型，采用**�
 
 ### 安装依赖
 ```bash
-cd /home/mdfz31/MFMCL/design/flowlaunch-ui
-npm install
+npm ci --prefix design/flowlaunch-ui   # 在仓库根目录
 ```
 
-### 开发模式
+### 开发模式（浏览器预览）
 ```bash
-npm run dev
+npm run dev                            # 在仓库根目录，等价于在本目录执行 npm run dev
 ```
-访问 http://localhost:5173
+访问 http://127.0.0.1:5173/
+
+**所有 UI 修改都必须先起这个预览实例，再由用户在 Design 模式里调整外观。**
+完整约定见仓库根目录的 [`UI_WORKFLOW.md`](../../UI_WORKFLOW.md)。
 
 ### 构建生产版本
 ```bash

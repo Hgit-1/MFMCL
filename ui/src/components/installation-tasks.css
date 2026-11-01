@@ -1,8 +1,0 @@
-.installation-history { margin-bottom: 24px; padding: 24px; }
-.installation-history-row { display: flex; align-items: center; gap: 20px; padding: 18px 0; border-top: 1px solid var(--line); }
-.installation-history-copy { flex: 1; min-width: 0; display: grid; gap: 6px; }
-.installation-history-copy strong { font-size: 14px; overflow-wrap: anywhere; }
-.installation-history-copy span, .installation-history-copy small { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.installation-history-actions { display: flex; gap: 8px; flex-shrink: 0; }
-.installation-history-actions button { min-height: 44px; }
-@media (max-width: 600px) { .installation-history { padding: 18px; } .installation-history-row { align-items: flex-start; flex-direction: column; gap: 12px; } }

@@ -11,10 +11,27 @@ OriginalFilename = "mfmcl-desktop.exe"
 [lib]
 name = "mfmcl_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+# The library links Tauri and has no doctests; rustdoc cannot resolve the
+# `tauri` crate for a staticlib/cdylib target, so `cargo test --workspace`
+# would otherwise fail on an empty doctest binary.
+doctest = false
 
 [[bin]]
 name = "mfmcl-desktop"
 path = "src/main.rs"
+
+[features]
+# Embeds `../design/flowlaunch-ui/dist` into the executable and serves it over
+# the custom protocol instead of loading the Vite dev server.
+#
+# Tauri decides between "dev" and "production" from this single Cargo
+# feature: without it the generated context keeps `dev = true`, drops the
+# embedded assets entirely, and points the webview at `build.devUrl`
+# (http://127.0.0.1:1420) — which does not exist in a plain `cargo build
+# --release`, producing "Could not connect to 127.0.0.1: Connection
+# refused". `cargo tauri build` enables this automatically, but building
+# straight through Cargo must request it explicitly.
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

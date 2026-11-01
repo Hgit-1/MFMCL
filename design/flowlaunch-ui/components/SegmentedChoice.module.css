@@ -2,32 +2,114 @@
 
 .wrap {
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
   flex: none;
+  gap: 3px;
+  /* 左侧「跟随全局」插槽的定宽。按钮组宽度只由档数决定，徽标出现或消失
+     都不会把按钮组推来推去，整列控件因此能严格对齐。 */
+  --lead-w: 84px;
+}
+
+.line {
+  display: grid;
+  grid-template-columns: var(--lead-w) auto;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
+}
+
+.lead {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
 }
 
 /*
- * 轨道 + 等宽分段。用 grid 而不是 flex 是为了让每段严格等宽：
- * 中文「跟随全局」比「关 / 开」长得多，flex 会让各段宽度不齐，
- * 中间档跑偏就不再位于几何中心，位置暗示失效。
+ * 轨道 + 等宽分段。
  *
- * 单段宽度固定 62px，整体宽度由段数算出来：三档 190px、两档 128px，
- * 这样 2 档和 3 档控件并排时每段大小一致，视觉重量不会跳。
+ * 用 grid 而不是 flex 是为了让每段严格等宽：中文「跟随全局」比「关 / 开」长得多，
+ * flex 会让各段宽度不齐，中间档跑偏就不再位于几何中心，位置暗示失效。
+ *
+ * 宽度策略：`max-content` 容器 + `minmax(62px, 1fr)` 轨道。
+ *   - 每段下限 62px：短文案（「关 / 开」）时控件保持紧凑，2 档与 3 档并排时
+ *     段大小一致，视觉重量不跳；
+ *   - 上限跟着最长的那段文字走：切换到英文后 `Use global` 比 62px 宽，
+ *     容器会自动扩到足够容纳它，不会再把文字裁掉。
+ *
+ * 之前这里是 `width: calc(var(--seg-count) * 62px + 4px)`，即每段写死 62px。
+ * 中文下勉强够用，英文的 `Use global` 需要约 73px，于是被裁成「Use global」
+ * 只剩一半（实测 `scrollWidth > clientWidth`）。写死宽度在只有一种语言时看不出
+ * 问题，一旦界面要支持多语言就必然出错——宽度必须由内容决定。
  */
 .group {
+  position: relative;
   display: grid;
-  grid-template-columns: repeat(var(--seg-count), minmax(0, 1fr));
-  width: calc(var(--seg-count) * 62px + 4px);
+  grid-template-columns: repeat(var(--seg-count), minmax(62px, 1fr));
+  width: max-content;
+  max-width: 100%;
   padding: 2px;
   border: 1px solid var(--color-border);
   border-radius: 9px;
   background: var(--color-bg-secondary);
 }
 
+/*
+ * 选中滑块。
+ *
+ * 位移靠 transform 过渡，橡皮筋形变交给内层 .thumbFill 的动画，两层分工：
+ * 放在同一个元素上时，@keyframes 里的 transform 会整段接管该属性，把过渡
+ * 替换掉——滑块就会「闪现」到目标档而不是滑过去。
+ */
+.thumb {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc((100% - 4px) / var(--seg-count));
+  border-radius: 7px;
+  opacity: 0;
+  transform: translate(calc(var(--seg-index) * 100%));
+  transition: transform .26s cubic-bezier(.22, 1, .36, 1), opacity .14s var(--ease);
+  pointer-events: none;
+  will-change: transform;
+}
+
+.thumbFill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary-tonal);
+  transition: background .16s var(--ease), box-shadow .16s var(--ease);
+}
+
+.thumbGliding .thumbFill {
+  animation: thumb-glide .28s cubic-bezier(.22, 1, .36, 1);
+}
+
+@keyframes thumb-glide {
+  0% { transform: scaleX(1); }
+  40% { transform: scaleX(.92); }
+  100% { transform: scaleX(1); }
+}
+
+.thumbVisible {
+  opacity: 1;
+}
+
+/* 中性档（「跟随全局」这类"不算一个取值"的选项）用描边而不是色调底，
+   避免看起来像已经启用了某个功能。 */
+.thumbNeutral .thumbFill {
+  background: var(--color-bg-elevated);
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+
 .segment {
+  position: relative;
+  z-index: 1;
   min-height: 26px;
-  padding: 0 6px;
+  padding: 0 8px;
   border: 0;
   border-radius: 7px;
   background: transparent;
@@ -35,13 +117,22 @@
   font: inherit;
   font-size: 11px;
   line-height: 1.2;
+  /* 文字不换行：分段是等高的，换行会让控件高度跳变。
+     宽度由 grid 轨道的 minmax 决定，这里只保证内容不撑破单段。 */
   white-space: nowrap;
+  /* 极端情况下（超长文案且容器被 max-width 压窄）宁可省略也不溢出边框。 */
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
-  transition: background 0.16s, color 0.16s;
+  transition: color .16s var(--ease), transform .14s var(--ease);
 }
 
 .segment:hover:not(:disabled) {
   color: var(--color-text-primary);
+}
+
+.segment:active:not(:disabled) {
+  transform: scale(.985);
 }
 
 .segment:focus-visible {
@@ -50,45 +141,136 @@
 }
 
 .segment:disabled {
-  opacity: 0.5;
+  opacity: .5;
   cursor: not-allowed;
 }
 
-/*
- * 选中档用色调底 + 主色文字。注意这里不能只靠底色区分：
- * 轨道底色是 --color-bg-secondary，色调底与它色差很小（这正是内存模式那处
- * 分段控件曾经"看不出选中"的原因），所以选中档同时加粗并提高文字对比。
- */
 .active,
 .active:hover:not(:disabled) {
-  background: var(--color-primary-tonal);
   color: var(--color-primary-tonal-text);
   font-weight: 600;
 }
 
-/* 继承档用中性色，避免看起来像"已启用某个功能"——它表示"不覆盖"。 */
 .neutral.active,
 .neutral.active:hover:not(:disabled) {
-  background: var(--color-bg-elevated);
   color: var(--color-text-primary);
-  box-shadow: inset 0 0 0 1px var(--color-border);
 }
 
+/* 说明行始终占位：内容为空时透明，但高度不变，
+   于是「跟随全局」的提示出现或消失都不会把整页顶动。
+   宽度跟随 `.wrap`，不再按段数算——段宽现在由内容决定，写死的算式会算错。 */
 .caption {
+  align-self: stretch;
+  min-width: 0;
+  overflow: hidden;
+  min-height: 12px;
   color: var(--color-text-disabled);
   font-size: 10px;
+  line-height: 1.2;
+  text-align: right;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  transition: opacity .16s var(--ease);
 }
 
-/* 窄屏：控件换到下一行，不再与说明文字抢宽度。 */
-@media (max-width: 560px) {
+.captionEmpty {
+  opacity: 0;
+}
+
+/* 「跟随全局」徽标。
+   它不是一个取值，所以不能做成第四档：亮起=未覆盖（跟随全局），点击=恢复继承。
+   文字不随状态变化，宽度才能恒定；全局取值写在说明行里。 */
+.follow {
+  display: inline-flex;
+  width: 100%;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-disabled);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .18s var(--ease), color .18s var(--ease), border-color .18s var(--ease),
+    box-shadow .18s var(--ease), transform .14s var(--ease);
+}
+
+.follow:hover:not(:disabled) {
+  border-color: var(--color-border);
+  color: var(--color-text-secondary);
+}
+
+.follow:active:not(:disabled) {
+  transform: scale(.97);
+}
+
+.follow:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary-500) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.follow:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.followActive,
+.followActive:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary-500) 28%, transparent);
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary-500) 12%, transparent);
+}
+
+/* 圆点是状态的载体：文字不变，只有它亮起来、放大一点。 */
+.followDot {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: .35;
+  box-shadow: none;
+  transition: opacity .18s var(--ease), box-shadow .22s var(--ease),
+    transform .22s cubic-bezier(.22, 1, .36, 1);
+}
+
+.followActive .followDot {
+  opacity: 1;
+  transform: scale(1.15);
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+/* 窄屏：徽标移到按钮组上方，整体占满宽度。 */
+@media (max-width: 640px) {
   .wrap {
     width: 100%;
-    flex-wrap: wrap;
-    justify-content: space-between;
+    align-items: stretch;
+  }
+
+  .line {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .lead {
+    order: 2;
+    justify-content: flex-end;
   }
 
   .group {
     width: 100%;
+  }
+
+  .caption {
+    max-width: 100%;
+    text-align: right;
   }
 }

@@ -5,6 +5,8 @@ import { Modal } from './Modal';
 import { DefaultUserAvatar } from './DefaultUserAvatar';
 import type { Account } from '../types';
 import { useI18n } from '../utils/i18n';
+import { addOfflineAccount, errorText, microsoftLogin, removeAccount, skinLogin, skinSelectProfile } from '../utils/native';
+import { toAccount } from '../utils/adapters';
 import styles from './AccountModal.module.css';
 
 // 简化图标
@@ -23,7 +25,6 @@ const ShieldCheckIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fi
 const AlertIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 2l8 14H2L10 2z"/><path d="M10 8v3m0 3h.01"/></svg>;
 const EditIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 2l3 3-9 9H2v-3l9-9z"/></svg>;
 const LoginIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 2h4v12h-4M6 11l3-3-3-3M3 8h10"/></svg>;
-const UploadIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 10v3a1 1 0 01-1 1H3a1 1 0 01-1-1v-3M8 2v9m4-5L8 2 4 6"/></svg>;
 const PlusIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 5v10M5 10h10"/></svg>;
 const ChevronRightIcon = () => <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 12l4-4-4-4"/></svg>;
 
@@ -35,20 +36,10 @@ interface Props {
   currentAccount?: Account;
   onLogin: (account: Account | undefined) => void;
   recentAccounts?: Account[];
-  onUpdateAccount?: (account: Account) => void;
-}
-
-function SkinModel({ model }: { model: 'steve' | 'alex' }) {
-  const { t } = useI18n();
-  const modelName = model === 'steve' ? 'Steve' : 'Alex';
-  return (
-    <img
-      className={styles.skinModel}
-      src={`/demo-avatars/models/${model}-head.png`}
-      alt={t('account.modelAlt', { values: { model: modelName } })}
-      draggable={false}
-    />
-  );
+  /** 后端错误与操作结果通过它显示在应用外壳的提示条里。 */
+  onNotice?: (message: string) => void;
+  /** 账户列表发生变化（添加/移除）后通知外壳重新读取。 */
+  onChanged?: () => void;
 }
 
 function PlayerAvatar({ username, avatar, size = 36 }: { username: string; avatar?: string; size?: number }) {
@@ -64,78 +55,141 @@ function PlayerAvatar({ username, avatar, size = 36 }: { username: string; avata
   );
 }
 
-export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentAccounts = [], onUpdateAccount }: Props) {
+export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentAccounts = [], onNotice, onChanged }: Props) {
   const { t } = useI18n();
   const [method, setMethod] = useState<LoginMethod | null>(null);
   const [offlineName, setOfflineName] = useState('');
   const [serverUrl, setServerUrl] = useState('');
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
-  const [editUsername, setEditUsername] = useState('');
-  const [editSkinModel, setEditSkinModel] = useState<'steve' | 'alex'>('steve');
+  /** 正在提交的后端操作；用于禁用按钮，避免重复提交。 */
+  const [busy, setBusy] = useState(false);
   const [hoveredAccountId, setHoveredAccountId] = useState<string | null>(null);
   const [showAddMenu, setShowAddMenu] = useState(false);
+  /** 正在等待后端的登录方式；用它禁用按钮并显示进度，避免重复点击开两个授权流程。 */
+  const [pending, setPending] = useState<LoginMethod | null>(null);
+  /** 皮肤站登录返回的待选角色列表；为空时表示还没到选择角色那一步。 */
+  const [skinProfiles, setSkinProfiles] = useState<{ pendingId: string; profiles: { id: string; name: string }[] } | null>(null);
+  const [skinTrusted, setSkinTrusted] = useState(false);
+  const [skinPassword, setSkinPassword] = useState('');
+  const [skinUsername, setSkinUsername] = useState('');
 
+  const reportError = (error: unknown, fallback: string) => {
+    onNotice?.(errorText(error, fallback));
+  };
+
+  /**
+   * Microsoft 登录。
+   *
+   * 后端会打开系统浏览器完成 OAuth，并把账户写进数据库、标记为选中。这里不做
+   * 任何本地账户拼装——凭据由后端保管，界面只拿到公开档案。
+   */
   const handleMicrosoftLogin = () => {
-    const account: Account = {
-      id: 'ms-demo',
-      username: 'DemoPlayer',
-      uuid: 'demo-uuid-ms',
-      avatar: '/demo-avatars/notch-head.png',
-      type: 'microsoft',
-      hasMinecraft: true,
-    };
-    onLogin(account);
-    onClose();
+    setPending('microsoft');
+    void microsoftLogin()
+      .then(profile => {
+        onLogin(toAccount(profile));
+        onClose();
+      })
+      .catch(error => reportError(error, 'Microsoft 登录失败。'))
+      .finally(() => setPending(null));
   };
 
+  /**
+   * 离线档案。
+   *
+   * 名称规则由后端校验（3–16 位字母数字下划线）；这里先做同样的检查是为了
+   * 立刻给出反馈，而不是等一次往返。
+   */
   const handleOfflineLogin = () => {
-    if (!offlineName.trim()) return;
-    const account: Account = {
-      id: 'offline-' + Date.now(),
-      username: offlineName,
-      uuid: 'offline-uuid-' + Date.now(),
-      avatar: '/demo-avatars/jeb-head.png',
-      type: 'offline',
-      hasMinecraft: false,
-    };
-    onLogin(account);
-    onClose();
+    const name = offlineName.trim();
+    if (!/^[A-Za-z0-9_]{3,16}$/.test(name)) {
+      onNotice?.('离线档案名称需为 3–16 位英文字母、数字或下划线。');
+      return;
+    }
+    setPending('offline');
+    void addOfflineAccount(name)
+      .then(profile => {
+        onLogin(toAccount(profile));
+        onClose();
+      })
+      .catch(error => reportError(error, '无法创建离线档案。'))
+      .finally(() => setPending(null));
   };
 
+  /**
+   * 皮肤站（Yggdrasil）登录分两步。
+   *
+   * 第一步提交地址与凭据，后端返回该账户下的角色列表；第二步由用户选一个角色，
+   * 才真正写入账户。之所以不在第一步自动选第一个角色，是因为同一个皮肤站账号
+   * 可以有多个游戏角色，替用户猜会让他启动到错误的名字。
+   */
   const handleThirdPartyLogin = () => {
+    if (skinProfiles) {
+      // 第二步：选择角色。`profileId` 为 null 时后端会拒绝，所以必须先选。
+      const first = skinProfiles.profiles[0];
+      if (!first) {
+        onNotice?.('此账户没有可用的角色。');
+        return;
+      }
+      setPending('thirdparty');
+      void skinSelectProfile(skinProfiles.pendingId, first.id)
+        .then(profile => {
+          onLogin(toAccount(profile));
+          onClose();
+        })
+        .catch(error => reportError(error, '无法选择角色。'))
+        .finally(() => setPending(null));
+      return;
+    }
+
     if (!serverUrl.trim()) return;
-    const account: Account = {
-      id: 'authlib-demo',
-      username: 'AuthlibPlayer',
-      uuid: 'authlib-uuid',
-      avatar: '/demo-avatars/dinnerbone-head.png',
-      type: 'microsoft',
-      hasMinecraft: true,
-    };
-    onLogin(account);
-    onClose();
+    if (!skinTrusted) {
+      onNotice?.('请先确认你信任此认证服务器。');
+      return;
+    }
+    setPending('thirdparty');
+    void skinLogin(serverUrl.trim(), skinUsername.trim(), skinPassword, skinTrusted)
+      .then(result => {
+        // 只有一个角色时不必让用户多点一次，直接完成第二步。
+        if (result.profiles.length === 1) {
+          return skinSelectProfile(result.pendingId, result.profiles[0].id).then(profile => {
+            onLogin(toAccount(profile));
+            onClose();
+          });
+        }
+        setSkinProfiles(result);
+        if (result.profiles.length === 0) onNotice?.('此账户没有可用的角色。');
+      })
+      .catch(error => reportError(error, '皮肤站登录失败。'))
+      .finally(() => setPending(null));
   };
 
   const handleEditAccount = (account: Account) => {
     setEditingAccount(account);
-    setEditUsername(account.username);
-    setEditSkinModel('steve');
   };
 
-  const handleSaveEdit = () => {
-    if (!editingAccount || !editUsername.trim()) return;
-    const updatedAccount: Account = {
-      ...editingAccount,
-      username: editUsername,
-    };
-    if (onUpdateAccount) {
-      onUpdateAccount(updatedAccount);
+  /**
+   * 移除账户。
+   *
+   * 后端会一并删掉系统凭据库里的令牌，所以先让用户确认——这个操作不可撤销，
+   * 重新登录需要再走一次浏览器授权。界面不提供「重命名 / 换皮肤」：后端没有对应
+   * 命令，名称与皮肤由账户服务本身决定，在这里改只会产生一个与服务器不一致的
+   * 本地假象。
+   */
+  const handleRemoveAccount = async (account: Account) => {
+    const extra = account.type === 'offline' ? '' : '\n\n系统凭据库中保存的登录令牌也会一并删除。';
+    if (!window.confirm(`移除账户「${account.username}」？${extra}`)) return;
+    setBusy(true);
+    try {
+      await removeAccount(account.id);
+      onNotice?.(`账户「${account.username}」已移除。`);
+      setEditingAccount(null);
+      onChanged?.();
+    } catch (error) {
+      onNotice?.(errorText(error, '无法移除账户。'));
+    } finally {
+      setBusy(false);
     }
-    if (currentAccount?.id === editingAccount.id) {
-      onLogin(updatedAccount);
-    }
-    setEditingAccount(null);
-    setEditUsername('');
   };
 
   const resetView = () => {
@@ -148,76 +202,30 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
 
   if (editingAccount) {
     return (
-      <Modal isOpen={isOpen} onClose={() => setEditingAccount(null)} title={t('account.editTitle')} size="md">
+      <Modal isOpen={isOpen} onClose={() => setEditingAccount(null)} title={t('account.management')} size="md">
         <div className={styles.editAccount}>
           <div className={styles.editPreview}>
-            <PlayerAvatar username={editUsername || editingAccount.username} avatar={editingAccount.avatar} size={80} />
+            <PlayerAvatar username={editingAccount.username} avatar={editingAccount.avatar} size={80} />
             <div className={styles.editInfo}>
-              <h3>{editUsername || editingAccount.username}</h3>
+              <h3>{editingAccount.username}</h3>
               <p className={styles.accountType}>
                 {editingAccount.type === 'microsoft' ? t('account.microsoft') : editingAccount.type === 'offline' ? t('account.offline') : t('account.thirdParty')}
               </p>
             </div>
           </div>
 
-          <Input
-            label={t('account.username')}
-            value={editUsername}
-            onChange={(e) => setEditUsername(e.target.value)}
-            hint={editingAccount.type === 'microsoft' ? t('account.usernameHintMs') : t('account.usernameHintOffline')}
-            disabled={editingAccount.type === 'microsoft'}
-          />
-
-          <div className={styles.skinUpload}>
-            <label className={styles.uploadLabel}>
-              <strong>{t('account.skinFile')}</strong>
-              <span>{t('account.skinFileHint')}</span>
-            </label>
-            <div className={styles.uploadArea}>
-              <UploadIcon />
-              <span>{t('account.skinUpload')}</span>
-              <input type="file" accept="image/png" style={{ display: 'none' }} />
-            </div>
+          <div className={styles.notice}>
+            <AlertIcon />
+            <p>
+              {editingAccount.type === 'offline'
+                ? '离线档案的名称与皮肤不能在这里修改；名称由离线档案本身决定，重新添加即可换一个名字。'
+                : '账户名称与皮肤由账户服务提供，启动器不能修改；如需更换请移除后重新登录。'}
+            </p>
           </div>
-
-          <div className={styles.modelSelect}>
-            <label><strong>{t('account.skinModel')}</strong></label>
-            <div className={styles.modelOptions}>
-              <button
-                type="button"
-                className={`${styles.modelOption} ${editSkinModel === 'steve' ? styles.active : ''}`}
-                onClick={() => setEditSkinModel('steve')}
-                aria-pressed={editSkinModel === 'steve'}
-              >
-                <div className={styles.modelPreview}>
-                  <SkinModel model="steve" />
-                </div>
-                <span>{t('account.skinSteve')}</span>
-              </button>
-              <button
-                type="button"
-                className={`${styles.modelOption} ${editSkinModel === 'alex' ? styles.active : ''}`}
-                onClick={() => setEditSkinModel('alex')}
-                aria-pressed={editSkinModel === 'alex'}
-              >
-                <div className={styles.modelPreview}>
-                  <SkinModel model="alex" />
-                </div>
-                <span>{t('account.skinAlex')}</span>
-              </button>
-            </div>
-          </div>
-
-          {editingAccount.type === 'offline' && (
-            <div className={styles.notice}>
-              <AlertIcon />
-              <p>{t('account.skinOfflineNotice')}</p>
-            </div>
-          )}
 
           <div className={styles.actions}>
-            <Button onClick={handleSaveEdit} disabled={!editUsername.trim()}>
-              {t('account.saveChanges')}
+            <Button variant="danger" disabled={busy} onClick={() => void handleRemoveAccount(editingAccount)}>
+              {busy ? t('common.loading') : t('common.delete')}
             </Button>
             <Button variant="ghost" onClick={() => setEditingAccount(null)}>
               {t('common.cancel')}
@@ -227,6 +235,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
       </Modal>
     );
   }
+
 
   if (currentAccount && !method) {
     return (
@@ -408,91 +417,100 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
             </div>
           </div>
 
-          {recentAccounts.length > 0 && (
-            <aside className={styles.recentSidebar}>
-              <h4>{t('account.recent')}</h4>
-              <div className={styles.recentList}>
-                {recentAccounts.map((account) => (
-                  <div
-                    key={account.id}
-                    className={styles.recentAccountWrapper}
-                    onMouseEnter={() => setHoveredAccountId(account.id)}
-                    onMouseLeave={() => setHoveredAccountId(null)}
-                  >
-                    <div className={styles.recentAccount}>
-                      <PlayerAvatar username={account.username} avatar={account.avatar} size={36} />
-                      <div className={styles.recentInfo}>
-                        <span className={styles.recentName}>{account.username}</span>
-                        <span className={styles.recentType}>
-                          {account.type === 'microsoft' ? 'Microsoft' : account.type === 'offline' ? t('account.offlineShort') : t('account.thirdPartyShort')}
-                        </span>
+          {/*
+            侧栏必须常驻：它是「添加账户」的唯一入口。此前整块被
+            `recentAccounts.length > 0` 包住，零账户时连添加入口一起消失，
+            新用户进来没有任何办法创建账户。现在只有账户列表按数量显示。
+          */}
+          <aside className={styles.recentSidebar}>
+            {recentAccounts.length > 0 ? (
+              <>
+                <h4>{t('account.recent')}</h4>
+                <div className={styles.recentList}>
+                  {recentAccounts.map((account) => (
+                    <div
+                      key={account.id}
+                      className={styles.recentAccountWrapper}
+                      onMouseEnter={() => setHoveredAccountId(account.id)}
+                      onMouseLeave={() => setHoveredAccountId(null)}
+                    >
+                      <div className={styles.recentAccount}>
+                        <PlayerAvatar username={account.username} avatar={account.avatar} size={36} />
+                        <div className={styles.recentInfo}>
+                          <span className={styles.recentName}>{account.username}</span>
+                          <span className={styles.recentType}>
+                            {account.type === 'microsoft' ? 'Microsoft' : account.type === 'offline' ? t('account.offlineShort') : t('account.thirdPartyShort')}
+                          </span>
+                        </div>
+                        {account.hasMinecraft && hoveredAccountId !== account.id && (
+                          <div className={styles.recentBadge}>
+                            <ShieldCheckIcon />
+                          </div>
+                        )}
+                        {hoveredAccountId === account.id && (
+                          <div className={styles.recentActions}>
+                            <button
+                              className={styles.recentActionEdit}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEditAccount(account);
+                              }}
+                            >
+                              <EditIcon />
+                              <span>{t('account.modify')}</span>
+                            </button>
+                            <button
+                              className={styles.recentActionUse}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onLogin(account);
+                                onClose();
+                              }}
+                            >
+                              <LoginIcon />
+                              <span>{t('account.use')}</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
-                      {account.hasMinecraft && hoveredAccountId !== account.id && (
-                        <div className={styles.recentBadge}>
-                          <ShieldCheckIcon />
-                        </div>
-                      )}
-                      {hoveredAccountId === account.id && (
-                        <div className={styles.recentActions}>
-                          <button
-                            className={styles.recentActionEdit}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleEditAccount(account);
-                            }}
-                          >
-                            <EditIcon />
-                            <span>{t('account.modify')}</span>
-                          </button>
-                          <button
-                            className={styles.recentActionUse}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onLogin(account);
-                              onClose();
-                            }}
-                          >
-                            <LoginIcon />
-                            <span>{t('account.use')}</span>
-                          </button>
-                        </div>
-                      )}
                     </div>
-                  </div>
-                ))}
-              </div>
-              <p className={styles.recentHint}>{t('account.hoverHint')}</p>
-              
-              {/* 未登录状态的添加账户按钮 */}
-              {!showAddMenu ? (
-                <button 
-                  className={styles.addAccountBtn}
-                  onClick={() => setShowAddMenu(true)}
-                >
-                  <PlusIcon />
-                  <span>{t('account.add')}</span>
-                </button>
-              ) : (
-                <div className={styles.addAccountMenu}>
-                  <button onClick={() => { setShowAddMenu(false); setMethod('microsoft'); }}>
-                    <MicrosoftIcon />
-                    <span>Microsoft</span>
-                    <ChevronRightIcon />
-                  </button>
-                  <button onClick={() => { setShowAddMenu(false); setMethod('offline'); }}>
-                    <UserIcon />
-                    <span>{t('account.offline')}</span>
-                    <ChevronRightIcon />
-                  </button>
-                  <button onClick={() => { setShowAddMenu(false); setMethod('thirdparty'); }}>
-                    <ServerIcon />
-                    <span>{t('account.thirdPartyShort')}</span>
-                    <ChevronRightIcon />
-                  </button>
+                  ))}
                 </div>
-              )}
-            </aside>
-          )}
+                <p className={styles.recentHint}>{t('account.hoverHint')}</p>
+              </>
+            ) : (
+              <p className={styles.recentEmpty}>{t('account.noAccountsYet')}</p>
+            )}
+
+            {/* 添加账户入口：无论是否已有账户都显示，否则新用户没有可点的地方。 */}
+            {!showAddMenu ? (
+              <button
+                className={styles.addAccountBtn}
+                onClick={() => setShowAddMenu(true)}
+              >
+                <PlusIcon />
+                <span>{t('account.add')}</span>
+              </button>
+            ) : (
+              <div className={styles.addAccountMenu}>
+                <button onClick={() => { setShowAddMenu(false); setMethod('microsoft'); }}>
+                  <MicrosoftIcon />
+                  <span>Microsoft</span>
+                  <ChevronRightIcon />
+                </button>
+                <button onClick={() => { setShowAddMenu(false); setMethod('offline'); }}>
+                  <UserIcon />
+                  <span>{t('account.offline')}</span>
+                  <ChevronRightIcon />
+                </button>
+                <button onClick={() => { setShowAddMenu(false); setMethod('thirdparty'); }}>
+                  <ServerIcon />
+                  <span>{t('account.thirdPartyShort')}</span>
+                  <ChevronRightIcon />
+                </button>
+              </div>
+            )}
+          </aside>
         </div>
       )}
 
@@ -524,8 +542,8 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
           </div>
 
           <div className={styles.actions}>
-            <Button onClick={handleMicrosoftLogin}>
-              {t('account.msDemo')}
+            <Button onClick={handleMicrosoftLogin} disabled={pending !== null}>
+              {pending === 'microsoft' ? '正在打开浏览器…' : t('account.microsoftLogin')}
             </Button>
             <Button variant="ghost" onClick={resetView}>
               {t('common.back')}
@@ -590,39 +608,108 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
             </div>
           </div>
 
-          <Input
-            label={t('account.authServer')}
-            placeholder="https://example.com/api/yggdrasil"
-            value={serverUrl}
-            onChange={(e) => setServerUrl(e.target.value)}
-            hint={t('account.authServerHint')}
-          />
+          {/*
+            角色选择阶段：登录已经成功，只是该账户下有多个角色。
+            这时不再显示地址与凭据输入框——凭据已经交给后端，重新显示只会让人
+            以为要重填一遍。
+          */}
+          {skinProfiles ? (
+            <>
+              <div className={styles.infoBox}>
+                <h4>选择角色</h4>
+                <p>此账户下有 {skinProfiles.profiles.length} 个角色。启动时使用的就是这里选中的名字。</p>
+              </div>
+              <div className={styles.actions}>
+                {skinProfiles.profiles.map(profile => (
+                  <Button
+                    key={profile.id}
+                    disabled={pending !== null}
+                    onClick={() => {
+                      setPending('thirdparty');
+                      void skinSelectProfile(skinProfiles.pendingId, profile.id)
+                        .then(account => {
+                          onLogin(toAccount(account));
+                          onClose();
+                        })
+                        .catch(error => reportError(error, '无法选择角色。'))
+                        .finally(() => setPending(null));
+                    }}
+                  >
+                    {profile.name}
+                  </Button>
+                ))}
+              </div>
+              <div className={styles.actions}>
+                <Button variant="ghost" onClick={resetView}>{t('common.back')}</Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <Input
+                label={t('account.authServer')}
+                placeholder="https://example.com/api/yggdrasil"
+                value={serverUrl}
+                onChange={(e) => setServerUrl(e.target.value)}
+                hint={t('account.authServerHint')}
+              />
+              <Input
+                label={t('account.username')}
+                value={skinUsername}
+                autoComplete="username"
+                onChange={(e) => setSkinUsername(e.target.value)}
+              />
+              <Input
+                label="密码"
+                type="password"
+                value={skinPassword}
+                autoComplete="current-password"
+                onChange={(e) => setSkinPassword(e.target.value)}
+                hint="凭据只发送到你确认的认证地址，不会写入日志或本地明文存储。"
+              />
 
-          <div className={styles.infoBox}>
-            <h4>{t('account.whatIsThirdParty')}</h4>
-            <p>{t('account.thirdPartyExplain')}</p>
-            <ul>
-              <li>{t('account.thirdPartyNeed1')}</li>
-              <li>{t('account.thirdPartyNeed2')}</li>
-            </ul>
-          </div>
+              {/*
+                信任确认。后端在没有这个确认时直接拒绝登录，因为密码会被发往
+                用户填写的地址——必须让人先明确看过这个地址。
+              */}
+              <label className={styles.trustRow}>
+                <input
+                  type="checkbox"
+                  checked={skinTrusted}
+                  onChange={e => setSkinTrusted(e.target.checked)}
+                />
+                <span>我确认信任 <code>{serverUrl || '此地址'}</code>，并了解密码会被发送到该服务器。</span>
+              </label>
 
-          <div className={`${styles.notice} ${styles.warning}`}>
-            <AlertIcon />
-            <div>
-              <h4>{t('account.securityTip')}</h4>
-              <p>{t('account.securityWarning')}</p>
-            </div>
-          </div>
+              <div className={styles.infoBox}>
+                <h4>{t('account.whatIsThirdParty')}</h4>
+                <p>{t('account.thirdPartyExplain')}</p>
+                <ul>
+                  <li>{t('account.thirdPartyNeed1')}</li>
+                  <li>{t('account.thirdPartyNeed2')}</li>
+                </ul>
+              </div>
 
-          <div className={styles.actions}>
-            <Button onClick={handleThirdPartyLogin} disabled={!serverUrl.trim()}>
-              {t('account.connectThirdParty')}
-            </Button>
-            <Button variant="ghost" onClick={resetView}>
-              {t('common.back')}
-            </Button>
-          </div>
+              <div className={`${styles.notice} ${styles.warning}`}>
+                <AlertIcon />
+                <div>
+                  <h4>{t('account.securityTip')}</h4>
+                  <p>{t('account.securityWarning')}</p>
+                </div>
+              </div>
+
+              <div className={styles.actions}>
+                <Button
+                  onClick={handleThirdPartyLogin}
+                  disabled={!serverUrl.trim() || !skinUsername.trim() || !skinPassword || !skinTrusted || pending !== null}
+                >
+                  {pending === 'thirdparty' ? '正在登录…' : t('account.connectThirdParty')}
+                </Button>
+                <Button variant="ghost" onClick={resetView}>
+                  {t('common.back')}
+                </Button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </Modal>

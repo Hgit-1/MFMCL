@@ -63,6 +63,60 @@ export const VERSION_KIND_KEYS: Record<VersionKind, `versionKind.${VersionKind}`
 };
 
 /**
+ * 界面支持的四类版本，按筛选器的展示顺序。
+ *
+ * 放在这里而不是某个组件内部：内容商店的原版列表和新建实例对话框都要用同一套
+ * 筛选器，两边各写一份迟早会出现「商店能筛彩蛋版、创建对话框不能」这类偏差。
+ */
+export const VERSION_KINDS: VersionKind[] = ['release', 'snapshot', 'old', 'special'];
+
+/**
+ * Mojang 清单的版本类型 → 界面四分类。
+ *
+ * 关键难点：**Mojang 的清单里没有「彩蛋版」这个类型**。它只有 release / snapshot /
+ * old_beta / old_alpha 四种，愚人节版本全部标记为 `snapshot`（实测确认：15w14a、
+ * 24w14potato、25w14craftmine 等 8 个已知愚人节版本的 type 都是 snapshot）。
+ *
+ * 所以「彩蛋版」必须按版本号识别，不能靠 type 字段。之前的实现把未知 type 归到
+ * special，而真实数据里没有未知 type，导致这个筛选永远为空——界面提供了一个
+ * 筛不出任何内容的选项。
+ *
+ * `old_beta` 与 `old_alpha` 都归入「远古版」：用户要区分的是「这是不是上古版本」，
+ * 而不是 beta 还是 alpha。
+ */
+export function kindOfVersion(id: string, type: string): VersionKind {
+  if (APRIL_FOOLS_VERSIONS.has(id)) return 'special';
+  switch (type) {
+    case 'release': return 'release';
+    case 'snapshot': return 'snapshot';
+    case 'old_beta':
+    case 'old_alpha': return 'old';
+    // 未来若 Mojang 新增类型，落到 special 而不是被静默丢弃。
+    default: return 'special';
+  }
+}
+
+/**
+ * 愚人节（彩蛋）版本号。
+ *
+ * 来源：Mojang 清单里 type 全是 snapshot，只能硬编码识别。列表参照 PCL2 的
+ * `GetMcFoolName` 覆盖范围，并补上清单里实际存在的条目（已逐个核对存在于
+ * version_manifest_v2.json）。名字不是 `NNwNNa` 形态的（如 `3D Shareware v1.34`）
+ * 都是愚人节版本，这也是它们最容易辨认的特征。
+ */
+const APRIL_FOOLS_VERSIONS = new Set([
+  '2.0',
+  '15w14a',
+  '1.RV-Pre1',
+  '3D Shareware v1.34',
+  '20w14infinite',
+  '22w13oneblockatatime',
+  '23w13a_or_b',
+  '24w14potato',
+  '25w14craftmine',
+]);
+
+/**
  * 原版版本需要的 Java 主版本（估算）。
  *
  * 阈值照 PCL2 的 GetJavaRequirement：1.20.5+ → 21，1.18+ → 17，1.17+ → 16，

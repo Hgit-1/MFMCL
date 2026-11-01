@@ -101,7 +101,7 @@ pub async fn download_launcher_update(
     );
     let candidate = parsed
         .path_segments()
-        .and_then(|segments| segments.last())
+        .and_then(|mut segments| segments.next_back())
         .filter(|name| !name.is_empty())
         .unwrap_or(&fallback);
     let safe_name = candidate

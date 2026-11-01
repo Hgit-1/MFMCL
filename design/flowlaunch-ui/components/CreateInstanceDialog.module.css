@@ -1,0 +1,136 @@
+/* 新建实例对话框。 */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 版本类型筛选：等高的复选标签，换行而不横向滚动。 */
+.kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  user-select: none;
+}
+
+.kind:hover {
+  border-color: var(--color-primary-500);
+  color: var(--color-text-primary);
+}
+
+.kind input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--color-primary-500);
+}
+
+/*
+ * 版本列表。固定高度并在内部滚动，而不是让内容撑开对话框：
+ * 版本清单有 900 多条，撑开会把「创建」按钮挤出可视区，用户必须先滚两万像素
+ * 才能点到它。`min-height` 保证筛选后只剩几条时框也不会塌成一条线。
+ */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 220px;
+  max-height: min(46vh, 420px);
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-secondary);
+  scrollbar-width: thin;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.row:hover {
+  background: color-mix(in srgb, var(--color-primary-500) 10%, transparent);
+}
+
+/*
+ * 选中态用描边 + 浅底而不是实色填充：实色主色底会让版本号和日期都变成
+ * on-primary 反色文字，一屏里同时出现两条「看起来像按钮」的行，反而分不清
+ * 哪条是当前选中的。
+ */
+.rowActive,
+.rowActive:hover {
+  border-color: var(--color-primary-500);
+  background: color-mix(in srgb, var(--color-primary-500) 14%, transparent);
+}
+
+.rowMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rowMain strong {
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
+.rowMain small {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.tick {
+  flex: 0 0 auto;
+  color: var(--color-primary-text);
+  font-weight: 700;
+}
+
+.hint {
+  margin: 0;
+  padding: 18px 12px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.error {
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-danger-500) 40%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-danger-500) 10%, transparent);
+  color: var(--color-danger-500);
+  font-size: var(--text-sm);
+}

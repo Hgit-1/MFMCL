@@ -743,3 +743,216 @@
     padding: 4px 12px 12px;
   }
 }
+
+/*
+ * 能力声明条。
+ *
+ * 用警告色而不是错误色：这不是故障，而是当前版本的功能边界。放在页头下方、
+ * 列表之上，用户在看到任何「已启用」状态之前就先读到它。
+ */
+.capabilityNote{display:flex;align-items:flex-start;gap:9px;margin:0 0 16px;padding:10px 13px;border:1px solid color-mix(in srgb, var(--color-warning-500, #F59E0B) 40%, var(--color-border));border-radius:9px;background:color-mix(in srgb, var(--color-warning-500, #F59E0B) 9%, transparent);color:var(--color-text-secondary);font-size:12px;line-height:1.6}
+.capabilityNote svg{flex:0 0 auto;margin-top:1px;color:var(--color-warning-500, #F59E0B)}
+
+/*
+ * 「可更新」提示行。
+ *
+ * 用主色而不是警告色：有可用更新是正常且可解决的事，不是故障。
+ * 与下面的 statusLine 区分开——那一行说明「这个插件有什么情况」，
+ * 这一行说明「你可以做一件事」。
+ */
+.updateLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-primary-500) 10%, transparent);
+  color: var(--color-primary-text);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* 更新按钮：主色描边，与旁边的「移除」等次要动作区分。 */
+.updateButton {
+  color: var(--color-primary-text) !important;
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border)) !important;
+}
+
+.updateButton:hover {
+  background: color-mix(in srgb, var(--color-primary-500) 10%, transparent) !important;
+}
+
+/* --- 贡献预览 ------------------------------------------------------------ */
+/*
+ * 与权限行同一套排版：左侧图标、右侧标题 + 说明。贡献与权限是一对概念
+ * （「会碰到什么」与「会做什么」），长得一样才不会让用户以为它们是两种东西。
+ */
+.contributionRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.contributionRow + .contributionRow {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+
+.contributionRow svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--color-primary-text);
+}
+
+.contributionRow div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.contributionRow strong {
+  color: var(--color-text-primary);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.contributionRow span {
+  overflow-wrap: anywhere;
+  color: var(--color-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/*
+ * 被跳过的贡献用警告色，但不用红色。
+ * 跳过通常不是错误（缺权限、缺扩展点都是清单写法问题），而红色会让用户
+ * 以为插件坏了、要立刻处理。
+ */
+.contributionSkipped svg {
+  color: var(--color-warning-500, #F59E0B);
+}
+
+.contributionSkipped strong {
+  color: var(--color-warning-600, #D97706);
+}
+
+/* --- 启动记录 ------------------------------------------------------------ */
+.history {
+  margin-top: 16px;
+  padding: clamp(14px, 2vw, 20px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-elevated);
+}
+
+.historyHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.historyHead h2 {
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
+.historyHead p {
+  margin-top: 3px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.historyClear {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.historyClear:hover {
+  border-color: color-mix(in srgb, var(--color-danger-500) 45%, var(--color-border));
+  color: var(--color-danger-text);
+}
+
+.historyEmpty {
+  color: var(--color-text-disabled);
+  font-size: 10px;
+}
+
+.historyList {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  list-style: none;
+}
+
+.historyRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 0;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+
+.historyRow:first-child {
+  border-top: 0;
+}
+
+/* 一行一个小圆点表示结果。绿色 = 正常结束，红色 = 异常退出。 */
+.historyDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-success-500, #10B981);
+}
+
+.historyDotBad {
+  background: var(--color-danger-500);
+}
+
+.historyCopy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.historyCopy strong {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyCopy span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.historyCounts {
+  flex: none;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

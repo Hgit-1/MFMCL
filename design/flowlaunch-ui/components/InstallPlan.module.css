@@ -1,0 +1,229 @@
+/* 原版版本安装面板。 */
+
+/*
+ * 内联面板而不是弹窗：它嵌在版本列表上方，用户点某一行的「安装」后
+ * 面板就地展开，仍然能看到自己点的是哪个版本。
+ * 弹窗会把列表挡掉，反而让人不确定装的是哪一行。
+ */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: clamp(14px, 2vw, 20px);
+  border: 1px solid color-mix(in srgb, var(--color-primary-500) 40%, var(--color-border));
+  border-radius: var(--radius-base);
+  background: color-mix(in srgb, var(--color-primary-500) 5%, var(--color-bg-elevated));
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.head h2 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
+.subtitle {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.close {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.close:hover:not(:disabled) {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+.close:disabled { opacity: .4; cursor: not-allowed; }
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field > span {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  max-width: 420px;
+  padding: 8px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.field input:focus-visible,
+.field select:focus-visible {
+  outline: 2px solid var(--color-primary-500);
+  outline-offset: 1px;
+}
+
+.field small {
+  color: var(--color-text-disabled);
+  font-size: var(--text-sm);
+}
+
+/*
+ * 加载器选择。
+ *
+ * 用两列网格而不是下拉框：加载器只有三个选项（含「不装」），全部摊开可以让用户
+ * 一眼看到「互斥」这件事——下拉框里看不见其他选项是否已被选中。
+ */
+.loaderGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.loaderOption {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color .16s, background .16s, color .16s;
+}
+
+.loaderOption:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+  color: var(--color-text-primary);
+}
+
+.loaderOption:disabled { opacity: .5; cursor: not-allowed; }
+
+.loaderOptionActive,
+.loaderOptionActive:hover {
+  border-color: var(--color-primary-500);
+  background: color-mix(in srgb, var(--color-primary-500) 12%, var(--color-bg-primary));
+  color: var(--color-primary-text);
+  font-weight: 600;
+}
+
+.loaderCheck { margin-left: 2px; }
+
+.note {
+  margin: 0;
+  color: var(--color-text-disabled);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.hint {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.errorText {
+  margin: 0;
+  color: var(--color-danger-500);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+/*
+ * OptiFine 说明。
+ *
+ * 用中性信息块而不是警告色：这不是错误，是「暂时不支持」的边界说明。
+ * 警告色会让用户以为出了问题。
+ */
+.optifine {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+
+.optifine svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+}
+
+.optifine strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.optifine span {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.errorBox {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-danger-500) 40%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-danger-500) 9%, transparent);
+}
+
+.errorBox svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--color-danger-500);
+}
+
+.errorBox span {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.step {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  text-align: right;
+}

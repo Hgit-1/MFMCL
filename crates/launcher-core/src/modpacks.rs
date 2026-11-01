@@ -108,8 +108,97 @@ fn eligible_file(path: &str) -> bool {
     .any(|prefix| path.starts_with(prefix))
 }
 
+/// `prepare_pack` 的结果。
+///
+/// CurseForge 格式需要联网补全文件地址，而 `prepare_pack` 是同步且不触网的。
+/// 所以它把「待补全」作为一等结果返回，由调用方决定是否继续：
+///   - `Ready` —— 可以直接导入（Modrinth，或已补全的 CurseForge）；
+///   - `NeedsOnlineLookup` —— CurseForge 格式，需要先查 API 再调
+///     [`prepare_from_completed_index`]。
+pub enum PackPreparation {
+    Ready(PreparedPack),
+    NeedsOnlineLookup {
+        path: PathBuf,
+        manifest: CurseForgeManifest,
+    },
+}
+
+/// 把查到的 CurseForge 文件详情组装成 `PackFile`。
+///
+/// 落盘路径按内容类型决定：
+///   - `.jar` → `mods/`（绝大多数整合包文件）；
+///   - `.zip` 且文件名含 resourcepack 字样 → `resourcepacks/`。
+///
+/// 其余类型（世界、光影）的归类没有可靠信号：CurseForge 的文件对象不带「这个文件
+/// 属于哪一类」的信息，只能靠扩展名与文件名推断。推断错会让文件落到游戏读不到的
+/// 位置，所以拿不准时**跳过**并在结果里报告数量，而不是硬塞进 `mods/`——一个放错
+/// 的 `.zip` 会让游戏在启动时报错，比少装一个文件更难排查。
+pub fn curseforge_files_to_pack_files(
+    manifest: &CurseForgeManifest,
+    details: &std::collections::HashMap<u64, crate::curseforge::CurseForgeVersion>,
+) -> (Vec<PackFile>, usize) {
+    let mut out = Vec::new();
+    let mut skipped = 0_usize;
+    for entry in &manifest.files {
+        let Some(version) = details.get(&entry.file_id) else {
+            skipped += 1;
+            continue;
+        };
+        let Some(url) = version.url.clone() else {
+            // 作者禁止第三方分发：无法自动下载，只能跳过并让调用方提示用户。
+            skipped += 1;
+            continue;
+        };
+        let Some(sha1) = version.sha1.clone() else {
+            skipped += 1;
+            continue;
+        };
+        let some_path = classify_curseforge_file(&version.file_name);
+        let Some(path) = some_path else {
+            skipped += 1;
+            continue;
+        };
+        out.push(PackFile {
+            path,
+            hashes: std::collections::HashMap::from([("sha1".to_owned(), sha1)]),
+            downloads: vec![url],
+            file_size: version.size,
+            // CurseForge 的 `required` 语义与 Modrinth 的 `env.client` 对齐：
+            // 必选 → required；可选 → optional（下载但允许缺失）。
+            env: std::collections::HashMap::from([(
+                "client".to_owned(),
+                if entry.required {
+                    "required"
+                } else {
+                    "optional"
+                }
+                .to_owned(),
+            )]),
+        });
+    }
+    (out, skipped)
+}
+
+/// 推断一个 CurseForge 文件该放到实例的哪个目录；无法可靠判断时返回 `None`。
+fn classify_curseforge_file(file_name: &str) -> Option<String> {
+    let lower = file_name.to_ascii_lowercase();
+    if !crate::mod_updates::is_safe_mod_name(file_name) {
+        // 非 `.jar`：再看是否资源包/光影包。
+        if lower.ends_with(".zip") {
+            if lower.contains("resourcepack") || lower.contains("resource_pack") {
+                return Some(format!("resourcepacks/{file_name}"));
+            }
+            if lower.contains("shader") {
+                return Some(format!("shaderpacks/{file_name}"));
+            }
+        }
+        return None;
+    }
+    Some(format!("mods/{file_name}"))
+}
+
 /// Prepare an archive once so import consumes the same open archive that supplied its metadata.
-pub fn prepare_pack(path: &Path) -> Result<PreparedPack, String> {
+pub fn prepare_pack(path: &Path) -> Result<PackPreparation, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let raw_entry_count = zip_entry_count(&mut file)?;
     if raw_entry_count > MAX_ARCHIVE_ENTRIES as u64 {
@@ -123,7 +212,41 @@ pub fn prepare_pack(path: &Path) -> Result<PreparedPack, String> {
     if archive.len() > MAX_ARCHIVE_ENTRIES {
         return Err("整合包文件数量超过限制。".into());
     }
-    let index = read_pack_index(&mut archive)?;
+    match read_pack_index_source(&mut archive)? {
+        PackIndexSource::Modrinth(index) => {
+            Ok(PackPreparation::Ready(prepare_from_index(archive, index)?))
+        }
+        PackIndexSource::CurseForge(manifest) => Ok(PackPreparation::NeedsOnlineLookup {
+            path: path.to_path_buf(),
+            manifest,
+        }),
+    }
+}
+
+/// 用已补全的索引再次准备压缩包。
+///
+/// 调用方拿到 CurseForge 的文件地址后有两条路：重新走 `prepare_pack`（会再次
+/// 解析清单，浪费一次 ZIP 扫描），或者把补全好的 `PackIndex` 直接交回来。后者
+/// 更直接，也避免中间态差异。
+pub fn prepare_from_completed_index(path: &Path, index: PackIndex) -> Result<PreparedPack, String> {
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let raw_entry_count = zip_entry_count(&mut file)?;
+    if raw_entry_count > MAX_ARCHIVE_ENTRIES as u64 {
+        return Err("整合包文件数量超过限制。".into());
+    }
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    // 只读长度、不解析条目，因此不需要可变借用。
+    let archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
+    if archive.len() as u64 != raw_entry_count {
+        return Err("ZIP 中存在重复路径，或目录条目数量不一致。".into());
+    }
+    prepare_from_index(archive, index)
+}
+
+fn prepare_from_index(
+    mut archive: ZipArchive<File>,
+    index: PackIndex,
+) -> Result<PreparedPack, String> {
     let (preview, download_bytes, output_paths) = validate_index(&index)?;
     let (zip_bytes, override_files) =
         scan_archive(&mut archive, download_bytes, &output_paths, None)?;
@@ -140,8 +263,25 @@ pub fn prepare_pack(path: &Path) -> Result<PreparedPack, String> {
     })
 }
 
+#[cfg(test)]
+pub fn prepare_pack_ready(path: &Path) -> Result<PreparedPack, String> {
+    match prepare_pack(path)? {
+        PackPreparation::Ready(prepared) => Ok(prepared),
+        PackPreparation::NeedsOnlineLookup { .. } => {
+            Err("测试只支持 Modrinth 格式的整合包。".to_owned())
+        }
+    }
+}
+
 pub fn preview_pack(path: &Path) -> Result<PackPreview, String> {
-    Ok(prepare_pack(path)?.preview)
+    match prepare_pack(path)? {
+        PackPreparation::Ready(prepared) => Ok(prepared.preview),
+        PackPreparation::NeedsOnlineLookup { manifest, .. } => {
+            // 预览在补全前也能给出准确信息：版本、加载器、文件数都来自清单本身，
+            // 只有总字节数必须等查到每个文件才知道。
+            Ok(CurseForgeManifest::to_preview(&manifest))
+        }
+    }
 }
 
 /// Count central-directory records before zip parses them, since the zip crate stores names in a map.
@@ -217,10 +357,98 @@ pub(crate) fn zip_entry_count(file: &mut File) -> Result<u64, String> {
     Ok(total_count)
 }
 
-fn read_pack_index(archive: &mut ZipArchive<File>) -> Result<PackIndex, String> {
-    let mut entry = archive
-        .by_name("modrinth.index.json")
-        .map_err(|_| "缺少 modrinth.index.json。")?;
+/// `read_pack_index` 的结果：要么是可直接使用的 Modrinth 索引，要么是需要联网
+/// 补全的 CurseForge 清单。
+///
+/// 用枚举而不是「一个可能为空的 PackIndex」，是为了让调用方在类型层面被要求处理
+/// CurseForge 分支——否则很容易只改 Modrinth 路径而忘了另一边仍然返回占位错误。
+pub enum PackIndexSource {
+    Modrinth(PackIndex),
+    CurseForge(CurseForgeManifest),
+}
+
+fn read_pack_index_source(archive: &mut ZipArchive<File>) -> Result<PackIndexSource, String> {
+    /*
+     * 两种索引格式，按入口文件区分：
+     *   - `modrinth.index.json` —— Modrinth 的 `.mrpack`，自描述，可直接用；
+     *   - `manifest.json`       —— CurseForge 的整合包，需要联网补全文件地址。
+     *
+     * 先试 Modrinth（更常见且无需网络），再试 CurseForge，都不匹配时明确说明
+     * 「这不是有效的整合包」，而不是报「缺少 modrinth.index.json」——后者只有
+     * 开发者能读懂。
+     */
+    if let Some(index) = try_read_modrinth_index(archive)? {
+        return Ok(PackIndexSource::Modrinth(index));
+    }
+    if let Some(manifest) = try_read_curseforge_manifest(archive)? {
+        return Ok(PackIndexSource::CurseForge(manifest));
+    }
+    Err(
+        "这不是有效的整合包：压缩包里既没有 Modrinth 的 modrinth.index.json，\
+         也没有 CurseForge 的 manifest.json。"
+            .into(),
+    )
+}
+
+/// CurseForge 的 `manifest.json` 原始结构。
+///
+/// 它只列出 `projectID` / `fileID`，**不含下载地址与校验值**——那些要再用
+/// CurseForge API 按 fileID 查回来。所以解析分成两步：这里只负责把本地文件读成
+/// 结构，补全 URL/哈希由调用方异步完成。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurseForgeManifest {
+    pub minecraft: CurseForgeManifestMinecraft,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub files: Vec<CurseForgeManifestFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurseForgeManifestMinecraft {
+    pub version: String,
+    #[serde(default)]
+    pub mod_loaders: Vec<CurseForgeManifestLoader>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurseForgeManifestLoader {
+    /// `forge` / `neoforge` / `fabric` / `quilt`。
+    pub id: String,
+    #[serde(default)]
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurseForgeManifestFile {
+    #[serde(rename = "projectID")]
+    pub project_id: u64,
+    #[serde(rename = "fileID")]
+    pub file_id: u64,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// 读完 CurseForge 的 `manifest.json`；不存在时返回 `Ok(None)`。
+///
+/// 只做到「读出结构」为止。补全文件地址需要网络，而 `prepare_pack` 是同步且
+/// 不触网的（要求它在无网络时也能给出可预期的错误），所以补全放在调用方。
+fn try_read_curseforge_manifest(
+    archive: &mut ZipArchive<File>,
+) -> Result<Option<CurseForgeManifest>, String> {
+    let mut entry = match archive.by_name("manifest.json") {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(_) => return Err("读取整合包索引失败。".into()),
+    };
     if entry.is_dir() {
         return Err("整合包索引不是普通文件。".into());
     }
@@ -231,7 +459,164 @@ fn read_pack_index(archive: &mut ZipArchive<File>) -> Result<PackIndex, String> 
     let mut total = 0;
     let declared = entry.size();
     copy_bounded(&mut entry, &mut bytes, declared, MAX_INDEX, &mut total)?;
-    serde_json::from_slice(&bytes).map_err(|_| "整合包索引格式错误。".into())
+    let manifest: CurseForgeManifest =
+        serde_json::from_slice(&bytes).map_err(|_| "CurseForge 整合包清单格式错误。".to_owned())?;
+    // 与 Modrinth 侧一致的边界检查：条目数与版本号长度都必须有限。
+    if manifest.files.len() > MAX_ARCHIVE_ENTRIES {
+        return Err("整合包索引文件数量超过限制。".into());
+    }
+    if manifest.minecraft.version.trim().is_empty() {
+        return Err("整合包未声明 Minecraft 版本。".into());
+    }
+    safe_version(&manifest.minecraft.version)?;
+    Ok(Some(manifest))
+}
+
+impl CurseForgeManifest {
+    /// 补全前就能给出的预览信息。
+    ///
+    /// 版本、加载器、文件数都来自清单本身，只有总字节数必须等查到每个文件才知道——
+    /// 所以这里的 `total_bytes` 是 0，界面据此显示「未知」而不是「0 字节」。
+    pub fn to_preview(&self) -> PackPreview {
+        let mut required = 0;
+        let mut optional = 0;
+        for file in &self.files {
+            if file.required {
+                required += 1;
+            } else {
+                optional += 1;
+            }
+        }
+        PackPreview {
+            name: if self.name.trim().is_empty() {
+                "CurseForge 整合包".to_owned()
+            } else {
+                self.name.trim().to_owned()
+            },
+            version: self.version.trim().to_owned(),
+            minecraft: self.minecraft.version.trim().to_owned(),
+            loader: self.loader_string(),
+            required_files: required,
+            optional_files: optional,
+            total_bytes: 0,
+            override_files: 0,
+        }
+    }
+
+    /// 清单声明的加载器，形如 `fabric@0.16.10`；没有或无法识别时回到 `vanilla`。
+    ///
+    /// 优先取 `primary: true` 的那条——一个整合包可能同时声明多个加载器的兼容性，
+    /// 但真正安装用的是主加载器。
+    fn loader_string(&self) -> String {
+        let chosen = self
+            .minecraft
+            .mod_loaders
+            .iter()
+            .find(|loader| loader.primary)
+            .or_else(|| self.minecraft.mod_loaders.first());
+        let Some(loader) = chosen else {
+            return "vanilla".to_owned();
+        };
+        let id = loader.id.trim();
+        // 清单里常见的写法是 `fabric-0.16.10` / `forge-47.2.0`，拆成
+        // `fabric@0.16.10` 以匹配实例记录里 loader 字段的既有格式。
+        let (kind, version) = match id.split_once('-') {
+            Some((kind, version)) => (kind, version),
+            None => (id, ""),
+        };
+        let kind = kind.to_ascii_lowercase();
+        let canonical = match kind.as_str() {
+            "fabric" => "fabric",
+            "quilt" => "quilt",
+            "forge" => "forge",
+            "neoforge" => "neoforge",
+            _ => return "vanilla".to_owned(),
+        };
+        if version.is_empty() {
+            canonical.to_owned()
+        } else {
+            format!("{canonical}@{version}")
+        }
+    }
+
+    /// 把清单本身能确定的部分转成 `PackIndex` 骨架。
+    ///
+    /// `files` 留空——它们需要联网按 fileID 查询后才能填，见 [`Self::to_pack_index`]。
+    /// 这样转换逻辑只有一份，且「还没补全」是一个类型上可见的中间态。
+    pub fn to_index_skeleton(&self) -> PackIndex {
+        let mut dependencies = std::collections::HashMap::new();
+        dependencies.insert(
+            "minecraft".to_owned(),
+            self.minecraft.version.trim().to_owned(),
+        );
+        // Modrinth 的 `PackIndex` 用 `fabric-loader` / `quilt-loader` 作为键。
+        // CurseForge 的 `forge` / `neoforge` 在 Modrinth 里没有对应键——它们由
+        // `PackIndex` 之外的安装流程处理，所以这里只映射 loader 家族。
+        let loader = self.loader_string();
+        if let Some((kind, version)) = loader.split_once('@') {
+            match kind {
+                "fabric" => {
+                    dependencies.insert("fabric-loader".to_owned(), version.to_owned());
+                }
+                "quilt" => {
+                    dependencies.insert("quilt-loader".to_owned(), version.to_owned());
+                }
+                _ => {}
+            }
+        }
+        PackIndex {
+            format_version: 1,
+            game: "minecraft".to_owned(),
+            version_id: self.version.trim().to_owned(),
+            name: self.to_preview().name,
+            files: Vec::new(),
+            dependencies,
+        }
+    }
+
+    /// 把清单转成 `PackIndex`，并填入已补全的文件。
+    ///
+    /// `files` 由调用方在查到每个 fileID 的下载地址与哈希后组装。
+    pub fn to_pack_index(&self, files: Vec<PackFile>) -> PackIndex {
+        let mut index = self.to_index_skeleton();
+        index.files = files;
+        index
+    }
+
+    /// 需要查询详情清单里不会给出的部分：fileID 列表（去重、保序）。
+    /// 去重是必要的：清单里同一个 fileID 出现两次是常见的手误，而重复提交会让
+    /// 服务端返回重复条目、进而让 `files` 里出现同路径两次，被 `validate_index`
+    /// 当成「索引路径重复」拒掉。
+    pub fn file_ids(&self) -> Vec<u64> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.files
+            .iter()
+            .map(|file| file.file_id)
+            .filter(|id| seen.insert(*id))
+            .collect()
+    }
+}
+
+/// 读 Modrinth 的 `modrinth.index.json`；不存在时返回 `Ok(None)`。
+fn try_read_modrinth_index(archive: &mut ZipArchive<File>) -> Result<Option<PackIndex>, String> {
+    let mut entry = match archive.by_name("modrinth.index.json") {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(_) => return Err("读取整合包索引失败。".into()),
+    };
+    if entry.is_dir() {
+        return Err("整合包索引不是普通文件。".into());
+    }
+    if entry.size() > MAX_INDEX {
+        return Err("整合包索引过大。".into());
+    }
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    let mut total = 0;
+    let declared = entry.size();
+    copy_bounded(&mut entry, &mut bytes, declared, MAX_INDEX, &mut total)?;
+    Ok(Some(
+        serde_json::from_slice(&bytes).map_err(|_| "整合包索引格式错误。".to_owned())?,
+    ))
 }
 
 fn validate_index(index: &PackIndex) -> Result<(PackPreview, u64, PathRegistry), String> {
@@ -329,6 +714,12 @@ fn validate_index(index: &PackIndex) -> Result<(PackPreview, u64, PathRegistry),
                             | "github.com"
                             | "raw.githubusercontent.com"
                             | "objects.githubusercontent.com"
+                            // CurseForge 格式的整合包由 `curseforge_files_to_pack_files`
+                            // 组装，地址只来自这两个官方分发域名（上游 `parse_files`
+                            // 已经做过同样的白名单校验）。不放进这里的话，CurseForge
+                            // 整合包会在 `validate_index` 被拒。
+                            | "edge.forgecdn.net"
+                            | "mediafilez.forgecdn.net"
                     )
                 )
             {
@@ -640,7 +1031,22 @@ pub async fn import_pack(
     engine: &DownloadEngine,
     progress: Option<mpsc::UnboundedSender<DownloadProgress>>,
 ) -> Result<PackPreview, String> {
-    let prepared = prepare_pack(path)?;
+    let prepared = match prepare_pack(path)? {
+        PackPreparation::Ready(prepared) => prepared,
+        PackPreparation::NeedsOnlineLookup { manifest, .. } => {
+            /*
+             * 这条入口不做联网补全：它没有 CurseForge key，也没有进度回调的归属。
+             * 需要它的人应改用 `prepare_pack` 拿到清单、自行补全后再调
+             * `prepare_from_completed_index` + `import_prepared_pack`。
+             */
+            let count = manifest.files.len();
+            return Err(format!(
+                "这是 CurseForge 格式的整合包（含 {count} 个文件引用），\
+                 需要联网查询下载地址后才能导入。请使用启动器内的「下载并导入」，\
+                 或改用 Modrinth 的 .mrpack。"
+            ));
+        }
+    };
     import_prepared_pack(prepared, instance, engine, progress).await
 }
 
@@ -766,17 +1172,16 @@ pub async fn import_prepared_pack(
     .await;
 
     if let Err(mut error) = result {
-        if metadata_published {
-            if let Err(rollback) =
+        if metadata_published
+            && let Err(rollback) =
                 fs::remove_file(instance.instance_dir.join("modrinth.index.json"))
-            {
-                error = format!("{error}；回滚整合包索引失败：{rollback}");
-            }
+        {
+            error = format!("{error}；回滚整合包索引失败：{rollback}");
         }
-        if let Err(cleanup) = fs::remove_dir_all(&staging) {
-            if cleanup.kind() != std::io::ErrorKind::NotFound {
-                return Err(format!("{error}；清理导入临时文件失败：{cleanup}"));
-            }
+        if let Err(cleanup) = fs::remove_dir_all(&staging)
+            && cleanup.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(format!("{error}；清理导入临时文件失败：{cleanup}"));
         }
         if created_instance_dir {
             match fs::remove_dir(&instance.instance_dir) {
@@ -905,10 +1310,10 @@ pub fn export_pack(instance: &InstanceRecord, directory: &Path) -> Result<PathBu
         writer.finish().map_err(|e| e.to_string())?;
         Ok(target.clone())
     })();
-    if let Err(error) = &result {
-        if let Err(cleanup) = fs::remove_file(&target) {
-            return Err(format!("{error}；清理未完成导出失败：{cleanup}"));
-        }
+    if let Err(error) = &result
+        && let Err(cleanup) = fs::remove_file(&target)
+    {
+        return Err(format!("{error}；清理未完成导出失败：{cleanup}"));
     }
     result
 }
@@ -1006,6 +1411,7 @@ mod tests {
             isolated: true,
             state: InstanceState::NotInstalled,
             created_at: "".into(),
+            last_launched_at: None,
         }
     }
 
@@ -1084,7 +1490,7 @@ mod tests {
     async fn changed_archive_data_rolls_back_partial_extraction() {
         use std::io::{Seek, SeekFrom};
         let path = write_pack(&[("overrides/config/test.txt", b"original data")]);
-        let prepared = prepare_pack(&path).unwrap();
+        let prepared = prepare_pack_ready(&path).unwrap();
         let offset = {
             let mut archive = ZipArchive::new(File::open(&path).unwrap()).unwrap();
             archive
@@ -1141,7 +1547,7 @@ mod tests {
             file_size: 0,
             env: std::collections::HashMap::from([("client".into(), "optional".into())]),
         });
-        let mut prepared = prepare_pack(&path).unwrap();
+        let mut prepared = prepare_pack_ready(&path).unwrap();
         let (_, size, destinations) = validate_index(&index).unwrap();
         assert!(scan_archive(&mut prepared.archive, size, &destinations, None).is_err());
         fs::remove_file(path).unwrap();
@@ -1219,7 +1625,7 @@ mod tests {
             ("overrides/config/options.txt", b"generic"),
             ("client-overrides/config/options.txt", b"client"),
         ]);
-        let prepared = prepare_pack(&path).unwrap();
+        let prepared = prepare_pack_ready(&path).unwrap();
         assert_eq!(prepared.preview.override_files, 1);
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         let instance = test_instance(&root, "1.21.4");
@@ -1240,7 +1646,7 @@ mod tests {
         let path = write_pack(&[]);
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         let instance = test_instance(&root, "1.20.1");
-        let prepared = prepare_pack(&path).unwrap();
+        let prepared = prepare_pack_ready(&path).unwrap();
         let result = import_prepared_pack(prepared, &instance, &test_engine(), None).await;
         assert!(result.is_err());
         assert!(!root.exists());
@@ -1250,7 +1656,7 @@ mod tests {
     #[tokio::test]
     async fn import_uses_prepared_archive_and_commits_atomically() {
         let path = write_pack(&[("overrides/config/options.txt", b"from archive")]);
-        let prepared = prepare_pack(&path).unwrap();
+        let prepared = prepare_pack_ready(&path).unwrap();
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         let instance = test_instance(&root, "1.21.4");
         fs::remove_file(&path).unwrap();
@@ -1335,5 +1741,202 @@ mod tests {
         let instance = test_instance(&root, "1.21.4");
         assert!(export_pack(&instance, &root).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    // ---------------------------------------------------------------------
+    // CurseForge 格式（manifest.json）
+    // ---------------------------------------------------------------------
+
+    /// 写一个 CurseForge 格式的整合包（manifest.json + 可选覆盖文件）。
+    fn write_curseforge_pack(manifest: &serde_json::Value, entries: &[(&str, &[u8])]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("{}.zip", uuid::Uuid::new_v4()));
+        let mut writer = ZipWriter::new(File::create(&path).unwrap());
+        let options = SimpleFileOptions::default();
+        writer.start_file("manifest.json", options).unwrap();
+        writer
+            .write_all(&serde_json::to_vec(manifest).unwrap())
+            .unwrap();
+        for (name, contents) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(contents).unwrap();
+        }
+        writer.finish().unwrap();
+        path
+    }
+
+    fn curseforge_manifest() -> serde_json::Value {
+        serde_json::json!({
+            "minecraft": {
+                "version": "1.20.1",
+                "modLoaders": [{ "id": "fabric-0.15.11", "primary": true }]
+            },
+            "manifestType": "minecraftModpack",
+            "manifestVersion": 1,
+            "name": "CF Test Pack",
+            "version": "2.0.0",
+            "author": "someone",
+            "files": [
+                { "projectID": 10, "fileID": 1001, "required": true },
+                { "projectID": 11, "fileID": 1002, "required": false }
+            ]
+        })
+    }
+
+    #[test]
+    fn curseforge_manifest_is_detected_without_network() {
+        let path = write_curseforge_pack(&curseforge_manifest(), &[]);
+        match prepare_pack(&path).unwrap() {
+            PackPreparation::NeedsOnlineLookup { manifest, .. } => {
+                assert_eq!(manifest.minecraft.version, "1.20.1");
+                assert_eq!(manifest.files.len(), 2);
+                // fileID 去重后按清单顺序给出。
+                assert_eq!(manifest.file_ids(), vec![1001, 1002]);
+                // 预览在补全前也能给出准确信息，只有总字节数未知。
+                let preview = manifest.to_preview();
+                assert_eq!(preview.minecraft, "1.20.1");
+                assert_eq!(preview.loader, "fabric@0.15.11");
+                assert_eq!(preview.required_files, 1);
+                assert_eq!(preview.optional_files, 1);
+                assert_eq!(preview.total_bytes, 0);
+            }
+            PackPreparation::Ready(_) => panic!("CurseForge pack must not be Ready without lookup"),
+        }
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn curseforge_preview_matches_prepare_result() {
+        let path = write_curseforge_pack(&curseforge_manifest(), &[]);
+        // preview_pack 走的是同一条解析路径，两者不能给出不同结论。
+        let preview = preview_pack(&path).unwrap();
+        assert_eq!(preview.name, "CF Test Pack");
+        assert_eq!(preview.version, "2.0.0");
+        assert_eq!(preview.minecraft, "1.20.1");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn curseforge_file_ids_are_deduplicated() {
+        let mut manifest = curseforge_manifest();
+        manifest["files"] = serde_json::json!([
+            { "projectID": 1, "fileID": 7, "required": true },
+            { "projectID": 1, "fileID": 7, "required": true },
+            { "projectID": 2, "fileID": 9, "required": true }
+        ]);
+        let parsed: CurseForgeManifest = serde_json::from_value(manifest).unwrap();
+        assert_eq!(parsed.file_ids(), vec![7, 9]);
+    }
+
+    #[test]
+    fn zip_without_any_index_is_rejected_clearly() {
+        let path = std::env::temp_dir().join(format!("{}.zip", uuid::Uuid::new_v4()));
+        let mut writer = ZipWriter::new(File::create(&path).unwrap());
+        writer
+            .start_file("readme.txt", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"hi").unwrap();
+        writer.finish().unwrap();
+        let error = match prepare_pack(&path) {
+            Ok(_) => panic!("expect error"),
+            Err(error) => error,
+        };
+        // 不能误报成「这是 CurseForge 格式」——那样用户会去查一个不存在的问题。
+        assert!(error.contains("不是有效的整合包"), "{error}");
+        assert!(!error.contains("CurseForge 格式"), "{error}");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn curseforge_files_are_classified_into_instance_directories() {
+        // `.jar` 进 mods/，资源包/光影包按名字归到各自目录，其余跳过。
+        assert_eq!(
+            classify_curseforge_file("jei-1.20.1.jar").as_deref(),
+            Some("mods/jei-1.20.1.jar")
+        );
+        assert_eq!(
+            classify_curseforge_file("Faithful-32x-resourcepack.zip").as_deref(),
+            Some("resourcepacks/Faithful-32x-resourcepack.zip")
+        );
+        assert_eq!(
+            classify_curseforge_file("ComplementaryShaders.zip").as_deref(),
+            Some("shaderpacks/ComplementaryShaders.zip")
+        );
+        // 拿不准的不硬塞进 mods/：放错位置会让游戏启动报错，比少装更难排查。
+        assert_eq!(classify_curseforge_file("world-save.zip"), None);
+        assert_eq!(classify_curseforge_file("notes.txt"), None);
+    }
+
+    #[test]
+    fn curseforge_files_skip_restricted_and_unknown_entries() {
+        use crate::curseforge::CurseForgeVersion;
+        let manifest: CurseForgeManifest = serde_json::from_value(serde_json::json!({
+            "minecraft": { "version": "1.20.1", "modLoaders": [] },
+            "name": "n", "version": "1",
+            "files": [
+                { "projectID": 1, "fileID": 1, "required": true },
+                { "projectID": 2, "fileID": 2, "required": true },
+                { "projectID": 3, "fileID": 3, "required": true }
+            ]
+        }))
+        .unwrap();
+        let version = |id: &str, name: &str, url: Option<&str>| CurseForgeVersion {
+            version_id: id.into(),
+            display_name: name.into(),
+            date_created: String::new(),
+            file_name: name.into(),
+            url: url.map(str::to_owned),
+            sha1: Some("a".repeat(40)),
+            size: 10,
+            game_versions: vec![],
+            loaders: vec![],
+        };
+        let details = std::collections::HashMap::from([
+            (
+                1_u64,
+                version("1", "ok.jar", Some("https://edge.forgecdn.net/ok.jar")),
+            ),
+            // 作者禁止第三方分发：downloadUrl 为 null，必须跳过。
+            (2_u64, version("2", "restricted.jar", None)),
+        ]);
+        let (files, skipped) = curseforge_files_to_pack_files(&manifest, &details);
+        // 只有 1 号可用；2 号受限被跳过；3 号没查到也被跳过。
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "mods/ok.jar");
+        assert_eq!(skipped, 2);
+        // 校验值与下载地址必须原样带上，否则下载引擎无法验证完整性。
+        assert_eq!(files[0].hashes.get("sha1"), Some(&"a".repeat(40)));
+        assert_eq!(
+            files[0].downloads,
+            vec!["https://edge.forgecdn.net/ok.jar".to_owned()]
+        );
+    }
+
+    #[test]
+    fn curseforge_pack_index_passes_domain_validation() {
+        use crate::curseforge::CurseForgeVersion;
+        let manifest: CurseForgeManifest = serde_json::from_value(serde_json::json!({
+            "minecraft": { "version": "1.20.1", "modLoaders": [] },
+            "name": "n", "version": "1",
+            "files": [{ "projectID": 1, "fileID": 1, "required": true }]
+        }))
+        .unwrap();
+        let details = std::collections::HashMap::from([(
+            1_u64,
+            CurseForgeVersion {
+                version_id: "1".into(),
+                display_name: "ok".into(),
+                date_created: String::new(),
+                file_name: "ok.jar".into(),
+                url: Some("https://edge.forgecdn.net/ok.jar".into()),
+                sha1: Some("a".repeat(40)),
+                size: 10,
+                game_versions: vec![],
+                loaders: vec![],
+            },
+        )]);
+        let (files, _) = curseforge_files_to_pack_files(&manifest, &details);
+        let index = manifest.to_pack_index(files);
+        // forgecdn 必须被 validate_index 接受，否则整条导入链在最后一步失败。
+        assert!(validate_index(&index).is_ok());
     }
 }

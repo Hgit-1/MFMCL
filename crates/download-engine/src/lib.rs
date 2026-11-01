@@ -12,15 +12,44 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
+    sync::atomic::Ordering,
     time::Duration,
 };
 use thiserror::Error;
 use tokio::{
     fs,
+    io::AsyncSeekExt,
     io::AsyncWriteExt,
     sync::{Mutex, Semaphore, mpsc},
 };
 use uuid::Uuid;
+
+/// 单个分片的最小字节数。低于这个大小的文件再切分只会增加连接开销。
+const MIN_SEGMENT_BYTES: u64 = 256 * 1024;
+
+/// 单个分片的下载结果。
+enum SegmentOutcome {
+    Written,
+    RangeUnsupported,
+}
+
+/// 把文件按字节均分成不超过 `segments` 个闭区间，每段至少 [MIN_SEGMENT_BYTES]。
+fn segment_ranges(size: u64, segments: usize) -> Vec<(u64, u64)> {
+    if size == 0 {
+        return Vec::new();
+    }
+    let max_by_size = (size / MIN_SEGMENT_BYTES).max(1) as usize;
+    let count = segments.clamp(1, 16).min(max_by_size);
+    let chunk = size.div_ceil(count as u64);
+    let mut ranges = Vec::with_capacity(count);
+    let mut start = 0u64;
+    while start < size {
+        let end = (start + chunk - 1).min(size - 1);
+        ranges.push((start, end));
+        start = end + 1;
+    }
+    ranges
+}
 
 #[derive(Debug, Error)]
 pub enum DownloadError {
@@ -187,22 +216,22 @@ impl DownloadEngine {
         artifact: &ArtifactSpec,
         progress: &Progress,
     ) -> Result<PathBuf, DownloadError> {
-        if let Some(limit) = self.max_file_size {
-            if artifact.size.is_some_and(|size| size > limit) {
-                return Err(DownloadError::Integrity(
-                    "artifact exceeds configured size limit".into(),
-                ));
-            }
+        if let Some(limit) = self.max_file_size
+            && artifact.size.is_some_and(|size| size > limit)
+        {
+            return Err(DownloadError::Integrity(
+                "artifact exceeds configured size limit".into(),
+            ));
         }
         let original = Url::parse(&artifact.url)?;
         let pinned = hash_pinned(artifact);
         if !safe_url(&original) || (is_mirror_host(&original) && !pinned) {
             return Err(DownloadError::UnsafeUrl);
         }
-        if let Some(mirror) = &artifact.mirror_url {
-            if !safe_mirror_url(&Url::parse(mirror)?) {
-                return Err(DownloadError::UnsafeUrl);
-            }
+        if let Some(mirror) = &artifact.mirror_url
+            && !safe_mirror_url(&Url::parse(mirror)?)
+        {
+            return Err(DownloadError::UnsafeUrl);
         }
         let candidates = source_candidates_with_mirror(
             original,
@@ -260,6 +289,21 @@ impl DownloadEngine {
         }
         let temporary = partial_path(artifact);
         let mut last_error = DownloadError::NoSource(artifact.label.clone());
+        /*
+         * 单文件分段并发的条件是「服务端支持 Range 且总大小已知」。
+         *
+         * 只有带校验值的条目才允许这么下：分片范围是我们自己算的，最终必须能用
+         * 清单里的 SHA 证明整份文件正确，否则宁可退化成单连接顺序下载。
+         * aria2 已启用时由 aria2 自己分片，不走这条路径。
+         */
+        let segments = if self.settings.aria2_enabled
+            && self.max_file_size.is_none()
+            && self.aria2.is_some()
+        {
+            1
+        } else {
+            self.settings.connections_per_file.clamp(1, 16) as usize
+        };
         for source in candidates {
             emit(
                 progress,
@@ -269,44 +313,45 @@ impl DownloadEngine {
                 artifact.size,
                 DownloadStage::Connecting,
             );
-            if self.settings.aria2_enabled && self.max_file_size.is_none() {
-                if let Some(session) = &self.aria2 {
-                    // Separate aria2's opaque fragment state from validated native HTTP state.
-                    let aria_temporary =
-                        temporary.with_extension(format!("aria-{}", Uuid::new_v4().simple()));
-                    let result = self
-                        .download_with_aria2(artifact, &source, session, &aria_temporary, progress)
+            if self.settings.aria2_enabled
+                && self.max_file_size.is_none()
+                && let Some(session) = &self.aria2
+            {
+                // Separate aria2's opaque fragment state from validated native HTTP state.
+                let aria_temporary =
+                    temporary.with_extension(format!("aria-{}", Uuid::new_v4().simple()));
+                let result = self
+                    .download_with_aria2(artifact, &source, session, &aria_temporary, progress)
+                    .await;
+                match result {
+                    Ok(()) => {
+                        self.control.checkpoint().await?;
+                        replace_file(&aria_temporary, &artifact.destination).await?;
+                        cleanup_partial(&temporary).await;
+                        emit(
+                            progress,
+                            artifact,
+                            Some(&source),
+                            fs::metadata(&artifact.destination).await?.len(),
+                            artifact.size,
+                            DownloadStage::Completed,
+                        );
+                        return Ok(artifact.destination.clone());
+                    }
+                    Err(error) => {
+                        // A broken RPC must never leave a writer racing the native fallback.
+                        let _ = session.shutdown().await;
+                        cleanup_partial(&aria_temporary).await;
+                        let _ = fs::remove_file(aria_temporary.with_extension(format!(
+                            "{}.aria2",
+                            aria_temporary
+                                .extension()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        )))
                         .await;
-                    match result {
-                        Ok(()) => {
-                            self.control.checkpoint().await?;
-                            replace_file(&aria_temporary, &artifact.destination).await?;
-                            cleanup_partial(&temporary).await;
-                            emit(
-                                progress,
-                                artifact,
-                                Some(&source),
-                                fs::metadata(&artifact.destination).await?.len(),
-                                artifact.size,
-                                DownloadStage::Completed,
-                            );
-                            return Ok(artifact.destination.clone());
-                        }
-                        Err(error) => {
-                            // A broken RPC must never leave a writer racing the native fallback.
-                            let _ = session.shutdown().await;
-                            cleanup_partial(&aria_temporary).await;
-                            let _ = fs::remove_file(aria_temporary.with_extension(format!(
-                                    "{}.aria2",
-                                    aria_temporary
-                                        .extension()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                )))
-                            .await;
-                            if matches!(error, DownloadError::Cancelled) {
-                                return Err(error);
-                            }
+                        if matches!(error, DownloadError::Cancelled) {
+                            return Err(error);
                         }
                     }
                 }
@@ -314,7 +359,7 @@ impl DownloadEngine {
             for attempt in 0..3_u32 {
                 self.control.checkpoint().await?;
                 match self
-                    .download_one(artifact, &source, &temporary, progress)
+                    .download_one(artifact, &source, &temporary, segments, progress)
                     .await
                 {
                     Ok(()) => {
@@ -361,6 +406,7 @@ impl DownloadEngine {
         artifact: &ArtifactSpec,
         source: &Url,
         temporary: &Path,
+        segments: usize,
         progress: &Progress,
     ) -> Result<(), DownloadError> {
         let pinned = hash_pinned(artifact);
@@ -376,6 +422,27 @@ impl DownloadEngine {
         });
         if old.is_none() {
             offset = 0;
+        }
+        /*
+         * 分段并发只在「没有续传进度 + 大小已知 + 有校验值 + 请求了多连接」时启用。
+         * 续传已有分片、或大小未知（无法均分）时退回单连接，避免两套状态混用。
+         */
+        let segment_total = artifact.size.filter(|size| {
+            segments > 1 && pinned && offset == 0 && *size > MIN_SEGMENT_BYTES * segments as u64
+        });
+        /*
+         * 分段并发：把文件按字节均分，多条连接同时拉各自的区间，按偏移写进同一份文件。
+         *
+         * 只有「本次没有任何已有分片」且大小已知时才尝试，所以不会和续传状态混用。
+         * 第一个区间的响应同时充当探测：服务端不认 Range（返回 200 而非 206）就
+         * 说明它会把整个文件发下来，此时放弃分段、退回单连接，任何服务器都能下载。
+         */
+        if let Some(size) = segment_total
+            && self
+                .download_segments(artifact, source, temporary, size, segments, progress)
+                .await?
+        {
+            return Ok(());
         }
         let mut request = self
             .client
@@ -508,6 +575,205 @@ impl DownloadEngine {
             ))
             .await??;
         Ok(())
+    }
+
+    /// 分段并发下载。
+    ///
+    /// 返回 `Ok(false)` 表示服务端不支持 Range，调用方应退回单连接下载；
+    /// 返回 `Ok(true)` 表示整份文件已按分片写完并通过校验。
+    async fn download_segments(
+        &self,
+        artifact: &ArtifactSpec,
+        source: &Url,
+        temporary: &Path,
+        size: u64,
+        segments: usize,
+        progress: &Progress,
+    ) -> Result<bool, DownloadError> {
+        let ranges = segment_ranges(size, segments);
+        let metadata = ResumeMetadata {
+            source: fingerprint(source.as_str()),
+            final_source: fingerprint(source.as_str()),
+            etag: None,
+            total: Some(size),
+        };
+        // 先建好文件并发布续传元数据，再并行拉取各区间。
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(temporary)
+            .await?;
+        file.set_len(size).await?;
+        fs::write(
+            metadata_path(temporary),
+            serde_json::to_vec(&metadata).expect("resume metadata serialization"),
+        )
+        .await?;
+        drop(file);
+
+        let received = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        /*
+         * 一旦某个分片发现服务端不认 Range，其余分片应立即放弃读取响应体。
+         * 否则它们会把整份文件各收一遍（N 倍流量），然后才轮到调用方退回单连接。
+         */
+        let abort = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut tasks = Vec::with_capacity(ranges.len());
+        for (start, end) in ranges {
+            let start_byte = start;
+            let end_byte = end;
+            let engine = self.clone();
+            let artifact = artifact.clone();
+            let source = source.clone();
+            let temporary = temporary.to_path_buf();
+            let progress = progress.clone();
+            let received = received.clone();
+            let abort = abort.clone();
+            tasks.push((
+                start_byte,
+                tokio::spawn(async move {
+                    engine
+                        .download_segment(
+                            &artifact, &source, &temporary, start_byte, end_byte, &progress,
+                            &received, &abort,
+                        )
+                        .await
+                }),
+            ));
+        }
+        // 按起始偏移排序是为了让「不支持 Range」的判定优先来自第一个分片。
+        tasks.sort_by_key(|(start, _)| *start);
+        let mut unsupported = false;
+        for (_, task) in tasks {
+            match task.await {
+                Ok(Ok(SegmentOutcome::Written)) => {}
+                Ok(Ok(SegmentOutcome::RangeUnsupported)) => unsupported = true,
+                Ok(Err(error)) => {
+                    cleanup_partial(temporary).await;
+                    return Err(error);
+                }
+                Err(error) => {
+                    cleanup_partial(temporary).await;
+                    return Err(DownloadError::Io(std::io::Error::other(format!(
+                        "segment task failed: {error}"
+                    ))));
+                }
+            }
+        }
+        if unsupported {
+            cleanup_partial(temporary).await;
+            return Ok(false);
+        }
+        emit(
+            progress,
+            artifact,
+            Some(source),
+            size,
+            Some(size),
+            DownloadStage::Verifying,
+        );
+        self.control
+            .wait_for(verify_file(
+                temporary,
+                artifact.size,
+                artifact.sha1.as_deref(),
+                artifact.sha256.as_deref(),
+            ))
+            .await??;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn download_segment(
+        &self,
+        artifact: &ArtifactSpec,
+        source: &Url,
+        temporary: &Path,
+        start: u64,
+        end: u64,
+        progress: &Progress,
+        received: &Arc<std::sync::atomic::AtomicU64>,
+        abort: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<SegmentOutcome, DownloadError> {
+        let response = self
+            .control
+            .wait_for(
+                self.client
+                    .get(source.clone())
+                    .header(header::ACCEPT_ENCODING, "identity")
+                    .header(header::RANGE, format!("bytes={start}-{end}"))
+                    .send(),
+            )
+            .await??;
+        if response.status() == reqwest::StatusCode::OK {
+            // 服务端忽略 Range，整份文件会从 0 开始发下来：交给单连接路径处理。
+            // 通知其余分片立刻停手，避免各自把整份文件收一遍。
+            abort.store(true, Ordering::Relaxed);
+            return Ok(SegmentOutcome::RangeUnsupported);
+        }
+        if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            return Err(DownloadError::InvalidRange);
+        }
+        let response = response.error_for_status()?;
+        if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(DownloadError::InvalidRange);
+        }
+        let range = response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_range)
+            .ok_or(DownloadError::InvalidRange)?;
+        let expected = end - start + 1;
+        if range.0 != start
+            || range.2 == 0
+            || artifact.size.is_some_and(|size| size != range.2)
+            || response
+                .content_length()
+                .is_some_and(|length| length != expected)
+        {
+            return Err(DownloadError::InvalidRange);
+        }
+        if response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .is_some_and(|value| value != "identity")
+        {
+            return Err(DownloadError::InvalidRange);
+        }
+
+        let mut file = fs::OpenOptions::new().write(true).open(temporary).await?;
+        // 直接把文件游标定位到本分片起点，各分片互不干扰。
+        file.seek(std::io::SeekFrom::Start(start)).await?;
+        let mut stream = response.bytes_stream();
+        let mut written = 0u64;
+        while let Some(chunk) = self.control.wait_for(stream.next()).await? {
+            if abort.load(Ordering::Relaxed) {
+                // 别的分片已判定服务端不支持 Range，本分片不再消耗带宽。
+                return Ok(SegmentOutcome::RangeUnsupported);
+            }
+            let chunk = chunk?;
+            written += chunk.len() as u64;
+            if written > expected {
+                return Err(DownloadError::InvalidRange);
+            }
+            self.control.wait_for(file.write_all(&chunk)).await??;
+            let total_written =
+                received.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
+            emit(
+                progress,
+                artifact,
+                Some(source),
+                total_written,
+                artifact.size,
+                DownloadStage::Downloading,
+            );
+        }
+        file.flush().await?;
+        if written != expected {
+            return Err(DownloadError::Integrity("incomplete response".into()));
+        }
+        Ok(SegmentOutcome::Written)
     }
 
     async fn download_with_aria2(
@@ -747,14 +1013,14 @@ pub fn source_candidates_with_mirror(
         return Vec::new();
     }
     let mut candidates = Vec::new();
-    if preference != SourcePreference::Official && checksum_available {
-        if let Some(mirror) = explicit_mirror
+    if preference != SourcePreference::Official
+        && checksum_available
+        && let Some(mirror) = explicit_mirror
             .and_then(|s| Url::parse(s).ok())
             .filter(safe_mirror_url)
             .or_else(|| bmclapi_url(&original))
-        {
-            candidates.push(mirror);
-        }
+    {
+        candidates.push(mirror);
     }
     if !candidates.contains(&original) {
         candidates.push(original);

@@ -1,0 +1,253 @@
+/*
+ * 版本选择器。
+ *
+ * 控件本身只有一个输入框加一个下拉箭头，但下拉列表通过 portal 渲染到 body，
+ * 所以这里的样式分成两部分：控件（在筛选卡里，跟随卡片排版）与浮层（独立定位）。
+ */
+
+.wrap {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* --- 输入框 ------------------------------------------------------------ */
+/*
+ * 与 `.field select` 同一套高度、边框与底色，这样它旁边的加载器/类型/排序下拉
+ * 排成一行时不会有一个高矮不一。
+ */
+.control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  transition: border-color .16s, box-shadow .16s;
+}
+
+.control:focus-within,
+.controlOpen {
+  border-color: var(--color-primary-500);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary-500) 14%, transparent);
+}
+
+.searchIcon {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+}
+
+.input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  outline: none;
+}
+
+.input::placeholder {
+  color: var(--color-text-secondary);
+  opacity: .85;
+}
+
+/*
+ * 折叠箭头。
+ *
+ * 用独立的按钮而不是把箭头塞进输入框的 padding：点箭头要展开/收起，点击落在
+ * 输入框上则只聚焦。两者行为不同，就不能共用一个可点区域。
+ */
+.caret {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.caret:hover {
+  background: color-mix(in srgb, var(--color-text-secondary) 14%, transparent);
+  color: var(--color-text-primary);
+}
+
+.caret svg {
+  transition: transform .18s var(--ease);
+}
+
+.caretOpen svg {
+  transform: rotate(180deg);
+}
+
+/* 跟随实例时的旁注：输入框为空时，这是唯一能看出「实际用了哪个版本」的地方。 */
+.followHint {
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- 浮层 -------------------------------------------------------------- */
+/*
+ * 绝对定位到输入框下方，坐标由 JS 用 getBoundingClientRect 给出（position: fixed）。
+ * 这里必须有较高的 z-index：它被渲染到 body 下，要盖过内容商店侧栏的 sticky 表头。
+ */
+.popover {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+/* 「跟随实例」固定在顶部，不随列表滚动。 */
+.followOption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: transparent;
+  color: var(--color-primary-text);
+  font: inherit;
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.followOption:hover {
+  background: color-mix(in srgb, var(--color-primary-500) 8%, transparent);
+}
+
+/* --- 列表 -------------------------------------------------------------- */
+.list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 键盘光标与鼠标悬停共用同一个高亮：两者都是「回车/点击会选中这一项」。 */
+.optionCursor {
+  background: var(--color-bg-secondary);
+}
+
+.optionActive {
+  color: var(--color-primary-text);
+  font-weight: 600;
+}
+
+.optionActive.optionCursor,
+.optionActive:hover {
+  background: color-mix(in srgb, var(--color-primary-500) 10%, transparent);
+}
+
+/* 版本号用等宽字体：一眼能看出 1.20.1 与 1.20.10 的差别，也便于纵向对齐。 */
+.optionId {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.optionMeta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 类型与日期之间的分隔点。 */
+.dot {
+  margin: 0 4px;
+  opacity: .6;
+}
+
+/*
+ * 用户手输的、清单里没有的版本。
+ * 用强调色左侧竖条标出来，与下面的清单项区分——它不是一个「已知版本」。
+ */
+.optionTyped {
+  margin-bottom: 4px;
+  border-left: 2px solid var(--color-primary-500);
+  background: color-mix(in srgb, var(--color-primary-500) 6%, transparent);
+}
+
+.option svg {
+  flex: 0 0 auto;
+  color: var(--color-primary-500);
+}
+
+.empty {
+  padding: 12px 10px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+
+.status,
+.statusError {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 9px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.statusError {
+  color: var(--color-danger-text);
+}
+
+/* 触屏上列表项要高一些，否则相邻两行容易点错。 */
+@media (pointer: coarse) {
+  .option { min-height: 40px; }
+  .followOption { min-height: 40px; }
+}

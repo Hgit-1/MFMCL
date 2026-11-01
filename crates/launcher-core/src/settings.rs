@@ -1,4 +1,7 @@
-use crate::{GarbageCollector, LauncherSettings, MemoryMode, PreparedLaunch, ProcessPriority};
+use crate::{
+    GarbageCollector, InstanceOverrides, LauncherSettings, MemoryMode, PreparedLaunch,
+    ProcessPriority,
+};
 use thiserror::Error;
 
 const MAX_JVM_ARGS_LENGTH: usize = 8192;
@@ -130,6 +133,174 @@ pub fn validate_settings(
     validate_jvm_argument_text(&settings.extra_jvm_args, settings.garbage_collector)
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+const MAX_WINDOW_WIDTH: u32 = 7680;
+const MAX_WINDOW_HEIGHT: u32 = 4320;
+const MIN_WINDOW_WIDTH: u32 = 640;
+const MIN_WINDOW_HEIGHT: u32 = 360;
+const MIN_INSTANCE_MEMORY_MB: u32 = 512;
+
+/// Validate a set of per-instance overrides in isolation.
+///
+/// Only the fields that are actually present are checked, and each check mirrors
+/// the global rule for the same field. Keeping this separate from
+/// `resolve_settings` means the store can reject a bad payload at write time,
+/// instead of accepting it and failing much later during launch.
+pub fn validate_instance_overrides(overrides: &InstanceOverrides) -> Result<(), String> {
+    if let Some(memory_mb) = overrides.memory_mb {
+        if memory_mb < MIN_INSTANCE_MEMORY_MB {
+            return Err(format!("游戏内存必须至少为 {MIN_INSTANCE_MEMORY_MB} MB。"));
+        }
+        // A heap size stored without custom mode can never take effect, so it is
+        // almost certainly a UI bug or a hand-edited database. Reject it rather
+        // than silently ignoring a number the user believes they set.
+        if overrides.memory_mode != Some(MemoryMode::Custom) {
+            return Err("指定内存数值时必须同时选择自定义内存模式。".to_owned());
+        }
+    }
+    if overrides.memory_mode == Some(MemoryMode::Custom) && overrides.memory_mb.is_none() {
+        return Err("自定义内存模式必须指定内存数值。".to_owned());
+    }
+
+    // Window size is a single setting stored as two numbers. Half of it would
+    // produce a window with one overridden dimension and one inherited, which no
+    // UI ever offers and which is hard to explain when something looks wrong.
+    match (overrides.window_width, overrides.window_height) {
+        (Some(width), Some(height)) => {
+            if !(MIN_WINDOW_WIDTH..=MAX_WINDOW_WIDTH).contains(&width)
+                || !(MIN_WINDOW_HEIGHT..=MAX_WINDOW_HEIGHT).contains(&height)
+            {
+                return Err(format!(
+                    "窗口宽度必须为 {MIN_WINDOW_WIDTH}–{MAX_WINDOW_WIDTH}、高度必须为 {MIN_WINDOW_HEIGHT}–{MAX_WINDOW_HEIGHT}。"
+                ));
+            }
+        }
+        (None, None) => {}
+        _ => return Err("覆盖窗口尺寸时必须同时指定宽度和高度。".to_owned()),
+    }
+
+    if let Some(text) = &overrides.extra_jvm_args {
+        if text.len() > MAX_JVM_ARGS_LENGTH {
+            return Err(format!("JVM 参数最多 {MAX_JVM_ARGS_LENGTH} 字符。"));
+        }
+        validate_jvm_argument_text(text, GarbageCollector::Auto)
+            .map_err(|error| error.to_string())?;
+    }
+    if let Some(text) = &overrides.game_args {
+        if text.len() > MAX_GAME_ARGS_LENGTH {
+            return Err(format!("游戏参数最多 {MAX_GAME_ARGS_LENGTH} 字符。"));
+        }
+        validate_game_argument_text(text).map_err(|error| error.to_string())?;
+    }
+    if let Some(command) = &overrides.pre_launch_command {
+        if command.len() > MAX_PRE_LAUNCH_COMMAND_LENGTH {
+            return Err(format!(
+                "启动前命令最多 {MAX_PRE_LAUNCH_COMMAND_LENGTH} 字符。"
+            ));
+        }
+        if command.contains(['\n', '\r', '\0']) {
+            return Err("启动前命令不能包含换行或 NUL 字符。".to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// Collapse global settings plus instance overrides into the settings this
+/// instance will actually launch with.
+///
+/// This is the single place where inheritance is resolved. Doing the merge here,
+/// in the core crate, keeps the launcher UI, the CLI and the tests all applying
+/// the same rules — a frontend-only merge would drift the moment another entry
+/// point appears.
+///
+/// The result is a complete `LauncherSettings`, so `apply_launch_settings` and
+/// the rest of the launch path stay unaware that instances exist at all.
+pub fn resolve_settings(
+    global: &LauncherSettings,
+    overrides: &InstanceOverrides,
+) -> LauncherSettings {
+    let mut resolved = global.clone();
+    if let Some(mode) = overrides.memory_mode {
+        resolved.memory_mode = mode;
+    }
+    if let Some(memory_mb) = overrides.memory_mb {
+        resolved.memory_mb = memory_mb;
+    }
+    if let Some(optimize) = overrides.optimize_memory {
+        resolved.optimize_memory = optimize;
+    }
+    if let Some(fullscreen) = overrides.fullscreen {
+        resolved.fullscreen = fullscreen;
+    }
+    if let Some(show_game_log) = overrides.show_game_log {
+        resolved.show_game_log = show_game_log;
+    }
+    if let Some(width) = overrides.window_width {
+        resolved.window_width = width;
+    }
+    if let Some(height) = overrides.window_height {
+        resolved.window_height = height;
+    }
+    if let Some(args) = &overrides.extra_jvm_args {
+        resolved.extra_jvm_args = args.clone();
+    }
+    if let Some(args) = &overrides.game_args {
+        resolved.game_args = args.clone();
+    }
+    if let Some(command) = &overrides.pre_launch_command {
+        resolved.pre_launch_command = command.clone();
+    }
+    resolved
+}
+
+/// How many settings this instance overrides.
+///
+/// Pairs that represent one user-visible setting are counted once, matching what
+/// the UI shows: window size is two columns, and a memory heap size is part of
+/// the memory mode. Counting columns instead of settings would report "3
+/// customised" for two changes and make the summary look wrong.
+pub fn count_instance_overrides(overrides: &InstanceOverrides) -> usize {
+    let mut count = 0;
+    if overrides.memory_mode.is_some() || overrides.memory_mb.is_some() {
+        count += 1;
+    }
+    if overrides.fullscreen.is_some() {
+        count += 1;
+    }
+    if overrides.optimize_memory.is_some() {
+        count += 1;
+    }
+    if overrides.show_game_log.is_some() {
+        count += 1;
+    }
+    if overrides.window_width.is_some() || overrides.window_height.is_some() {
+        count += 1;
+    }
+    // Blank text is treated as "no extra content": leaving the box empty has the
+    // same effect as inheriting, so it should not read as a customisation.
+    if overrides
+        .extra_jvm_args
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty())
+    {
+        count += 1;
+    }
+    if overrides
+        .game_args
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty())
+    {
+        count += 1;
+    }
+    if overrides
+        .pre_launch_command
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty())
+    {
+        count += 1;
+    }
+    count
 }
 
 pub fn apply_launch_settings(
@@ -335,10 +506,12 @@ mod tests {
     #[test]
     fn game_arguments_are_appended_and_controlled_identity_is_protected() {
         let mut launch = prepared();
-        let mut settings = LauncherSettings::default();
-        settings.memory_mode = MemoryMode::Auto;
-        settings.garbage_collector = GarbageCollector::G1;
-        settings.game_args = "--demo --width=1".into();
+        let mut settings = LauncherSettings {
+            memory_mode: MemoryMode::Auto,
+            garbage_collector: GarbageCollector::G1,
+            game_args: "--demo --width=1".into(),
+            ..LauncherSettings::default()
+        };
         apply_launch_settings(&mut launch, &settings, 3072, "net.minecraft.Main").unwrap();
         assert!(launch.args.contains(&"-Xmx3072M".to_owned()));
         assert!(launch.args.contains(&"-XX:+UseG1GC".to_owned()));
@@ -358,8 +531,10 @@ mod tests {
 
     #[test]
     fn settings_validation_rejects_unsafe_or_unimplemented_options() {
-        let mut settings = LauncherSettings::default();
-        settings.verify_ssl = false;
+        let mut settings = LauncherSettings {
+            verify_ssl: false,
+            ..LauncherSettings::default()
+        };
         assert!(validate_settings(&settings, Some(8192)).is_err());
         settings.verify_ssl = true;
         settings.default_isolated = false;
@@ -367,5 +542,173 @@ mod tests {
         settings.default_isolated = true;
         settings.process_priority = ProcessPriority::High;
         assert!(validate_settings(&settings, Some(8192)).is_err());
+    }
+
+    #[test]
+    fn empty_overrides_resolve_to_the_global_settings() {
+        let global = LauncherSettings {
+            memory_mode: MemoryMode::Custom,
+            memory_mb: 4096,
+            fullscreen: true,
+            window_width: 1280,
+            window_height: 720,
+            extra_jvm_args: "-XX:+UseZGC".into(),
+            ..LauncherSettings::default()
+        };
+        let resolved = resolve_settings(&global, &InstanceOverrides::default());
+        // Default overrides must be a no-op: an instance the user never touched
+        // has to behave exactly like the global configuration.
+        assert_eq!(resolved.memory_mode, MemoryMode::Custom);
+        assert_eq!(resolved.memory_mb, 4096);
+        assert!(resolved.fullscreen);
+        assert_eq!(resolved.window_width, 1280);
+        assert_eq!(resolved.extra_jvm_args, "-XX:+UseZGC");
+    }
+
+    #[test]
+    fn overrides_replace_only_the_fields_they_set() {
+        let global = LauncherSettings {
+            memory_mode: MemoryMode::Custom,
+            memory_mb: 4096,
+            fullscreen: true,
+            show_game_log: true,
+            window_width: 1280,
+            window_height: 720,
+            game_args: "--global".into(),
+            ..LauncherSettings::default()
+        };
+        let overrides = InstanceOverrides {
+            fullscreen: Some(false),
+            window_width: Some(1920),
+            window_height: Some(1080),
+            ..InstanceOverrides::default()
+        };
+        let resolved = resolve_settings(&global, &overrides);
+        assert!(
+            !resolved.fullscreen,
+            "explicit false must survive the merge"
+        );
+        assert_eq!(resolved.window_width, 1920);
+        assert_eq!(resolved.window_height, 1080);
+        // Untouched fields keep the global value.
+        assert_eq!(resolved.memory_mb, 4096);
+        assert!(resolved.show_game_log);
+        assert_eq!(resolved.game_args, "--global");
+    }
+
+    #[test]
+    fn memory_override_needs_a_matching_mode() {
+        // A heap size without custom mode could never take effect, so storing it
+        // would silently lose a number the user believed they had set.
+        let memory_without_mode = InstanceOverrides {
+            memory_mb: Some(8192),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&memory_without_mode).is_err());
+
+        let mode_without_memory = InstanceOverrides {
+            memory_mode: Some(MemoryMode::Custom),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&mode_without_memory).is_err());
+
+        let complete = InstanceOverrides {
+            memory_mode: Some(MemoryMode::Custom),
+            memory_mb: Some(8192),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&complete).is_ok());
+    }
+
+    #[test]
+    fn window_size_override_must_be_complete() {
+        let half = InstanceOverrides {
+            window_width: Some(1920),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&half).is_err());
+
+        let out_of_range = InstanceOverrides {
+            window_width: Some(100),
+            window_height: Some(100),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&out_of_range).is_err());
+
+        let valid = InstanceOverrides {
+            window_width: Some(1920),
+            window_height: Some(1080),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&valid).is_ok());
+    }
+
+    #[test]
+    fn overrides_reuse_the_global_argument_rules() {
+        // The instance page must not become a way around the -Xmx and identity
+        // protections that the global settings already enforce.
+        let duplicate_memory = InstanceOverrides {
+            extra_jvm_args: Some("-Xmx2G".into()),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&duplicate_memory).is_err());
+
+        let identity = InstanceOverrides {
+            game_args: Some("--accessToken forged".into()),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&identity).is_err());
+
+        let newline_command = InstanceOverrides {
+            pre_launch_command: Some("echo a\necho b".into()),
+            ..InstanceOverrides::default()
+        };
+        assert!(validate_instance_overrides(&newline_command).is_err());
+    }
+
+    #[test]
+    fn override_count_treats_paired_fields_as_one_setting() {
+        // Window size is two columns but one user-visible setting; counting both
+        // would make the page report "3 customised" for two changes.
+        let window = InstanceOverrides {
+            window_width: Some(1920),
+            window_height: Some(1080),
+            ..InstanceOverrides::default()
+        };
+        assert_eq!(count_instance_overrides(&window), 1);
+
+        let memory = InstanceOverrides {
+            memory_mode: Some(MemoryMode::Custom),
+            memory_mb: Some(6144),
+            ..InstanceOverrides::default()
+        };
+        assert_eq!(count_instance_overrides(&memory), 1);
+
+        let everything = InstanceOverrides {
+            memory_mode: Some(MemoryMode::Auto),
+            fullscreen: Some(true),
+            show_game_log: Some(false),
+            window_width: Some(1920),
+            window_height: Some(1080),
+            extra_jvm_args: Some("-XX:+UseZGC".into()),
+            game_args: Some("--demo".into()),
+            pre_launch_command: Some("echo hi".into()),
+            ..InstanceOverrides::default()
+        };
+        assert_eq!(count_instance_overrides(&everything), 7);
+        assert_eq!(count_instance_overrides(&InstanceOverrides::default()), 0);
+    }
+
+    #[test]
+    fn blank_text_overrides_are_not_counted_as_customisations() {
+        // Clearing a text box has the same effect as inheriting, so the page must
+        // not claim the instance is customised when it behaves identically.
+        let blank = InstanceOverrides {
+            extra_jvm_args: Some("   ".into()),
+            game_args: Some(String::new()),
+            pre_launch_command: Some("\t".into()),
+            ..InstanceOverrides::default()
+        };
+        assert_eq!(count_instance_overrides(&blank), 0);
     }
 }

@@ -75,7 +75,13 @@ export interface Account {
   id: string;
   username: string;
   uuid: string;
-  type: 'microsoft' | 'offline';
+  /**
+   * `skin_server` 对应后端的 Yggdrasil 皮肤站账户。
+   *
+   * 界面把它和 Microsoft 归为「第三方」一类渲染：两者都需要在线验证，与离线
+   * 档案的区别才是用户要区分的重点。
+   */
+  type: 'microsoft' | 'offline' | 'skin_server';
   avatar?: string;
   hasMinecraft: boolean;
   accessToken?: string;
@@ -94,12 +100,15 @@ export interface DownloadTask {
   speed?: number;
   error?: string;
   targetInstance?: string;
+  /** 任务归属的实例。后端按实例组织任务，取消/暂停都要用它定位。 */
+  instanceId?: string;
 }
 
 // 应用状态
 export type AppContext = 
   | 'first-run'
   | 'empty-library'
+  | 'dashboard'
   | 'home'
   | 'instance-detail'
   | 'store'

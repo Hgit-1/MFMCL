@@ -289,6 +289,99 @@ export function accentTonalColors(color: string): {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Deriving an accent from an image
+//
+// The "free background" feature can pick a colour out of the user's own picture.
+// Doing that in RGB would fail the same way HSL fails for the solid shades: an
+// average in gamma space drifts towards the middle of the cube, so a photo of a
+// forest averages to mud. The average is therefore taken in OKLab, weighting
+// each pixel by its chroma — the sky and the leaves decide the hue, the grey
+// wall behind them does not.
+// ---------------------------------------------------------------------------
+
+export interface ImageAnalysis {
+  /** Accent derived from the image, or null when the image has no usable pixels. */
+  accent: string | null;
+  /** Perceptual lightness of the image, 0-1. Used to suggest a light/dark theme. */
+  lightness: number;
+}
+
+/**
+ * How strongly chroma counts relative to a flat pixel.
+ *
+ * Without the constant term a picture that is 90% grey would be decided by a
+ * handful of stray pixels; with only the constant term a single bright accent
+ * dot would be lost among the grey. 0.2 + 6 × chroma means vivid pixels outvote
+ * dull ones roughly ten to one at typical chroma (≈0.1).
+ */
+const CHROMA_FLOOR = 0.2;
+const CHROMA_WEIGHT = 6;
+
+/**
+ * Accent lightness is clamped into this band. Below it the colour becomes a
+ * near-black accent (borders and progress bars disappear into the page); above
+ * it the colour is so pale that a solid button fill loses its edge. The band
+ * covers the shipped presets (深海蓝 sits at ≈0.73).
+ */
+const ACCENT_L_MIN = 0.45;
+const ACCENT_L_MAX = 0.8;
+
+/**
+ * Analyse RGBA pixels (as returned by `CanvasRenderingContext2D.getImageData`)
+ * and return a representative accent plus the image's lightness.
+ *
+ * Transparent pixels are skipped, so analysing a PNG with an alpha channel does
+ * not get pulled towards black.
+ */
+export function analyzeImageData(pixels: Uint8ClampedArray): ImageAnalysis {
+  let weightSum = 0;
+  let aSum = 0;
+  let bSum = 0;
+  let lightnessSum = 0;
+  let lightnessWeight = 0;
+
+  for (let index = 0; index + 3 < pixels.length; index += 4) {
+    const alpha = pixels[index + 3];
+    // Fully transparent pixels carry no colour; partially transparent ones are
+    // weighted by their coverage so a soft edge does not count as much as a solid fill.
+    if (alpha < 8) continue;
+    const coverage = alpha / 255;
+    const [lightness, a, b] = rgbToOklab([pixels[index], pixels[index + 1], pixels[index + 2]]);
+    const chroma = Math.hypot(a, b);
+    const weight = (CHROMA_FLOOR + CHROMA_WEIGHT * chroma) * coverage;
+
+    aSum += a * weight;
+    bSum += b * weight;
+    weightSum += weight;
+
+    // Lightness gets a flat average: contrast is about overall brightness, not
+    // about which part of the picture is the most colourful.
+    lightnessSum += lightness * coverage;
+    lightnessWeight += coverage;
+  }
+
+  if (weightSum <= 0 || lightnessWeight <= 0) return { accent: null, lightness: 0.5 };
+
+  const lightness = lightnessSum / lightnessWeight;
+  const meanA = aSum / weightSum;
+  const meanB = bSum / weightSum;
+  const accentLightness = Math.min(ACCENT_L_MAX, Math.max(ACCENT_L_MIN, lightness));
+  return {
+    accent: oklabToHex([accentLightness, meanA, meanB]),
+    lightness,
+  };
+}
+
+/**
+ * The accent the launcher should actually use, given a user-chosen colour and
+ * whether the background has taken over.
+ */
+export function pickAccent(userAccent: string, auto: string | null): string {
+  if (auto) return normalizeHex(auto) ?? DEFAULT_ACCENT;
+  return normalizeHex(userAccent) ?? DEFAULT_ACCENT;
+}
+
 /**
  * Write the accent family to the document root. Called before the first paint
  * and whenever the accent changes, so the whole app follows one colour.

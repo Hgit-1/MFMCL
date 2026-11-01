@@ -12,22 +12,20 @@ The Rust toolchain requirement applies to the desktop backend; frontend preview 
 ## Frontend preview
 
 ```sh
-npm ci --prefix ui
-npm run dev --prefix ui
+npm ci --prefix design/flowlaunch-ui
+npm run dev --prefix design/flowlaunch-ui
 ```
 
-The preview supports theme settings and sample version metadata. Native login, download, install, and launch commands require the Tauri desktop app; preview mode does not simulate them as successful operations.
+The development server binds to `127.0.0.1:5173`; open that address in a browser. The preview supports theme settings and sample version metadata. Native login, download, install, and launch commands require the Tauri desktop app; preview mode does not simulate them as successful operations. UI changes follow the browser-preview-first workflow in [`UI_WORKFLOW.md`](../UI_WORKFLOW.md).
 
 ## Automated checks
 
 ```sh
 cargo fmt --all -- --check
 cargo test -p mc-metadata -p download-engine -p launcher-core -p launcher-auth
-npm ci --prefix ui
-npm run lint --prefix ui
-npm run build --prefix ui
-npx --prefix ui playwright install chromium
-npm run test --prefix ui
+npm ci --prefix design/flowlaunch-ui
+npm run typecheck --prefix design/flowlaunch-ui
+npm run build --prefix design/flowlaunch-ui
 ```
 
 Opt-in tests that need a real environment (skipped by default):
@@ -40,18 +38,18 @@ MFMCL_ARIA2_BINARY=src-tauri/resources/aria2/linux/x86_64/aria2c \
   cargo test -p download-engine real_aria2 -- --ignored
 ```
 
-The authentication tests use local mock services, and browser tests use mocked native IPC; neither proves a real account/game launch. Continuous integration runs these checks plus desktop-backend compile jobs for Linux, macOS, and Windows. The manual `desktop-artifacts.yml` workflow can also build unsigned short-retention artifacts on target runners; those files are test outputs, not supported or signed releases.
+The authentication tests use local mock services, so they do not prove a real account/game launch. Continuous integration runs these checks plus desktop-backend compile jobs for Linux, macOS, and Windows. The manual `desktop-artifacts.yml` workflow can also build unsigned short-retention artifacts on target runners; those files are test outputs, not supported or signed releases.
 
 ## Desktop app
 
 Run from the repository root:
 
 ```sh
-npm run tauri --prefix ui -- dev
-npm run tauri --prefix ui -- build
+npm run tauri -- dev
+npm run tauri -- build
 ```
 
-The Tauri command changes to the repository root while the frontend hooks execute in `ui`. The development server binds to `127.0.0.1:1420`; port collisions fail instead of selecting an unexpected port. Build each native installer on its target operating system. The current project has not completed signed release packaging or a clean install/upgrade/uninstall run on all three systems.
+The Tauri command changes to the repository root while the frontend hooks execute in `design/flowlaunch-ui`. The desktop development server binds to `127.0.0.1:5173` (see `src-tauri/tauri.conf.json`); port collisions fail instead of selecting an unexpected port. Build each native installer on its target operating system. The current project has not completed signed release packaging or a clean install/upgrade/uninstall run on all three systems.
 
 ## Native Linux build without root
 
@@ -107,6 +105,29 @@ stages the binary under `src-tauri/resources/aria2/<os>/<arch>/` and pins it in 
 ## Microsoft account configuration
 
 Microsoft login requires an application public client ID registered and authorized for the relevant Xbox/Minecraft services. Supply it through the login dialog or set `MFMCL_MICROSOFT_CLIENT_ID` when building. Configure an appropriate desktop/loopback redirect URI in that registration. MFMCL contains no client secret and must not borrow another launcher's application ID. A denied/unavailable OS credential provider is reported as a login error; no plaintext fallback is used.
+
+## CurseForge API key (optional)
+
+CurseForge browsing needs an API key from <https://console.curseforge.com/>. There are two ways to supply one:
+
+1. **At runtime by the user** (recommended for published builds). The key is validated once and then stored in the OS credential store; the database only records that it exists. The web view never sees it — every request is signed by the Rust backend.
+2. **At build time** via `MFMCL_CURSEFORGE_API_KEY`. This is compiled into the binary with `option_env!` and acts as the fallback when the user has not saved a key of their own.
+
+`src-tauri/build.rs` reads the variable from the environment **or** from `<repo>/.env` and forwards it with `cargo:rustc-env`. You no longer have to `source scripts/tauri-env.sh` first: with a `.env` present, a plain `cargo build` / `npm run tauri build` ships the default key. A real environment variable still wins, so CI can set — or blank — it externally.
+
+Setting the variable to an **empty string** disables the built-in key even when `.env` has one. That is the supported way to produce a build for other people from a machine that also holds a local key:
+
+```sh
+MFMCL_CURSEFORGE_API_KEY= npm run tauri -- build
+```
+
+Local builds get the variable from `.env` at the repository root (`scripts/tauri-env.sh` loads it; `.env` is git-ignored). Copy `.env.example` to get the list of supported variables.
+
+**Treat a compiled-in key as public.** `strings` on the produced binary prints it, and every copy of that build shares one quota and one identity. Therefore:
+
+- Keep `MFMCL_CURSEFORGE_API_KEY` empty for anything you hand to other people.
+- The GitHub artifact workflow does not set it, so those builds ship without a default key and prompt the user instead.
+- A user-saved key always takes precedence over the compiled-in one, and "clear key" falls back to the built-in value rather than disabling CurseForge.
 
 ## Launcher updates (optional)
 

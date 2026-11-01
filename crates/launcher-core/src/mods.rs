@@ -723,10 +723,10 @@ fn parse_metadata(bytes: &[u8], name: &str, quilt: bool) -> Result<InspectedMod,
                     .and_then(Value::as_str)
                     .filter(|s| valid_id(s))
                     .ok_or_else(invalid)?;
-                if let Some(optional) = declaration.get("optional") {
-                    if optional.as_bool().ok_or_else(invalid)? {
-                        continue;
-                    }
+                if let Some(optional) = declaration.get("optional")
+                    && optional.as_bool().ok_or_else(invalid)?
+                {
+                    continue;
                 }
                 if declaration.contains_key("unless") {
                     continue;
@@ -802,6 +802,7 @@ mod tests {
             isolated: true,
             state: crate::InstanceState::Ready,
             created_at: "".into(),
+            last_launched_at: None,
         }
     }
     #[test]

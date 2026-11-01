@@ -32,13 +32,20 @@
 .headingCopy p { margin-top: 4px; color: var(--color-text-secondary); font-size: 11px; }
 
 .badge {
-  flex: none;
+  /* 显示实例名，可能很长：允许收缩并省略，但保留完整值供悬停查看。
+     不给 max-width 的话，长名字会把标题挤成一两行。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
   padding: 5px 9px;
   border: 1px solid color-mix(in srgb, var(--color-primary-500) 32%, var(--color-border));
   border-radius: 99px;
   background: color-mix(in srgb, var(--color-primary-500) 8%, transparent);
   color: var(--color-primary-text);
   font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -184,4 +191,79 @@
   .field, .detailField { align-items: stretch; flex-direction: column; gap: 8px; }
   .field select, .detailField select, .detailField input { width: 100%; min-width: 0; }
   .actions { align-items: flex-start; flex-direction: column; }
+}
+
+/*
+ * 实例标识。
+ *
+ * 只在嵌入设置面板时出现——那时卡片标题被隐藏，下面「这个实例使用…」里的
+ * "this instance" 就没有前指对象了，用户无法确认自己改的是哪个实例。
+ *
+ * 用一整行而不是塞进标题右侧：实例名可能很长（用户自定义），缩成一个徽标只会
+ * 被截断成「My…」；独占一行才有空间显示到能分辨。
+ */
+.instanceTag {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-bottom: 2px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-primary-500) 26%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-primary-500) 6%, transparent);
+}
+
+.instanceTagLabel {
+  flex: none;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+
+/*
+ * 实例名：可截断但保留完整值（title 属性兜底）。
+ * `min-width: 0` 是 flex 子项能收缩的前提，否则长名字会撑破容器。
+ */
+.instanceTagName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 版本与加载器：次要信息，跟在名字后面做补充。 */
+.instanceTagMeta {
+  flex: none;
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 版本范围的即时反馈。
+ *
+ * 两行分工：
+ *   .detailParsed —— 解析成功，告诉用户"我把它理解成了什么"。
+ *   .detailError  —— 解析失败，指出具体哪一边写错了。
+ * 这一块紧跟在输入框下方（而不是并进提示行），因为它的变化是输入驱动的，
+ * 用户的视线本来就停在输入框上，反馈应该出现在同一处。
+ */
+.detailParsed,
+.detailError {
+  margin: 6px 0 0;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.detailParsed {
+  color: var(--color-primary-text);
+}
+
+.detailError {
+  color: var(--color-danger-500);
 }

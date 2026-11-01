@@ -1,0 +1,12 @@
+{
+  "name": "mfmcl",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MFMCL launcher workspace root; the desktop frontend lives in design/flowlaunch-ui.",
+  "scripts": {
+    "dev": "npm run dev --prefix design/flowlaunch-ui -- --host 127.0.0.1 --port 5173 --strictPort",
+    "build": "npm run build --prefix design/flowlaunch-ui",
+    "typecheck": "npm run typecheck --prefix design/flowlaunch-ui",
+    "tauri": "tauri"
+  }
+}

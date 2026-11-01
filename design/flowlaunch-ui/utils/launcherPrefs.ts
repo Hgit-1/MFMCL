@@ -33,7 +33,9 @@ export const DEFAULT_PREFS: LauncherPrefs = {
   communitySource: 'official', modpackFilenameFormat: '{name}-{version}', modpackMergeMode: 'ask', showGameHints: true, showDebugHints: false,
   theme: 'dark', themePreset: 'ocean', customAccent: '', showGameLog: true,
   javaPath: '', memoryMb: 4096, windowWidth: 1280, windowHeight: 720, extraJvmArgs: '',
-  downloadSource: 'official', maxConcurrentDownloads: 4, connectionsPerFile: 4, aria2Enabled: true,
+  // 'auto' → 后端 `mixed`：镜像优先、官方回退（详见 native.ts 的 prefsToSettings）。
+  // 默认选它是因为官方 CDN 在部分地区很慢，而镜像只在有校验值时才用，不牺牲完整性。
+  downloadSource: 'auto', maxConcurrentDownloads: 4, connectionsPerFile: 4, aria2Enabled: true,
   closeAfterLaunch: false, checkUpdates: true, gameDirectory: '', announcementPolicy: 'notify', cacheDirectory: '', anonymousUsage: false, opacity: 100, hiddenTheme: false, showLauncherLogo: true, backgroundImage: '', backgroundMusic: false, titleBar: 'default', homeSource: 'official',
 };
 
