@@ -181,13 +181,6 @@ function readDeviceMemoryOverride(): number | null {
 }
 
 /**
- * 同步估算设备总内存（MB），给保存流程用。
- *
- * `detectDeviceMemory` 是异步的（桌面版要 invoke 后端），但保存设置时需要立即
- * 得到自动配置的数值写进原生载荷。这里走同一条优先级链，只跳过桌面桥接：
- * 手动指定 > navigator.deviceMemory > 8 GB。
- */
-/**
  * 最近一次探测到的已用内存（MB）。
  *
  * 保存设置时走的是同步路径 `deviceMemoryMbSync`，但自动分配现在要用到真实已用
@@ -196,14 +189,53 @@ function readDeviceMemoryOverride(): number | null {
  */
 let cachedUsedMb: number | undefined;
 
+/**
+ * 最近一次探测到的**真实**总内存（MB）。
+ *
+ * 这个缓存解决的是一个会直接误导用户的问题：`navigator.deviceMemory` 在 Chromium
+ * 里按规范被截断到 8 GB 上限（隐私考量），所以在 64 GB 的机器上同步路径会报
+ * 8 GB。桌面版其实拿得到准确值（后端 `get_system_memory`），但那条路是异步的，
+ * 而保存设置的载荷必须同步组装。
+ *
+ * 于是：探测到准确值就记下来，之后所有同步调用都读它。启动时预热一次
+ * （见 `primeDeviceMemory`），同步路径就不必回落到被截断的浏览器值。
+ */
+let cachedTotalMb: number | undefined;
+
+/**
+ * 在应用启动时预探测一次真实内存，供之后的同步路径使用。
+ *
+ * 为什么必须预热：新手引导、实例设置页、以及每次保存设置的自动配置，走的都是
+ * 同步的 `deviceMemoryMbSync`。不预热的话，一台 64 GB 的机器在引导里会被写成
+ * 「共 8 GB」，自动分配也跟着按 8 GB 算——用户看到的和自己机器的实际情况矛盾。
+ *
+ * 失败时静默返回：拿不到真实值时退回浏览器估算，行为与之前一致，不阻塞启动。
+ */
+export async function primeDeviceMemory(): Promise<void> {
+  try {
+    await detectDeviceMemory();
+  } catch {
+    // 探测是增强信息，不是启动的必要条件。
+  }
+}
+
 /** 同步取「上次探测到的已用量」。没探测过或平台不支持时返回 undefined。 */
 export function lastKnownUsedMb(): number | undefined {
   return cachedUsedMb;
 }
 
+/**
+ * 同步估算设备总内存（MB），给保存流程用。
+ *
+ * 优先级：手动指定 > 上次探测到的真实值 > navigator.deviceMemory > 8 GB 兜底。
+ *
+ * 中间那一层是关键：`navigator.deviceMemory` 被截断到 8 GB，只该作为最后手段。
+ * 桌面版后端给的是真实容量，缓存下来之后同步路径就能给出正确数字。
+ */
 export function deviceMemoryMbSync(): number {
   const override = readDeviceMemoryOverride();
   if (override) return override;
+  if (cachedTotalMb !== undefined) return cachedTotalMb;
   const reported = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
   if (typeof reported === 'number' && Number.isFinite(reported) && reported > 0) {
     return Math.round(reported * 1024);
@@ -234,19 +266,32 @@ export async function detectDeviceMemory(): Promise<DeviceMemory> {
    */
   try {
     const info = await nativeGetSystemMemory();
-    if (info && Number.isFinite(info.totalMb) && info.totalMb > 0) {
+    /*
+     * 只在桌面版采信这个值。
+     *
+     * 浏览器预览下 `getSystemMemory` 返回的是 8 GB 占位，不是探测结果；如果
+     * 也当成真实值缓存起来，64 GB 的机器在预览里会一直显示「共 8 GB」，而且
+     * 缓存之后连 `navigator.deviceMemory` 都读不到了——看起来像探测坏了。
+     */
+    if (isDesktopShell() && info && Number.isFinite(info.totalMb) && info.totalMb > 0) {
       // usedMb 可能是 null（后端 JSON 里 Option::None）。这里归一化成
       // undefined，避免下游把 null 当数字用。
       const usedMb = typeof info.usedMb === 'number' && Number.isFinite(info.usedMb) && info.usedMb >= 0
         ? Math.min(info.usedMb, info.totalMb)
         : undefined;
       cachedUsedMb = usedMb;
+      /*
+       * 缓存真实总内存，供同步路径使用。
+       *
+       * 桌面版的值来自后端，是这台机器的实际容量。缓存它之后，新手引导、实例
+       * 设置页和保存载荷都能拿到正确数字，而不是浏览器那个被截断到 8 GB 的值。
+       */
+      cachedTotalMb = info.totalMb;
       return {
         totalMb: info.totalMb,
         usedMb,
-        // 预览模式的占位值不该被标成精确值。
-        exact: isDesktopShell(),
-        source: isDesktopShell() ? 'desktop' : 'browser',
+        exact: true,
+        source: 'desktop',
         note: loc('memory.detectedDesktop', { size: `${(info.totalMb / 1024).toFixed(1)} GB` }),
       };
     }
@@ -254,8 +299,13 @@ export async function detectDeviceMemory(): Promise<DeviceMemory> {
 
   const reported = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
   if (typeof reported === 'number' && Number.isFinite(reported) && reported > 0) {
+    /*
+     * 浏览器估算。注意这个值被规范封顶在 8 GB，只能当「至少这么大」的线索，
+     * 所以标成 `exact: false` 并允许用户在内存设置里手动改。
+     */
+    cachedTotalMb = Math.round(reported * 1024);
     return {
-      totalMb: Math.round(reported * 1024),
+      totalMb: cachedTotalMb,
       exact: false,
       source: 'browser',
       note: loc('memory.detectedBrowser', { size: `${reported} GB` }),

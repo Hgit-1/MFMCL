@@ -14,6 +14,7 @@ import { PluginWorkspace } from '../components/PluginWorkspace';
 import { LOCALES, useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
 import { readPrefs, DEFAULT_PREFS, SETTINGS_STORAGE_KEY, type LauncherPrefs } from '../utils/launcherPrefs';
+import { primeDeviceMemory } from '../utils/memory';
 import { isOnboardingPending, markOnboardingComplete, resetOnboarding } from '../utils/onboarding';
 import { applyMotionLevel, readMotionLevel } from '../utils/motion';
 import {
@@ -365,6 +366,21 @@ function App() {
     const onChange = () => applyMotionLevel(readMotionLevel());
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
+  }, []);
+
+  /**
+   * 启动时探测一次真实内存。
+   *
+   * 必须在首屏渲染前尽早发起：新手引导的内存步骤、实例设置页，以及每次保存
+   * 设置时的自动分配，走的都是同步的 `deviceMemoryMbSync`。不预热的话，同步
+   * 路径只能读到 `navigator.deviceMemory`——它在 Chromium 里被规范截断到 8 GB，
+   * 于是 64 GB 的机器在引导里会显示成「共 8 GB」，自动分配也按 8 GB 算。
+   *
+   * 不 await：探测是增强信息，不该挡住界面。慢一步拿到时，已经打开的界面会
+   * 通过各自的 `detectDeviceMemory` 调用拿到正确值。
+   */
+  useEffect(() => {
+    void primeDeviceMemory();
   }, []);
   const { t, language } = useI18n();
   const locale = LOCALES[language];

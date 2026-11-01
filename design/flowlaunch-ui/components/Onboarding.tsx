@@ -51,6 +51,7 @@ import type { MessageKey } from '../utils/i18n/messages/zh-CN';
 import {
   MIN_MEMORY_MB,
   autoAllocateMb,
+  detectDeviceMemory,
   deviceMemoryMbSync,
   lastKnownUsedMb,
   maxSliderIndexForTotal,
@@ -164,7 +165,29 @@ export function Onboarding({
   };
 
   // --- 内存 ---------------------------------------------------------------
-  const totalGb = useMemo(() => Math.max(2, deviceMemoryMbSync() / 1024), []);
+  /*
+   * 先用同步估算给出初值，进入这一步时再用后端探测覆盖。
+   *
+   * 为什么不能只用同步值：`deviceMemoryMbSync` 在没有探测结果时会读
+   * `navigator.deviceMemory`，而这个值在 Chromium 里被规范截断到 8 GB——
+   * 一台 64 GB 的机器会在这里显示「共 8 GB」，自动分配也跟着算错。桌面版
+   * 能拿到真实容量，只是要异步问一次。
+   *
+   * 用 state 而不是 useMemo：探测结果需要触发重算，否则滑条上限与自动值会
+   * 一直停在被截断的数字上。
+   */
+  const [totalMb, setTotalMb] = useState(() => deviceMemoryMbSync());
+  useEffect(() => {
+    if (step !== 'memory') return;
+    let alive = true;
+    void detectDeviceMemory().then(result => {
+      // 用户手动指定过容量时以他为准，探测结果不覆盖。
+      if (alive && result.source !== 'manual') setTotalMb(result.totalMb);
+    });
+    return () => { alive = false; };
+  }, [step]);
+
+  const totalGb = Math.max(2, totalMb / 1024);
   const maxIndex = Math.max(MIN_SLIDER_INDEX + 1, maxSliderIndexForTotal(totalGb));
   const autoMb = useMemo(
     () => autoAllocateMb({ totalMb: totalGb * 1024, usedMb: lastKnownUsedMb() }),

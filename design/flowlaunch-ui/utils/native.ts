@@ -1001,7 +1001,14 @@ export async function skinSelectProfile(pendingId: string, profileId: string | n
 
 export async function getSystemMemory(): Promise<SystemMemoryInfo> {
   if (!isDesktopShell()) {
-    // 浏览器拿不到整机内存；用 8 GB 占位并标成估算（见 MemorySection 的文案）。
+    /*
+     * 浏览器里没有整机内存的 API。
+     *
+     * 这里返回 8 GB 占位会让预览界面显示「共 8 GB」并标成估算——在 64 GB 的
+     * 开发机上看起来像是探测错了。`detectDeviceMemory` 因此改成「这个值不可信
+     * 时继续往下走，用 `navigator.deviceMemory`」，两者配合后预览也能给出一个
+     * 与浏览器一致的估算值，而不是一个看起来像 bug 的固定数字。
+     */
     return { totalMb: 8192, usedMb: null, availableMb: null, recommendedMb: 2048, maximumGameMb: 6144 }
   }
   return invoke<SystemMemoryInfo>('get_system_memory')
