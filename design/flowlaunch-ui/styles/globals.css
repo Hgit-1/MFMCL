@@ -201,6 +201,55 @@
   box-sizing: border-box;
 }
 
+/*
+ * 下拉框统一外观。
+ *
+ * 为什么必须在这里重置：`<select>` 由 WebKitGTK 用系统原生控件绘制。在 Linux 上
+ * 那是一个圆角方框加**黑色实心三角**，而且不完全理会 `border` / `border-radius`
+ * ——同一个界面里输入框是浅色描边、下拉框却顶着一个深色实心三角，看着像两种
+ * 风格拼在一起。
+ *
+ * 关掉系统绘制后，箭头用内联 SVG 背景图。不用 `currentColor` 或 CSS 变量是因为
+ * data URL 里的 SVG 拿不到页面变量；所以按主题给出两份箭头，深色用浅灰、
+ * 浅色用中灰。两份都是矢量，任何缩放都清晰，也不会像渐变拼 V 形那样出现毛边。
+ */
+select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px !important;
+  cursor: pointer;
+  background-repeat: no-repeat;
+  /* 箭头垂直居中、距右边框 10px；10×6 是图形的原始尺寸。 */
+  background-position: right 10px center;
+  background-size: 10px 6px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2364748b' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* 深色主题：箭头提亮，否则在深底上几乎看不见。 */
+[data-theme="dark"] select:not([multiple]) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23a8b3c4' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/*
+ * 禁用态。
+ *
+ * 用降透明度而不是只改颜色：禁用的下拉框仍然要能看清当前值，否则用户以为
+ * 这一项没有配置。系统默认的灰色文字在深色主题下几乎不可读。
+ */
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/*
+ * 选项列表由系统绘制，无法完全控制。这里只保证展开后不是白底黑字——
+ * 那是深色主题下最刺眼的不一致。
+ */
+select option {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
 html, body, #root {
   width: 100%;
   height: 100%;
