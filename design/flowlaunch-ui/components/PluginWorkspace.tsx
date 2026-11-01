@@ -30,6 +30,7 @@ import {
 import { Modal } from './Modal';
 import { useI18n } from '../utils/i18n';
 import { renderLocalized, type Localized } from '../utils/i18n/localized';
+import { confirmAction } from '../utils/confirm';
 import {
   allPlugins,
   enabledPluginCount,
@@ -292,14 +293,16 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
   };
 
   const remove = (plugin: LauncherPlugin) => {
-    if (!window.confirm(t('plugin.removeConfirm', { values: { name: text(plugin.name) } }))) return;
-    const enabled = { ...store.enabled };
-    const options = { ...store.options };
-    delete enabled[plugin.id];
-    delete options[plugin.id];
-    updateStore({ ...store, custom: store.custom.filter(item => item.id !== plugin.id), enabled, options });
-    if (expanded === plugin.id) setExpanded(null);
-    onPendingRestartChange(pendingRestart.filter(id => id !== plugin.id));
+    void (async () => {
+      if (!(await confirmAction(t('plugin.removeConfirm', { values: { name: text(plugin.name) } })))) return;
+      const enabled = { ...store.enabled };
+      const options = { ...store.options };
+      delete enabled[plugin.id];
+      delete options[plugin.id];
+      updateStore({ ...store, custom: store.custom.filter(item => item.id !== plugin.id), enabled, options });
+      if (expanded === plugin.id) setExpanded(null);
+      onPendingRestartChange(pendingRestart.filter(id => id !== plugin.id));
+    })();
   };
 
   const closeInstall = () => {

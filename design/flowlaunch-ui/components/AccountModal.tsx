@@ -6,6 +6,7 @@ import { DefaultUserAvatar } from './DefaultUserAvatar';
 import type { Account } from '../types';
 import { useI18n } from '../utils/i18n';
 import { addOfflineAccount, errorText, microsoftLogin, removeAccount, skinLogin, skinSelectProfile } from '../utils/native';
+import { confirmAction } from '../utils/confirm';
 import { toAccount } from '../utils/adapters';
 import styles from './AccountModal.module.css';
 
@@ -178,7 +179,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
    */
   const handleRemoveAccount = async (account: Account) => {
     const extra = account.type === 'offline' ? '' : '\n\n系统凭据库中保存的登录令牌也会一并删除。';
-    if (!window.confirm(`移除账户「${account.username}」？${extra}`)) return;
+    if (!(await confirmAction(`移除账户「${account.username}」？${extra}`))) return;
     setBusy(true);
     try {
       await removeAccount(account.id);

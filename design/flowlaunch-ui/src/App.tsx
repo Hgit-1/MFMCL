@@ -15,6 +15,7 @@ import { LOCALES, useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
 import { readPrefs, DEFAULT_PREFS, SETTINGS_STORAGE_KEY, type LauncherPrefs } from '../utils/launcherPrefs';
 import { primeDeviceMemory } from '../utils/memory';
+import { confirmAction } from '../utils/confirm';
 import { isOnboardingPending, markOnboardingComplete, resetOnboarding } from '../utils/onboarding';
 import { applyMotionLevel, readMotionLevel } from '../utils/motion';
 import {
@@ -1187,7 +1188,13 @@ function App() {
       }
       let offlineConfirmed = false;
       if (account.type === 'offline') {
-        offlineConfirmed = window.confirm(
+        /*
+         * 必须 await。`window.confirm` 已经被 tauri-plugin-dialog 替换成 async
+         * 函数，直接取返回值拿到的是 Promise：`!promise` 恒为假，取消也照常启动；
+         * 而 Promise 作为布尔参数传给后端会序列化成 `{}`，触发
+         * `invalid type: map, expected a boolean`。
+         */
+        offlineConfirmed = await confirmAction(
           `你正在使用离线档案「${account.username}」启动。\n\n离线档案不验证 Microsoft 游戏授权，通常只能连接允许离线身份的服务器。仍要继续吗？`,
         );
         if (!offlineConfirmed) return;
@@ -1209,8 +1216,10 @@ function App() {
 
   /** 停止游戏进程。需要二次确认：未保存的进度会丢失。 */
   const stopInstance = (instanceId: string) => {
-    if (!window.confirm('关闭正在运行的 Minecraft 进程？未保存的游戏进度可能会丢失。')) return;
-    void stopGame(instanceId).catch(error => setToast(errorText(error, '无法关闭游戏进程。')));
+    void (async () => {
+      if (!(await confirmAction('关闭正在运行的 Minecraft 进程？未保存的游戏进度可能会丢失。'))) return;
+      void stopGame(instanceId).catch(error => setToast(errorText(error, '无法关闭游戏进程。')));
+    })();
   };
 
   /**
@@ -1261,13 +1270,14 @@ function App() {
    */
   const signOut = () => {
     if (!currentAccount) return;
-    if (!window.confirm(t('app.signOutConfirm', { values: { name: currentAccount.username } }))) return;
-    const other = recentAccounts.find(item => item.id !== currentAccount.id);
-    if (!other) {
-      setToast('这是唯一的账户；请先添加另一个账户再退出。');
-      return;
-    }
+    const account = currentAccount;
     void (async () => {
+      if (!(await confirmAction(t('app.signOutConfirm', { values: { name: account.username } })))) return;
+      const other = recentAccounts.find(item => item.id !== account.id);
+      if (!other) {
+        setToast('这是唯一的账户；请先添加另一个账户再退出。');
+        return;
+      }
       try {
         await selectAccountNative(other.id);
         const profiles = await listAccounts();
