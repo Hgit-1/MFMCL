@@ -1,0 +1,90 @@
+{
+  "model": "lmstudio-community/LFM3-1.7B-GGUF LFM3-1.7B-Q8_0.gguf",
+  "sha256": "15ce5334f7551ebc193dcbc21ad12acfeb68cbb17cbf08a736ae3482ffe4b098",
+  "correct": 10,
+  "total": 10,
+  "accuracy": 100.0,
+  "averageSeconds": 8.6,
+  "results": [
+    {
+      "file": "out-of-memory.log",
+      "expected": "堆内存不足",
+      "ok": true,
+      "why": "命中 ['内存', '堆', 'heap', 'OutOfMemory']",
+      "seconds": 9.0,
+      "answer": "说明：崩溃日志显示在渲染线程中捕获到 `java.lang.OutOfMemoryError: Java heap space` 错误，具体出现在 `RenderChunk.rebuild` 方法调用时，同时有“Unreported exception thrown!” 标记，这通常意味着游戏的内存使用超过了 Java 虚拟机（JVM）可用的堆空间限制。\n\n步骤：\n1. 关闭 Minecraft 的所有模组（尤其是加载成功但可能占用大量资源的模组），先卸载或禁用那些不必要的模组。\n2. 检查电脑是否有其他运行的程序占用内存，或者尝试降低游戏的图形设置（如渲染分辨率）以减轻内存压力。\n\n置信度：高"
+    },
+    {
+      "file": "old-java.log",
+      "expected": "Java 版本过低",
+      "ok": true,
+      "why": "命中 ['Java 版本']",
+      "seconds": 10.5,
+      "answer": "说明：崩溃日志显示在加载 Fabric Loader 时，Java 版本不兼容导致无法加载模组 `net/fabricmc/loader/impl/launch/knot/Knot`，具体错误是“Java Runtime only recognizes class file versions up to 52.0, but Knot requires version 61.0”。这通常是因为系统安装的 Java 版本太新，无法运行旧版 Fabric Loader。\n\n步骤：\n1. 检查当前系统的 Java 版本，确保它是 8.0.0_392 或更低版本（如 8.0.4、7.10+），而不是 11 或更高版本。\n2. 如果 Java 版本确实太新，下载一个兼容的 Java 版本（例如 Oracle JDK 8 或 OpenJDK 8）并重新启动 Minecraft。\n\n置信度：高"
+    },
+    {
+      "file": "missing-mod-dependency.log",
+      "expected": "缺少前置模组 architectury",
+      "ok": true,
+      "why": "命中 ['architectury', '依赖']",
+      "seconds": 9.8,
+      "answer": "说明：崩溃日志显示在加载 Forge 47.2.20 时出现“Missing or unsupported mandatory dependencies”错误，具体是缺少模组 'architectury'（创建模组 create 需要这个模组），并且日志中明确标注了 `net.minecraftforge.fml.LoadingFailedException: Missing dependency architectury`。这说明游戏启动时无法加载某个依赖的模组。\n\n步骤：\n1. 关闭 Minecraft，删除 Forge 目录（例如在 `Saved Games/My Games/Forge` 下），然后重新安装 Forge 47.2.20 并重新加载。\n2. 在 Forge 的 Mod Loader 中手动添加或下载 'architectury' 模组，确保版本正确，然后重启游戏。\n\n置信度：高"
+    },
+    {
+      "file": "duplicate-mod.log",
+      "expected": "同一个模组装了两次",
+      "ok": true,
+      "why": "命中 ['重复']",
+      "seconds": 8.0,
+      "answer": "说明：崩溃是因为系统试图加载同一个模组（examplemod）两次，这通常由模组冲突或重复安装引起，例如你已经在游戏里安装了 examplemod 并且又尝试再安装一次，或者某个模组文件被错误地放置在了已有模组的目录下。\n\n步骤：\n1. 关闭 Minecraft 并删除所有 mod 文件夹（比如右键工作区或 mods 目录选择全部删除）。\n2. 重新安装 examplemod：在游戏主界面点击“模组”选项卡，找到 examplemod 并点击“重新安装”或“卸载后重新添加”。\n\n置信度：中"
+    },
+    {
+      "file": "heap-too-large.log",
+      "expected": "分配的堆内存超过系统可给的上限",
+      "ok": true,
+      "why": "命中 ['内存', '堆', 'heap']",
+      "seconds": 7.9,
+      "answer": "说明：崩溃日志显示加载了 Fabric Loader 和多个模组（如 sodium、SpongePowered MIXIN），但在初始化虚拟机（VM）时出现“Could not reserve enough space for 16777216KB object heap”错误，导致游戏无法启动。这通常是内存不足或堆内存分配失败的问题。\n\n步骤：\n1. 关闭 Minecraft 运行中的所有模组，重新加载游戏。\n2. 确保你的电脑有足够的空闲内存（建议至少 4GB 系统 RAM），并且关闭其他资源占用大量内存的程序。\n\n置信度：中"
+    },
+    {
+      "file": "hs-err-gpu.log",
+      "expected": "显卡驱动崩溃",
+      "ok": true,
+      "why": "命中 ['驱动', 'nvoglv']",
+      "seconds": 8.0,
+      "answer": "说明：崩溃是 Java Runtime Environment 因访问受保护的内存区域而导致的 EXCEPTION_ACCESS_VIOLATION，通常由 Minecraft 运行时与游戏中的某些 DLL（如 nvoglv64.dll）冲突触发，可能是由于已安装了不兼容的模组或系统驱动干扰了 JVM 的安全内存访问。  \n步骤：1. 关闭所有运行中的模组，特别是那些可能引入此 DLL 的模组；2. 重启 Minecraft 并确保系统上的 Java 版本与游戏要求匹配（如 1.8.0-RELEASE）。  \n置信度：中"
+    },
+    {
+      "file": "opengl-failure.log",
+      "expected": "OpenGL / 图形环境创建失败",
+      "ok": true,
+      "why": "命中 ['OpenGL', '图形', '显卡', 'GLFW', '驱动']",
+      "seconds": 8.8,
+      "answer": "说明：崩溃日志显示在渲染线程中出现了 GLFW 错误“Failed to load GLX”（GLX: Failed to load GLX），随后在创建 OpenGL 上下文时失败，最终导致游戏崩溃。这通常与系统无法正确初始化图形硬件或缺少必要的驱动/扩展有关。\n\n步骤：\n1. 检查你的电脑是否开启了显卡（NVIDIA、AMD Radeon、Intel Graphics）。如果没有显卡安装了虚拟现实或图形驱动程序。\n2. 尝试在游戏启动前运行 `glxinfo | grep errors` 命令，看看是否有相关错误信息。\n\n置信度：中"
+    },
+    {
+      "file": "permission-denied.log",
+      "expected": "文件权限不足",
+      "ok": true,
+      "why": "命中 ['权限', 'AccessDenied', '写入']",
+      "seconds": 9.3,
+      "answer": "说明：崩溃日志显示 java.nio.file.AccessDeniedException 发生在 /home/u/.minecraft/saves/world/level.dat，这通常是因为 Minecraft 无法读取或写入 saves 文件，可能是游戏运行在没有正确权限的用户账户，或者文件路径被锁定或访问被拒绝。需要检查你的 Minecraft 启动目录是否有正确的权限，或者确保游戏已登录到服务器端并拥有写权限。\n\n步骤：\n1. 确保你正在使用一个拥有写入 saves 文件权限的用户账户（例如你的本地用户账户），并且该文件所在目录（/home/u/.minecraft/saves）是可访问的。\n2. 重新启动 Minecraft 或在游戏内运行“文件管理”（File Management）查看 saves 文件权限并修复。\n\n置信度：中"
+    },
+    {
+      "file": "watchdog-timeout.log",
+      "expected": "服务端线程卡死被看门狗终止",
+      "ok": true,
+      "why": "命中 ['watchdog', '超时']",
+      "seconds": 6.9,
+      "answer": "说明：崩溃日志显示“java.lang.ThreadDeath: Server thread terminated” 并由 watchdog timeout 引起，这通常是 Minecraft 服务器的守护线程因超时而关闭，常见于高负载或网络延迟导致的守护进程自动重启。需要检查服务器是否在处理过多玩家连接或资源耗尽。\n\n步骤：\n1. 停止并关闭 Minecraft 服务器进程（例如通过命令行运行 `stop` 或 `shutdown`）。\n2. 等待几分钟后重新启动服务器，确保没有其他程序占用同一端口。\n\n置信度：高"
+    },
+    {
+      "file": "clean-launch.log",
+      "expected": "没有崩溃（日志正常）",
+      "ok": true,
+      "why": "命中 ['没有', '无法确定']",
+      "seconds": 8.2,
+      "answer": "说明：崩溃日志显示加载了 Fabric Loader、多个模组（如 sodium、lithium）以及 SpongePowered MIXIN 子系统，但没有出现具体的错误信息或崩溃原因，无法确定是哪个模块导致崩溃，需要查看完整的 crash log 或游戏后台日志中的异常堆栈。\n\n步骤：\n1. 关闭 Minecraft 并重启，尝试卸载其中一个模组（比如 sodium 或 lithium）以简化环境。\n2. 重新启动游戏并观察是否立即崩溃或出现错误信息。\n\n置信度：中"
+    }
+  ]
+}
