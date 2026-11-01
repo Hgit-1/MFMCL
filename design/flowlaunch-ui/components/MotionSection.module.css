@@ -1,0 +1,140 @@
+/* 动效设置区块。
+ *
+ * 视觉上沿用语言选择器那一套（图标 + 两行说明 + 右侧按钮组），因为两者都是
+ * 「从几个固定档里选一个」的设置，放在同一页时应当看起来是同一类控件。
+ */
+
+.group {
+  margin: 0 0 23px;
+}
+
+.group h3 {
+  margin: 0 0 9px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 11px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+}
+
+.copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.copy > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.copy strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.copy span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--color-primary-text);
+}
+
+/*
+ * 四档按钮排成 2×2。
+ *
+ * 不用一行四列：档名有长有短（「标准」两字 vs「跟随系统」四字），一行四列会让
+ * 每个格子只有 60 多像素，中文被折成两行。2×2 每格宽一倍，且四档正好对称。
+ */
+.options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  flex: 0 0 auto;
+  width: min(280px, 46%);
+}
+
+.options button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease),
+              background var(--duration-fast) var(--ease),
+              color var(--duration-fast) var(--ease);
+}
+
+.options button:hover {
+  color: var(--color-text-primary);
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+}
+
+.options button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary-500) 60%, transparent);
+  outline-offset: 1px;
+}
+
+/* 选中项沿用设计系统的 tonal 组合（底色 + 文字成对派生，≥4.5:1）。 */
+.options .active,
+.options .active:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 60%, var(--color-border));
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+  font-weight: 600;
+}
+
+.current {
+  margin: 9px 0 0;
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+@media (max-width: 700px) {
+  .row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .options {
+    width: 100%;
+  }
+}
+
+/*
+ * 关闭动效时，这个区块自己的按钮不要有过渡。
+ *
+ * 否则会出现一个奇怪的状态：用户点了「关闭」，按钮却在用刚被关掉的那套过渡
+ * 淡出——看着像没生效。`:where()` 保持优先级为 0，不覆盖上面的具体规则。
+ */
+:where([data-motion='off']) .options button {
+  transition: none;
+}

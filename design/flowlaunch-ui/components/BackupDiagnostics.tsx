@@ -18,6 +18,7 @@ import {
   FolderOpen,
   RefreshCw,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import { Button } from './Button';
 import { Input } from './Input';
@@ -36,6 +37,8 @@ import {
   type DiagnosticSummary,
 } from '../utils/native';
 import type { GameInstance } from '../types';
+import { CrashAnalysisPanel } from './CrashAnalysis';
+import { getInstanceCrashReport } from '../utils/native';
 import styles from './BackupDiagnostics.module.css';
 
 interface BackupDiagnosticsProps {
@@ -64,6 +67,15 @@ export function BackupDiagnostics({ instance, onNotice, onRestored }: BackupDiag
 
   // --- 诊断 -----------------------------------------------------------------
   const [summary, setSummary] = useState<DiagnosticSummary | null>(null);
+  /*
+   * 最近一份崩溃报告的正文。
+   *
+   * 只在用户点按钮时读，不在进入页面时自动读：多数人是来看备份的，主动去翻
+   * crash-reports 目录、再把几 MB 文本读进内存，对他们是纯开销。
+   */
+  const [reportText, setReportText] = useState('');
+  const [reportName, setReportName] = useState('');
+  const [loadingReport, setLoadingReport] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [diagnosticDir, setDiagnosticDir] = useState('');
@@ -74,6 +86,8 @@ export function BackupDiagnostics({ instance, onNotice, onRestored }: BackupDiag
     setPreview(null);
     setRestoreName('');
     setSummary(null);
+    setReportText('');
+    setReportName('');
   }, [instance.id]);
 
   const chooseBackupDir = async () => {
@@ -127,6 +141,25 @@ export function BackupDiagnostics({ instance, onNotice, onRestored }: BackupDiag
       onNotice(errorText(error, '恢复备份失败。'));
     } finally {
       setRestoring(false);
+    }
+  };
+
+  const loadCrashReport = async () => {
+    setLoadingReport(true);
+    try {
+      const report = await getInstanceCrashReport(instance.id);
+      if (!report.found || !report.content) {
+        onNotice(t('crash.noReport'));
+        setReportText('');
+        setReportName('');
+        return;
+      }
+      setReportText(report.content);
+      setReportName(report.name ?? '');
+    } catch (error) {
+      onNotice(errorText(error, '无法读取崩溃报告。'));
+    } finally {
+      setLoadingReport(false);
     }
   };
 
@@ -359,6 +392,45 @@ export function BackupDiagnostics({ instance, onNotice, onRestored }: BackupDiag
             {t('diagnostics.export')}
           </Button>
         </div>
+      </section>
+
+      {/*
+        崩溃日志分析。
+        单独一张卡片而不是塞进上面的「诊断摘要」：那一块是后端按实例目录扫出来的
+        汇总，这一块是「读一份具体日志、由模型解释」。两者数据来源与耗时都不同
+        （毫秒 vs 十几秒），混在一张卡里会让「点了哪个按钮」变得不清楚。
+      */}
+      <section className={styles.card}>
+        <header className={styles.head}>
+          <span className={styles.icon}><Sparkles size={16} strokeWidth={1.8} /></span>
+          <div>
+            <h2>{t('crash.title')}</h2>
+            <p>{reportName ? t('crash.reportLoaded', { values: { name: reportName } }) : t('crash.loadHint')}</p>
+          </div>
+        </header>
+
+        <div className={styles.actions}>
+          <Button
+            variant="ghost"
+            icon={<FileSearch size={13} />}
+            loading={loadingReport}
+            onClick={() => void loadCrashReport()}
+          >
+            {t('crash.loadReport')}
+          </Button>
+        </div>
+
+        {/*
+          有报告才渲染面板：没有日志时它只是一个永远禁用的按钮，占地方又让人
+          反复去点。按钮在上，面板在下——顺序对应「先拿到日志，再分析」。
+        */}
+        {reportText && (
+          <CrashAnalysisPanel
+            log={reportText}
+            environment={{ modCount: instance.modCount, gameVersion: instance.version, loader: instance.loader }}
+            onNotice={onNotice}
+          />
+        )}
       </section>
     </div>
   );

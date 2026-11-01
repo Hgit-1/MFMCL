@@ -1,0 +1,413 @@
+/* 崩溃分析面板。
+ *
+ * 视觉上与「备份与诊断」里的其它卡片一致（同一边框、同一字号阶梯），只有一处
+ * 刻意的差异：**模型生成的文字用自己的视觉层**（左侧细边 + 更淡的文字）。原因是
+ * 规则结论与模型解释的可信度不同，如果两者长得一样，用户会把「可能就是模组冲突」
+ * 当成诊断结果去照做。
+ */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-base);
+  background: var(--color-bg-secondary);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.headCopy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 200px;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.headCopy strong {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.headCopy span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.note {
+  margin: 0;
+  color: var(--color-text-disabled);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+/* --- 进度 ---------------------------------------------------------------- */
+
+/*
+ * 不确定进度条：一条短光带在轨道上来回滑动。
+ * 规则阶段只有几毫秒到几十毫秒，用户需要的只是「点击生效了」，而不是百分比。
+ */
+.progressRow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.progressTrack {
+  position: relative;
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--color-bg-primary);
+}
+
+.progressTrack i {
+  position: absolute;
+  inset-block: 0;
+  width: 38%;
+  border-radius: inherit;
+  background: var(--color-primary-solid);
+  animation: crashSlide 1.05s ease-in-out infinite;
+}
+
+@keyframes crashSlide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+.progressText {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+/* --- 结果 ---------------------------------------------------------------- */
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cause {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-primary-500) 30%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-primary-500) 7%, var(--color-bg-elevated));
+}
+
+.causeTag {
+  color: var(--color-primary-text);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .06em;
+}
+
+.cause strong {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.cause p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.findings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.finding {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-elevated);
+}
+
+.findingHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.findingHead strong {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.confidence {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.confHigh {
+  background: color-mix(in srgb, var(--color-danger-500) 15%, transparent);
+  color: var(--color-danger-500);
+}
+
+.confMedium {
+  background: color-mix(in srgb, var(--color-warning-500, #f59e0b) 18%, transparent);
+  color: color-mix(in srgb, var(--color-warning-500, #f59e0b) 75%, var(--color-text-primary));
+}
+
+.explanation {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--color-text-primary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  list-style: none;
+  color: var(--color-text-disabled);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+/* 证据是日志行，可能很长：单行省略，避免把卡片撑宽。 */
+.evidence li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.noMatch {
+  margin: 0;
+  padding: 11px 12px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* --- 模型区域 ------------------------------------------------------------ */
+
+/*
+ * 左侧细边 + 更淡的文字 = 「这是模型的解释，不是规则结论」。
+ * 这个视觉差异是这套界面的核心约束，改版时不要把它和上面的 `.finding` 合并。
+ */
+.modelBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-left: 2px solid color-mix(in srgb, var(--color-secondary-500, #8b7cff) 55%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-secondary-500, #8b7cff) 5%, var(--color-bg-secondary));
+}
+
+.modelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.modelTag,
+.modelStatus,
+.modelFailed,
+.modelDone {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.modelTag {
+  color: color-mix(in srgb, var(--color-secondary-500, #8b7cff) 80%, var(--color-text-primary));
+}
+
+.modelStatus {
+  color: var(--color-text-secondary);
+}
+
+.modelFailed {
+  color: var(--color-danger-500);
+}
+
+.modelDone {
+  color: color-mix(in srgb, var(--color-success-500, #10b981) 70%, var(--color-text-primary));
+}
+
+.modelText {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 11px;
+  line-height: 1.75;
+  /* 模型输出的中文可能没有换行，长串要能断行而不是撑出横向滚动。 */
+  overflow-wrap: anywhere;
+}
+
+/* 生成中的光标：正在追加文字时闪烁，是「还在动」最直接的证据。 */
+.cursor {
+  display: inline-block;
+  width: 2px;
+  height: 12px;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--color-primary-solid);
+  animation: crashCursor 1s steps(2, start) infinite;
+}
+
+@keyframes crashCursor {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+.pending {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+/* 三点跳动：还没有第一个 token 时的「正在读」。 */
+.dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 3px;
+}
+
+.dots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--color-text-secondary);
+  animation: crashDot 1.2s ease-in-out infinite;
+}
+
+.dots i:nth-child(2) { animation-delay: .18s; }
+.dots i:nth-child(3) { animation-delay: .36s; }
+
+@keyframes crashDot {
+  0%, 60%, 100% { opacity: .3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
+.modelErrorNote {
+  margin: 0;
+  color: var(--color-text-disabled);
+  font-size: 9px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 步骤来源说明。
+ * 这句话是整套设计里最重要的一行文字：它告诉用户，「怎么修」不是模型想出来的。
+ * 删掉它，模型推测就会看起来像可执行的医嘱。
+ */
+.sourceNote {
+  margin: 0;
+  color: var(--color-text-disabled);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--color-text-disabled);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.warnings li {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.warnings svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.footNote {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-text-disabled);
+  font-size: 9px;
+}
+
+.spin {
+  animation: crashSpin .9s linear infinite;
+}
+
+@keyframes crashSpin {
+  to { transform: rotate(360deg); }
+}
+
+/*
+ * 减少动态效果。
+ * 动画是「正在工作」的信号，完全停掉会让界面看起来卡住。所以保留状态，只把
+ * 连续变换换成静态呈现：光带铺满、光标常亮、三点不动。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .progressTrack i { width: 100%; animation: none; opacity: .45; }
+  .cursor { animation: none; opacity: .8; }
+  .dots i { animation: none; opacity: .6; }
+  .spin { animation-duration: 3s; }
+}

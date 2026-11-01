@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Activity, Download, Gamepad2, HardDrive, Palette, RotateCcw, Search, Settings2, ShieldCheck, SlidersHorizontal, Terminal, X } from 'lucide-react';
 import type { GameInstance } from '../types';
 import { applyAccent as applyAccentRamp } from '../utils/accent';
+import { Button } from './Button';
 import { JavaSettingsSection } from './JavaSettingsSection';
 import { MemorySection } from './MemorySection';
 import { DEFAULT_PREFS, SETTINGS_STORAGE_KEY, readPrefs, type LauncherPrefs, type ThemeMode } from '../utils/launcherPrefs';
@@ -25,10 +26,14 @@ import { detectJavaRuntimes, importJavaRuntime, revealJavaFolder } from '../util
 import { LauncherUpdateCard } from './LauncherUpdateCard';
 import { BackgroundSection } from './BackgroundSection';
 import { CurseForgeKeyCard } from './CurseForgeKeyCard';
+import { ModelDownloadCard } from './ModelDownloadCard';
+import { MotionSection } from './MotionSection';
+import { readMotionLevel, type MotionLevel } from '../utils/motion';
+import { LauncherLogCard } from './LauncherLogCard';
 import { readBackgroundSetting, saveBackgroundSetting, type BackgroundSetting } from '../utils/background';
 import styles from './SettingsPanel.module.css';
 
-type TabId = 'general' | 'game' | 'java' | 'download' | 'appearance' | 'advanced';
+export type TabId = 'general' | 'game' | 'java' | 'download' | 'appearance' | 'advanced';
 export type { JavaRuntime } from '../utils/java';
 // 标签与说明从词典取，这里只保留结构和图标。
 const tabs: { id: TabId; labelKey: MessageKey; captionKey: MessageKey; icon: React.ReactNode }[] = [
@@ -65,9 +70,11 @@ type SettingsPanelProps = {
   onNotice?: (message: string) => void;
   /** 当前解析出的主题，供背景预览选底色。 */
   dark: boolean;
+  /** 重新运行首次引导。高级页的「重新运行引导」用它。 */
+  onRerunOnboarding?: () => void;
 };
 
-export function SettingsPanel({ theme, onThemeChange, onClose, instance, initialTab, onJavaRuntimesChange, onGlobalJavaChange, onInstanceJavaChange, onSaveSettings, onBackgroundChange, onNotice, dark }: SettingsPanelProps) {
+export function SettingsPanel({ theme, onThemeChange, onClose, instance, initialTab, onJavaRuntimesChange, onGlobalJavaChange, onInstanceJavaChange, onSaveSettings, onBackgroundChange, onNotice, dark, onRerunOnboarding }: SettingsPanelProps) {
   const { t, language } = useI18n();
   const [prefs, setPrefs] = useState<LauncherPrefs>(() => {
     // 从未保存过强调色时，回落到屏幕上实际生效的值，而不是硬编码的默认色。
@@ -89,6 +96,13 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
    * 半保存状态，而这正是设置面板已经为强调色避免过的坑。
    */
   const [background, setBackground] = useState<BackgroundSetting>(readBackgroundSetting);
+  /**
+   * 动效档位。
+   *
+   * 独立于 `prefs`：它立刻生效、不进「保存/取消」流程（见 MotionSection 的说明）。
+   * 初始值从 localStorage 读，与 App 启动时应用的是同一个来源。
+   */
+  const [motionLevel, setMotionLevel] = useState<MotionLevel>(readMotionLevel);
 
   /**
    * 背景变化：立即落盘并通知外层。
@@ -504,6 +518,23 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         只能等新版本。设置里有一处常驻入口才是正确的兜底。
       */}
       <CurseForgeKeyCard onNotice={onNotice} />
+      {/*
+        本地 AI 模型。
+
+        放在「下载」页的末尾：「下载一个 1.1 GB 的文件」与上面的下载源、代理、并发
+        是同一类事，用户遇到网络问题时也会在同一个页面里找。放在 CurseForge Key
+        之后，是因为它的使用频率更低——多数用户先用规则分析就够。
+
+        未下载时提示并给出下载按钮（从最快的源下载），已下载时显示路径与
+        「删除」。它也直接说明「还需要推理引擎」——下载完成不等于功能就绪。
+      */}
+      <section className={styles.group}>
+        <h3>{t('model.sectionTitle')}</h3>
+        <ModelDownloadCard
+          serverPath={prefs.llamaServerPath}
+          onChangeServerPath={path => update('llamaServerPath', path)}
+        />
+      </section>
       <section className={styles.group}>
         <h3>{t('settings.community')}</h3>
         {field(t('settings.communitySource'), t('settings.communitySourceHint'),
@@ -527,6 +558,12 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
 
   const appearancePage = (
     <>
+      {/*
+        动效放在语言之后、背景之前。
+        它是「界面怎么动」这一层的设置，与「长什么样」（主题、背景）相邻但不同类；
+        放太下面会让要关动画的用户先划过两百像素的背景编辑器。
+      */}
+      <MotionSection level={motionLevel} onChange={setMotionLevel} />
       <LanguageSection />
       {/*
         背景排在最前：它是「外观」页里最重的一项，用户在别的页签翻来翻去之后
@@ -613,7 +650,16 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
             <option value="notify">{t('settings.updateNotify')}</option>
             <option value="off">{t('settings.updateOff')}</option>
           </select>)}
-        {toggle(t('settings.anonymous'), t('settings.anonymousHint'), prefs.anonymousUsage, v => update('anonymousUsage', v))}
+        {/*
+          启动器日志。取代了原来的「匿名数据收集」开关——那一个没有任何实现，
+          却带着一句写死的隐私承诺。现在它对应一件真的会发生的事：写本地文件，
+          由用户自己决定要不要贴到 issue 里。
+        */}
+        <LauncherLogCard
+          enabled={prefs.launcherLogEnabled}
+          onChange={v => update('launcherLogEnabled', v)}
+          onNotice={onNotice}
+        />
         {toggle(t('settings.safeMode'), t('settings.safeModeHint'), prefs.safeMode, v => update('safeMode', v))}
         {toggle(t('settings.commandPreview'), t('settings.commandPreviewHint'), prefs.showCommandPreview, v => update('showCommandPreview', v))}
       </section>
@@ -633,6 +679,15 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
       </section>
       <section className={styles.group}>
         <h3>{t('settings.maintenance')}</h3>
+        {/*
+          重新运行引导。
+          给「想复习一遍那几项设置」的用户，也给「忘了自己当时选了什么」的用户。
+          它不重置任何已选值——那些值在各自的存储里，引导只是再把它们展示一遍。
+        */}
+        {field(t('settings.rerunOnboarding'), t('settings.rerunOnboardingHint'),
+          <Button size="sm" variant="ghost" onClick={() => { onClose(); onRerunOnboarding?.(); }}>
+            {t('settings.rerunOnboardingAction')}
+          </Button>)}
         <button className={styles.reset} onClick={reset}><RotateCcw size={15} />{t('settings.resetSection')}</button>
       </section>
     </>
