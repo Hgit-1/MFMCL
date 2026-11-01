@@ -300,6 +300,17 @@ function prefFromSettings(settings: LauncherSettings): LauncherPrefs {
     downloadDirectory: settings.downloadDirectory ?? '',
     /* 引擎路径同样必须映射：`DEFAULT_PREFS` 里是空串，不带上就会在每次刷新时被冲掉。 */
     llamaServerPath: settings.llamaServerPath ?? '',
+    /*
+     * 游戏根目录与缓存目录同理。
+     *
+     * 这两个字段之前在界面上是可填的，但没有进 `prefsToSettings`，所以填了也不
+     * 会保存——重启后又变回空，看起来像「设置没生效」。现在它们真的写进后端，
+     * 也真的读回来。
+     */
+    gameDirectory: settings.gameRoot ?? '',
+    cacheDirectory: settings.cacheDirectory ?? '',
+    launcherLogEnabled: settings.launcherLogEnabled,
+    clearFinishedTasks: settings.clearFinishedTasks,
     launcherVisibility: settings.launcherVisibility,
     downloadSource: settings.download.source,
     maxConcurrentDownloads: settings.download.maxConcurrentDownloads,

@@ -586,6 +586,49 @@ export function InstanceSettings({
               </div>
             );
           })}
+          {/*
+            游戏目录。
+
+            单独一块而不是塞进上面的文本框列表：它的默认值是一个具体路径
+            （`~/.minecraft/shared`），用户需要看到「现在实际用的是哪个目录」
+            才能决定要不要改。一个空文本框说不出这件事。
+          */}
+          <div className={styles.block}>
+            <div className={styles.row}>
+              <div className={styles.copy}>
+                <strong>{t('override.gameDir')}</strong>
+                <span>{t('override.gameDirHint')}</span>
+              </div>
+              <div className={styles.control}>
+                <SegmentedChoice
+                  value={overrides.gameDir !== undefined}
+                  onChange={next => set('gameDir', next ? '' : undefined)}
+                  label={t('override.gameDir')}
+                  options={[
+                    { value: false, text: t('override.inherit'), neutral: true },
+                    { value: true, text: t('memory.custom') },
+                  ]}
+                />
+              </div>
+            </div>
+            <div className={styles.row}>
+              <div className={styles.copy}>
+                <strong>{t('override.gameDirEffective')}</strong>
+                <span className={styles.pathText}>
+                  {(overrides.gameDir?.trim() || instance.gameDir) || '—'}
+                </span>
+              </div>
+            </div>
+            {overrides.gameDir !== undefined && (
+              <input
+                className={styles.text}
+                value={overrides.gameDir}
+                placeholder={instance.gameDir}
+                aria-label={t('override.gameDir')}
+                onChange={event => set('gameDir', event.target.value)}
+              />
+            )}
+          </div>
         </section>
 
         <section className={styles.section}>

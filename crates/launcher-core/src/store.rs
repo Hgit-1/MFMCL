@@ -327,15 +327,66 @@ impl LauncherStore {
         }
     }
 
+    /// 创建实例。
+    ///
+    /// `data_root` 是启动器数据目录（`<app-data>`），实例的元数据与版本文件放在
+    /// `<data_root>/instances/<id>`；游戏目录则放到共享根目录 `game_root` 下。
+    ///
+    /// 为什么游戏目录不跟实例目录走：`game_root` 默认是 `~/.minecraft`，那里是
+    /// 玩家既有的安装位置。把每个实例的游戏目录指向它，存档、资源包和手动装的
+    /// 模组才能在启动器与官方启动器之间共用。`instances/<id>/versions` 仍然是
+    /// 实例私有的，所以两个实例用同一个游戏版本也不会互相覆盖。
+    ///
+    /// `isolated` 为真时游戏目录改回实例私有目录：需要完全隔离（例如用不同模组
+    /// 组合测试）的用户仍然拿得到旧行为。
     pub fn create_instance(
         &self,
         input: &CreateInstanceInput,
         data_root: &Path,
     ) -> Result<InstanceRecord, StoreError> {
+        /*
+         * 默认走共享根目录。
+         *
+         * 让 `create_instance` 自己解析 `~/.minecraft`，而不是要求每个调用点传：
+         * 新建实例、整合包导入、备份还原三条路径都从这里走，漏传一处就会出现
+         * 「同一个启动器创建的两个实例，一个在 .minecraft 一个在私有目录」。
+         *
+         * 设置里显式指定过 `game_root` 时优先用它。
+         */
+        let configured = self
+            .load_settings()
+            .ok()
+            .and_then(|settings| settings.game_root);
+        let default_root = crate::launch::default_game_root();
+        let game_root = configured.or(default_root);
+        self.create_instance_in(input, data_root, game_root.as_deref())
+    }
+
+    /// 同上，但显式指定共享游戏根目录。
+    ///
+    /// 单独一个函数而不是给 `create_instance` 加参数：现有调用点（备份还原、
+    /// 整合包导入、测试）都只想沿用默认布局，不该被迫关心根目录从哪来。
+    pub fn create_instance_in(
+        &self,
+        input: &CreateInstanceInput,
+        data_root: &Path,
+        game_root: Option<&Path>,
+    ) -> Result<InstanceRecord, StoreError> {
         input.validate().map_err(StoreError::Invalid)?;
         let id = Uuid::new_v4().to_string();
         let instance_dir = data_root.join("instances").join(&id);
-        let game_dir = instance_dir.join("game");
+        /*
+         * 共享根目录下的游戏目录。
+         *
+         * 用 `shared` 子目录而不是直接放在根上：`~/.minecraft` 根目录里有
+         * `versions/`、`libraries/`、`assets/` 这些由启动器自己管理的结构。
+         * 把游戏目录（里面是 `saves/`、`mods/`、`options.txt`）直接铺在根上，
+         * 会和实例私有的 version 文件混在一起，删除实例时无法安全清理。
+         */
+        let game_dir = match game_root {
+            Some(root) => root.join("shared"),
+            None => instance_dir.join("game"),
+        };
         let now = Utc::now().to_rfc3339();
         let instance = InstanceRecord {
             id: id.clone(),
@@ -344,7 +395,7 @@ impl LauncherStore {
             loader: "vanilla".to_owned(),
             instance_dir: instance_dir.clone(),
             game_dir: game_dir.clone(),
-            isolated: true,
+            isolated: game_root.is_none(),
             state: InstanceState::NotInstalled,
             created_at: now.clone(),
             // 刚创建的实例还没启动过。
@@ -353,13 +404,14 @@ impl LauncherStore {
         let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         connection.execute(
             "INSERT INTO instances(id, name, game_version, loader, instance_dir, game_dir, isolated, state, created_at)
-             VALUES (?1, ?2, ?3, 'vanilla', ?4, ?5, 1, 'not_installed', ?6)",
+             VALUES (?1, ?2, ?3, 'vanilla', ?4, ?5, ?6, 'not_installed', ?7)",
             params![
                 instance.id,
                 instance.name,
                 instance.game_version,
                 path_to_string(&instance_dir),
                 path_to_string(&game_dir),
+                i64::from(instance.isolated),
                 now,
             ],
         )?;
@@ -1081,8 +1133,55 @@ mod tests {
             .create_instance(&input, Path::new("/tmp/mfmcl-test"))
             .unwrap();
         assert_eq!(created.state, InstanceState::NotInstalled);
-        assert!(created.isolated);
         assert_eq!(store.list_instances().unwrap().len(), 1);
+    }
+
+    /// 默认创建走共享根目录，游戏目录落在 `<root>/shared` 下。
+    ///
+    /// 这是「默认安装到 ~/.minecraft」的核心约定：测试里显式传根目录，
+    /// 避免依赖运行测试的机器有没有主目录。
+    #[test]
+    fn instances_share_the_game_root_by_default() {
+        let store = LauncherStore::open(":memory:").unwrap();
+        let instance = store
+            .create_instance_in(
+                &CreateInstanceInput {
+                    name: "Shared".into(),
+                    game_version: "1.21.4".into(),
+                },
+                Path::new("/tmp/mfmcl-test"),
+                Some(Path::new("/home/someone/.minecraft")),
+            )
+            .unwrap();
+        assert_eq!(
+            instance.game_dir,
+            PathBuf::from("/home/someone/.minecraft/shared")
+        );
+        assert!(!instance.isolated, "共享根目录的实例不再是隔离的");
+        // 版本文件仍然私有，否则两个实例会互相覆盖同一个版本目录。
+        assert!(instance.instance_dir.ends_with(&instance.id));
+    }
+
+    /// 没有根目录时退回实例私有目录，与旧行为一致。
+    #[test]
+    fn instances_stay_isolated_without_a_game_root() {
+        let store = LauncherStore::open(":memory:").unwrap();
+        let instance = store
+            .create_instance_in(
+                &CreateInstanceInput {
+                    name: "Private".into(),
+                    game_version: "1.21.4".into(),
+                },
+                Path::new("/tmp/mfmcl-test"),
+                None,
+            )
+            .unwrap();
+        assert!(instance.isolated);
+        assert_eq!(
+            instance.game_dir,
+            instance.instance_dir.join("game"),
+            "没有根目录时游戏目录必须留在实例内部"
+        );
     }
     #[test]
     fn last_launched_orders_instances_and_survives_reopen() {

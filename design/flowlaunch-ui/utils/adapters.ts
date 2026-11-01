@@ -70,6 +70,7 @@ export function toGameInstance(record: InstanceRecord, modCount = 0): GameInstan
     playTime: 0,
     modCount,
     status: normalizeState(record.state),
+    gameDir: record.gameDir,
   };
 }
 

@@ -233,6 +233,21 @@
   padding: 2px 0;
 }
 
+/*
+ * 生效目录的路径文本。
+ *
+ * 用等宽字体并允许换行：路径本身可长可短（`/home/xxx/.minecraft/shared`），
+ * 用比例字体时斜杠和点很难读，而截断成一行会让用户看不到末尾的目录名——
+ * 那正是他要确认的部分。
+ */
+.pathText {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  word-break: break-all;
+  color: var(--color-text-secondary);
+}
+
 .block + .block {
   border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
 }
