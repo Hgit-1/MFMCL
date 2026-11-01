@@ -65,25 +65,6 @@ fn builtin_definitions(state: &PluginState) -> Vec<PluginDefinition> {
     };
 
     /*
-     * 自动备份。
-     *
-     * 贡献的目录来自用户在插件选项里配置的路径。`PluginState` 目前只存启用状态，
-     * 不存选项值——选项值由前端保存在自己的偏好里（它们是纯界面配置）。所以这里
-     * 不能凭空编一个目录：没有目录就**不产生贡献**，让启动路径里什么都不做。
-     *
-     * 这是有意的保守选择：静默挑一个默认目录（比如系统临时目录）会让插件在用户
-     * 不知情的地方不断写入几十 MB 的归档。宁可什么都不做，也不要偷偷写盘。
-     */
-    let auto_backup = PluginDefinition {
-        id: "auto-backup".into(),
-        version: "1.2.0".into(),
-        hooks: vec!["launch".into()],
-        permissions: vec!["filesystem".into(), "launchHook".into()],
-        contributions: Vec::new(),
-        incompatible: false,
-    };
-
-    /*
      * 下载镜像助手。
      *
      * **不产生启动贡献。**
@@ -106,57 +87,28 @@ fn builtin_definitions(state: &PluginState) -> Vec<PluginDefinition> {
     };
 
     /*
-     * 模组冲突检测。
+     * 模组冲突检测这一条已经不在这里了。
      *
-     * 检测逻辑已经在启动器内部（安装前由 `mods.rs` 分析），插件的作用是决定
-     * 「是否在安装前提示」。它没有启动链路贡献，但有实际效果——这里不伪造一条
-     * 假的 jvmArgs 来证明自己存在。
+     * 它的检测逻辑在 `mods.rs` 里无条件执行，插件的启用状态从未被读取——也就是
+     * 说，界面上那个开关拨到任何一边，行为都一样。与其留一条看起来「已生效」的
+     * 记录，不如去掉；等真的要把它做成可开关的功能时，先在安装路径里加读取，
+     * 再回来加这条定义。
      */
-    let conflict_detector = PluginDefinition {
-        id: "mod-conflict-detector".into(),
-        version: "0.9.3".into(),
-        hooks: vec!["modInstall".into()],
-        permissions: vec!["network".into(), "uiSlot".into()],
-        contributions: Vec::new(),
-        incompatible: false,
-    };
-
-    // 主题与界面类插件：效果在界面侧，启动链路里没有可执行的东西。
-    let presentation =
-        |id: &str, version: &str, hooks: &[&str], permission: &str| PluginDefinition {
-            id: id.to_owned(),
-            version: version.to_owned(),
-            hooks: hooks.iter().map(|item| (*item).to_owned()).collect(),
-            permissions: vec![permission.to_owned()],
-            contributions: Vec::new(),
-            incompatible: false,
-        };
 
     let _ = state;
-    vec![
-        launch_logger,
-        auto_backup,
-        conflict_detector,
-        download_mirror,
-        presentation("pink-theme", "1.0.0", &["theme"], "theme"),
-        presentation(
-            "performance-monitor",
-            "1.1.2",
-            &["launch", "sidebar"],
-            "launchHook",
-        ),
-        /*
-         * 旧版皮肤补丁：与当前启动器不兼容。
-         *
-         * `incompatible: true` 在这里是**权威判定**，不只是界面提示——启动路径会
-         * 据此跳过它的全部贡献。之前这个字段只影响界面上开关的颜色，后端完全不知道，
-         * 一个被标记为不兼容的插件仍然可以贡献参数。
-         */
-        PluginDefinition {
-            incompatible: true,
-            ..presentation("legacy-skin-patch", "0.3.1", &["launch"], "launchHook")
-        },
-    ]
+    /*
+     * 只列「开关真的改变行为」的插件。
+     *
+     * 判断标准和界面侧一致：能不能指出一行读这个开关的代码。
+     *
+     *   - `launch-logger` → `lib.rs` 的启动路径查 `is_enabled(..)` 决定是否写历史。
+     *   - `download-mirror` → 开关映射到 `downloadSource`，下载器读那个设置。
+     *
+     * 其余几个曾有定义但没有对应实现：自动备份的贡献永远为空（目录存在前端，
+     * 后端拿不到）、冲突检测在 `mods.rs` 里无条件执行、主题/悬浮层/旧版皮肤在
+     * 界面里从未被读取。它们出现在这里只会让运行时看起来支持了一些不存在的能力。
+     */
+    vec![launch_logger, download_mirror]
 }
 
 /// 某个插件当前是否启用。
@@ -307,31 +259,45 @@ mod tests {
         let state = PluginState::default();
         let plugins = catalog(&state);
         let ids: Vec<&str> = plugins.iter().map(|p| p.id.as_str()).collect();
-        for expected in [
-            "launch-logger",
+        for expected in ["launch-logger", "download-mirror"] {
+            assert!(ids.contains(&expected), "{expected} missing from catalog");
+        }
+        /*
+         * 反向断言：没有实现的插件不该留在清单里。
+         *
+         * 这几个曾经有定义、也有界面开关，但开关从未被任何代码读取。留着它们
+         * 会让运行时看起来支持了一些不存在的能力。
+         */
+        for removed in [
             "auto-backup",
             "mod-conflict-detector",
-            "download-mirror",
             "pink-theme",
             "performance-monitor",
             "legacy-skin-patch",
         ] {
-            assert!(ids.contains(&expected), "{expected} missing from catalog");
+            assert!(
+                !ids.contains(&removed),
+                "{removed} has no implementation and must not be advertised"
+            );
         }
     }
 
     #[test]
-    fn legacy_skin_patch_is_authoritatively_incompatible() {
+    fn every_builtin_plugin_switch_is_read_somewhere() {
         /*
-         * 这个标记必须由后端给出，而不是只在前端提示：启动路径据此跳过它的全部
-         * 贡献。之前它只影响界面开关的颜色，后端完全不知道。
+         * 每个内置插件都必须能指出一行读它启用状态的代码。
+         *
+         * 这是「去掉占位插件」的守门测试：新增内置插件时，如果只是加一条清单
+         * 定义，这条测试通过但功能是假的——所以清单本身保持精简，新增时必须
+         * 同时写出读取它的位置并更新下面的名单。
          */
         let state = PluginState::default();
-        let plugin = catalog(&state)
-            .into_iter()
-            .find(|p| p.id == "legacy-skin-patch")
-            .expect("plugin must exist");
-        assert!(plugin.incompatible);
+        let ids: Vec<String> = catalog(&state).into_iter().map(|p| p.id).collect();
+        assert_eq!(
+            ids,
+            vec!["launch-logger".to_string(), "download-mirror".to_string()],
+            "内置插件清单变化时，请确认每个开关都有读取它的代码，再更新这条断言"
+        );
     }
 
     #[test]
@@ -379,8 +345,8 @@ mod tests {
     fn is_enabled_defaults_to_true_and_respects_explicit_false() {
         let mut state = PluginState::default();
         assert!(is_enabled(&state, "anything"), "缺省必须视为启用");
-        state.enabled.insert("pink-theme".into(), false);
-        assert!(!is_enabled(&state, "pink-theme"));
+        state.enabled.insert("launch-logger".into(), false);
+        assert!(!is_enabled(&state, "launch-logger"));
     }
 
     #[test]

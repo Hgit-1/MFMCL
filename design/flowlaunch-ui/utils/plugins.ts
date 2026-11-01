@@ -196,6 +196,24 @@ export function permissionHint(id: PluginPermissionId): Localized {
 }
 
 export const BUILTIN_PLUGINS: LauncherPlugin[] = [
+  /*
+   * 只保留「开关真的改变行为」的插件。
+   *
+   * 判断标准是能不能指出一行会读这个开关的代码，而不是「听起来有用」：
+   *
+   *   - `launch-logger` → 启动路径查 `is_enabled(.., "launch-logger")` 决定是否
+   *     写启动历史（见 `src-tauri/src/lib.rs`）。
+   *   - `download-mirror` → 开关直接映射到 `downloadSource` 设置，下载器读它。
+   *
+   * 其余几个曾有清单条目但没有对应实现：自动备份的贡献永远为空（因为选项值
+   * 只存在前端，后端拿不到目录）、冲突检测在后端无条件执行、主题/悬浮层/旧版
+   * 皮肤在界面里从未被读取。它们的开关拨了不会有任何变化，而界面却显示「已启用」。
+   * 这种占位条目比缺失更有害：用户会以为自己关掉了某个功能，或者以为启用后
+   * 多出了某种保护。功能真正实现时再加回来，并同时补上读取它的代码。
+   *
+   * `logLimit` 选项去掉了：启动历史目前不按条数裁剪，暴露一个不生效的上限设置
+   * 等于承诺一件没做的事。
+   */
   {
     id: 'launch-logger',
     name: loc('plugin.launchLogger.name'),
@@ -206,51 +224,14 @@ export const BUILTIN_PLUGINS: LauncherPlugin[] = [
     accent: '#53B4F6',
     hooks: ['launch'],
     permissions: ['launchHook', 'storage'],
-    options: [
-      { id: 'logLimit', type: 'number', label: loc('plugin.option.logLimit'), hint: loc('plugin.option.logLimitHint'), defaultNumber: 200, min: 20, max: 2000 },
-    ],
     enabledByDefault: true,
     builtin: true,
-  },
-  {
-    id: 'auto-backup',
-    name: loc('plugin.autoBackup.name'),
-    version: '1.2.0',
-    author: 'MFMC Team',
-    description: loc('plugin.autoBackup.description'),
-    glyph: 'archive',
-    accent: '#41C98B',
-    hooks: ['launch'],
-    permissions: ['filesystem', 'launchHook'],
-    options: [
-      { id: 'keepCount', type: 'number', label: loc('plugin.option.keepCount'), hint: loc('plugin.option.keepCountHint'), defaultNumber: 5, min: 1, max: 30 },
-      { id: 'onlyWhenChanged', type: 'toggle', label: loc('plugin.option.onlyWhenChanged'), hint: loc('plugin.option.onlyWhenChangedHint'), defaultOn: true },
-    ],
-    enabledByDefault: true,
-    builtin: true,
-  },
-  {
-    id: 'mod-conflict-detector',
-    name: loc('plugin.conflictDetector.name'),
-    version: '0.9.3',
-    author: 'MFMC Team',
-    description: loc('plugin.conflictDetector.description'),
-    glyph: 'shield',
-    accent: '#F19B52',
-    hooks: ['modInstall'],
-    permissions: ['network', 'uiSlot'],
-    enabledByDefault: true,
-    builtin: true,
-    status: loc('plugin.conflictDetector.status'),
-    statusTone: 'info',
-    // 模拟一次可用更新：这是内置清单里的示例，用于演示徽章与更新按钮。
-    updateAvailable: '1.0.0',
   },
   {
     id: 'download-mirror',
     name: loc('plugin.mirrorHelper.name'),
     version: '2.0.1',
-    author: 'MirrorKit',
+    author: 'MFMC Team',
     description: loc('plugin.mirrorHelper.description'),
     glyph: 'network',
     accent: '#35B9A8',
@@ -261,54 +242,6 @@ export const BUILTIN_PLUGINS: LauncherPlugin[] = [
     ],
     enabledByDefault: true,
     builtin: true,
-  },
-  {
-    id: 'pink-theme',
-    name: loc('plugin.sakuraTheme.name'),
-    version: '1.0.0',
-    author: 'Sakura',
-    description: loc('plugin.sakuraTheme.description'),
-    glyph: 'palette',
-    accent: '#E76B8A',
-    hooks: ['theme'],
-    permissions: ['theme'],
-    enabledByDefault: false,
-    builtin: true,
-    requiresRestart: true,
-  },
-  {
-    id: 'performance-monitor',
-    name: loc('plugin.monitorName'),
-    version: '1.1.2',
-    author: 'MFMC Team',
-    description: loc('plugin.monitorDescription'),
-    glyph: 'gauge',
-    accent: '#8B7CFF',
-    hooks: ['launch', 'sidebar'],
-    permissions: ['launchHook', 'uiSlot'],
-    options: [
-      { id: 'showOverlay', type: 'toggle', label: loc('plugin.option.showOverlay'), hint: loc('plugin.option.showOverlayHint'), defaultOn: false },
-    ],
-    enabledByDefault: false,
-    builtin: true,
-    status: loc('plugin.monitorStatus'),
-    statusTone: 'info',
-  },
-  {
-    id: 'legacy-skin-patch',
-    name: loc('plugin.legacySkin.name'),
-    version: '0.3.1',
-    author: 'OldCraft',
-    description: loc('plugin.legacySkin.description'),
-    glyph: 'image',
-    accent: '#94A3B8',
-    hooks: ['launch'],
-    permissions: ['filesystem', 'launchHook'],
-    enabledByDefault: false,
-    builtin: true,
-    status: loc('plugin.legacySkin.status'),
-    statusTone: 'error',
-    incompatible: true,
   },
 ];
 
@@ -461,7 +394,7 @@ export function loadPluginStore(): PluginStore {
         if (typeof value === 'string') acknowledgedUpdates[id] = value;
       });
     }
-    return { custom, enabled, options, acknowledgedUpdates };
+    return prunePluginStore({ custom, enabled, options, acknowledgedUpdates });
   } catch {
     return EMPTY_PLUGIN_STORE;
   }
@@ -498,6 +431,35 @@ export function isPluginEnabled(plugin: LauncherPlugin, store: PluginStore): boo
 
 export function enabledPluginCount(store: PluginStore): number {
   return allPlugins(store).filter(plugin => isPluginEnabled(plugin, store)).length;
+}
+
+/**
+ * 丢掉指向已不存在插件的存档条目。
+ *
+ * 内置插件清单是代码常量，删掉一个插件（比如那些只有清单、没有实现的）之后，
+ * 用户存档里仍然留着它的 `enabled` 与 `options` 记录。这不会让界面出错——
+ * 渲染只遍历当前清单——但会永久留下无人读取的数据，而且如果以后用同一个 id
+ * 重新加回一个语义不同的插件，旧开关会意外生效。
+ *
+ * 自定义插件不在清理范围内：它们的 id 由清单决定，只在用户卸载时移除。
+ */
+export function prunePluginStore(store: PluginStore): PluginStore {
+  const known = new Set(BUILTIN_PLUGINS.map(plugin => plugin.id));
+  const custom = new Set(store.custom.map(plugin => plugin.id));
+  const keep = (id: string) => known.has(id) || custom.has(id);
+
+  const enabled = Object.fromEntries(Object.entries(store.enabled).filter(([id]) => keep(id)));
+  const options = Object.fromEntries(Object.entries(store.options).filter(([id]) => keep(id)));
+  const acknowledgedUpdates = Object.fromEntries(
+    Object.entries(store.acknowledgedUpdates ?? {}).filter(([id]) => keep(id)),
+  );
+
+  // 引用没变时返回原对象：调用方可以据此跳过一次无意义的持久化。
+  const unchanged =
+    Object.keys(enabled).length === Object.keys(store.enabled).length
+    && Object.keys(options).length === Object.keys(store.options).length
+    && Object.keys(acknowledgedUpdates).length === Object.keys(store.acknowledgedUpdates ?? {}).length;
+  return unchanged ? store : { ...store, enabled, options, acknowledgedUpdates };
 }
 
 /**
