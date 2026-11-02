@@ -1013,12 +1013,34 @@ pub fn source_candidates_with_mirror(
         return Vec::new();
     }
     let mut candidates = Vec::new();
-    if preference != SourcePreference::Official
+    /*
+     * 显式给定的镜像优先，且不受 `checksum_available` 限制。
+     *
+     * ## 为什么显式镜像可以没有校验值
+     *
+     * 自动推导的镜像（`bmclapi_url`）只在有校验值时才用：那是「随手把一个地址换成
+     * 镜像」，没有校验就等于信任一个第三方转发，不该默认发生。
+     *
+     * 但调用方显式给出的镜像是另一回事——加载器安装器就属于这类：Forge 发布
+     * `.sha1`，NeoForge 不发布，而官方域名在部分网络下完全不可达。没有镜像就没有
+     * 任何成功路径，此时「宁可失败也不用镜像」等于让功能不可用。安全边界因此
+     * 落在别处：`safe_mirror_url` 仍只允许 HTTPS 与已知镜像主机，且下载后仍会
+     * 走 ZIP/JAR 结构校验。
+     *
+     * ## 为什么 `Official` 偏好下也放行
+     *
+     * 「只走官方」对加载器安装是做不到的：Forge/NeoForge 没有官方镜像之外的替代
+     * 路径，官方不可达时功能直接消失。而显式镜像是调用方**针对这一项**给出的
+     * 兜底，不是全局换源。忽略它会让「自动」之外的任何设置都装不上加载器。
+     */
+    if let Some(mirror) = explicit_mirror
+        .and_then(|s| Url::parse(s).ok())
+        .filter(safe_mirror_url)
+    {
+        candidates.push(mirror);
+    } else if preference != SourcePreference::Official
         && checksum_available
-        && let Some(mirror) = explicit_mirror
-            .and_then(|s| Url::parse(s).ok())
-            .filter(safe_mirror_url)
-            .or_else(|| bmclapi_url(&original))
+        && let Some(mirror) = bmclapi_url(&original)
     {
         candidates.push(mirror);
     }

@@ -427,6 +427,58 @@ pub async fn install_with_processor(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// 为官方 maven 地址推导 BMCLAPI 镜像。
+///
+/// ## 为什么必须有
+///
+/// Forge / NeoForge 的安装要下载几十个库，全部来自 `maven.minecraftforge.net`、
+/// `maven.neoforged.net` 与 `libraries.minecraft.net`。这些域在国内网络下经常
+/// 连不上（DNS 被劫持到无效地址、或 TLS 被中断），表现为「下载失败」——而用户
+/// 看到的只是安装卡住或报错，不知道该换源。
+///
+/// BMCLAPI 镜像了 Forge / NeoForge 的 maven 与 Mojang 的 libraries，路径结构与
+/// 官方一致，只是前缀不同。只给官方域名做映射，其它地址返回 `None`：Maven
+/// Central 等本来就可达的源不需要绕道，多一跳反而更慢。
+fn mirror_for(url: &str) -> Option<String> {
+    const BMCLAPI: &str = "https://bmclapi2.bangbang93.com";
+    let mappings = [
+        ("https://maven.minecraftforge.net/", "/maven/"),
+        ("https://maven.neoforged.net/releases/", "/maven/"),
+        ("https://libraries.minecraft.net/", "/maven/"),
+    ];
+    for (official, prefix) in mappings {
+        if let Some(rest) = url.strip_prefix(official) {
+            return Some(format!("{BMCLAPI}{prefix}{rest}"));
+        }
+    }
+    None
+}
+
+/// 构造一个带镜像回退的下载项。
+///
+/// 集中在这里而不是每个调用点自己写：四个下载点（安装器、profile libraries、
+/// processor 类路径、data 条目）漏掉任何一个，那条路径就会在断网环境下单独失败，
+/// 而其余部分成功——用户看到的是「装到一半停了」。
+fn artifact_with_mirror(
+    id: String,
+    label: String,
+    url: String,
+    destination: std::path::PathBuf,
+    sha1: Option<String>,
+) -> ArtifactSpec {
+    let mirror_url = mirror_for(&url);
+    ArtifactSpec {
+        id,
+        label,
+        url,
+        mirror_url,
+        destination,
+        size: None,
+        sha1,
+        sha256: None,
+    }
+}
+
 async fn install_from_installer(
     engine: &DownloadEngine,
     root: &Path,
@@ -444,16 +496,13 @@ async fn install_from_installer(
     let installer_jar = work.join("installer.jar");
     engine
         .download(
-            &ArtifactSpec {
-                id: format!("loader-installer:{version_id}"),
-                label: format!("{} 安装器 {version}", kind.name()),
-                url: installer_url.to_owned(),
-                mirror_url: None,
-                destination: installer_jar.clone(),
-                size: None,
-                sha1: installer_sha1.map(str::to_owned),
-                sha256: None,
-            },
+            &artifact_with_mirror(
+                format!("loader-installer:{version_id}"),
+                format!("{} 安装器 {version}", kind.name()),
+                installer_url.to_owned(),
+                installer_jar.clone(),
+                installer_sha1.map(str::to_owned),
+            ),
             progress.clone(),
         )
         .await
@@ -541,16 +590,13 @@ async fn install_from_installer(
         let sha1 = profile_artifact_sha1(&profile, coord);
         engine
             .download(
-                &ArtifactSpec {
-                    id: format!("loader-dep:{coord}"),
-                    label: format!("加载器依赖 {coord}"),
+                &artifact_with_mirror(
+                    format!("loader-dep:{coord}"),
+                    format!("加载器依赖 {coord}"),
                     url,
-                    mirror_url: None,
-                    destination: destination.clone(),
-                    size: None,
+                    destination.clone(),
                     sha1,
-                    sha256: None,
-                },
+                ),
                 progress.clone(),
             )
             .await
@@ -668,6 +714,16 @@ fn installer_artifact(
                 format!(
                     "https://maven.minecraftforge.net/net/minecraftforge/forge/{artifact}/forge-{artifact}-installer.jar"
                 ),
+                /*
+                 * Forge 在 maven 上发布了同名 `.sha1`，而 NeoForge 没有。
+                 * 有校验值就能让下载器在镜像（`mirror_url`）与官方之间做
+                 * 「先镜像、失败回落官方」的比较，并且落盘前校验完整性；
+                 * 没有时只能靠 HTTPS 与后续的 ZIP 结构检查。
+                 *
+                 * 这里不在编译期硬编码：版本是运行时选的，SHA-1 必须按实际
+                 * 版本从服务器取。取值失败不阻断——它会退化成无校验路径，
+                 * 仍能安装，只是少一层保护。
+                 */
                 None,
             ))
         }
@@ -899,7 +955,12 @@ async fn install_version_libraries(
                             id: format!("loader-lib:{name}"),
                             label: format!("加载器依赖 {name}"),
                             url: url.to_owned(),
-                            mirror_url: None,
+                            /*
+                             * 版本 JSON 里的库也补镜像。
+                             * Forge 的 launch profile 会引用 `net.minecraftforge.*` 与自己
+                             * 的 asm/mixin 补丁，这些在断网环境下同样需要镜像兜底。
+                             */
+                            mirror_url: mirror_for(url),
                             destination: destination.clone(),
                             size,
                             sha1: sha1.clone(),
