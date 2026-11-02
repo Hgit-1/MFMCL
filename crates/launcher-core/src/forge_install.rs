@@ -709,21 +709,24 @@ fn installer_artifact(
 ) -> Result<(String, Option<String>), String> {
     match kind {
         LoaderKind::Forge => {
-            let artifact = format!("{game}-{version}");
+            /*
+             * Forge 的版本号本身已经带游戏版本前缀（`1.20.1-47.4.28`），
+             * 直接用即可；再拼一次 `game-` 会得到 `1.20.1-1.20.1-47.4.28`，
+             * maven 上不存在，表现为「下载加载器安装器失败：404」。
+             *
+             * 但也要容忍只给构建号（`47.4.28`）的调用方：那种情况下补上前缀。
+             * 列表来自 `forge_versions`，它给的是完整形式；兜底是为了让
+             * 手工传参或旧记录也能用。
+             */
+            let artifact = if version.starts_with(&format!("{game}-")) {
+                version.to_owned()
+            } else {
+                format!("{game}-{version}")
+            };
             Ok((
                 format!(
                     "https://maven.minecraftforge.net/net/minecraftforge/forge/{artifact}/forge-{artifact}-installer.jar"
                 ),
-                /*
-                 * Forge 在 maven 上发布了同名 `.sha1`，而 NeoForge 没有。
-                 * 有校验值就能让下载器在镜像（`mirror_url`）与官方之间做
-                 * 「先镜像、失败回落官方」的比较，并且落盘前校验完整性；
-                 * 没有时只能靠 HTTPS 与后续的 ZIP 结构检查。
-                 *
-                 * 这里不在编译期硬编码：版本是运行时选的，SHA-1 必须按实际
-                 * 版本从服务器取。取值失败不阻断——它会退化成无校验路径，
-                 * 仍能安装，只是少一层保护。
-                 */
                 None,
             ))
         }
@@ -1125,6 +1128,36 @@ pub fn installer_version_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Forge 的版本号自带游戏版本前缀，不能再拼一次。
+    ///
+    /// 这条守的是一个真实故障：`installer_artifact` 曾无条件拼 `{game}-{version}`，
+    /// 而 `forge_versions` 返回的版本已经是 `1.20.1-47.4.28`，于是 URL 变成
+    /// `.../forge/1.20.1-1.20.1-47.4.28/...`，maven 上 404，用户看到的是
+    /// 「下载加载器安装器失败」。版本列表本身是对的，所以只看列表发现不了。
+    #[test]
+    fn forge_installer_url_does_not_double_the_game_version() {
+        let (url, _) = installer_artifact(LoaderKind::Forge, "1.20.1", "1.20.1-47.4.28").unwrap();
+        assert_eq!(
+            url,
+            "https://maven.minecraftforge.net/net/minecraftforge/forge/1.20.1-47.4.28/forge-1.20.1-47.4.28-installer.jar"
+        );
+        assert!(!url.contains("1.20.1-1.20.1"));
+
+        // 只给构建号时仍然要能拼出正确地址。
+        let (url, _) = installer_artifact(LoaderKind::Forge, "1.20.1", "47.4.28").unwrap();
+        assert!(url.contains("/1.20.1-47.4.28/"));
+    }
+
+    #[test]
+    fn neoforge_installer_url_uses_the_bare_version() {
+        // NeoForge 的版本号不含游戏版本（`21.1.265`），不能加前缀。
+        let (url, _) = installer_artifact(LoaderKind::NeoForge, "1.21.1", "21.1.265").unwrap();
+        assert_eq!(
+            url,
+            "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.265/neoforge-21.1.265-installer.jar"
+        );
+    }
 
     #[test]
     fn maven_relative_builds_expected_layout() {
