@@ -77,6 +77,23 @@ pub struct LoaderVersion {
     pub stable: bool,
 }
 
+/// 为 Fabric / Quilt 的 maven 地址推导 BMCLAPI 镜像。
+///
+/// 与 Forge 那份同理：官方 maven 在部分网络下不可达，而镜像的路径结构与官方
+/// 一致。返回 `None` 表示不需要（或没有）镜像，此时下载器会直接走原始地址。
+pub(crate) fn fabric_mirror(url: &str) -> Option<String> {
+    const BMCLAPI: &str = "https://bmclapi2.bangbang93.com";
+    for official in [
+        "https://maven.fabricmc.net/",
+        "https://maven.quiltmc.org/repository/release/",
+    ] {
+        if let Some(rest) = url.strip_prefix(official) {
+            return Some(format!("{BMCLAPI}/maven/{rest}"));
+        }
+    }
+    None
+}
+
 pub fn safe_version(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 128
@@ -266,14 +283,40 @@ async fn neoforge_versions(game: &str) -> Result<Vec<LoaderVersion>, String> {
     let prefix = format!("{minor}.{patch}.");
 
     let client = metadata_client()?;
-    let response = client
-        .get("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml")
-        .send()
-        .await
-        .map_err(|_| "无法连接 NeoForge 版本服务。")?
-        .error_for_status()
-        .map_err(|_| "NeoForge 版本服务拒绝了请求。")?;
-    let bytes = bounded_response(response, 8 * 1024 * 1024).await?;
+    /*
+     * 先官方，失败再走镜像。
+     *
+     * `maven.neoforged.net` 在部分网络下完全不可达（DNS 被劫持、TLS 被中断），
+     * 而 BMCLAPI 镜像了同一份 `maven-metadata.xml`。之前这里只有官方一条路，
+     * 于是「NeoForge 一个版本都列不出来」——用户连点都点不下去，更谈不上安装。
+     *
+     * 顺序不能反：镜像通常更快，但它可能滞后于官方（新版本晚几小时同步）。
+     * 官方可达时用它是对的；只有它失败时才退到镜像。
+     */
+    const OFFICIAL: &str =
+        "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml";
+    const MIRROR: &str =
+        "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/maven-metadata.xml";
+
+    let mut fetched = None;
+    let mut last_error = String::new();
+    for (url, client) in [(OFFICIAL, &client), (MIRROR, &mirror_client()?)] {
+        match client.get(url).send().await {
+            Ok(response) if response.status().is_success() => {
+                match bounded_response(response, 8 * 1024 * 1024).await {
+                    Ok(bytes) => {
+                        fetched = Some(bytes);
+                        break;
+                    }
+                    Err(error) => last_error = error,
+                }
+            }
+            Ok(response) => last_error = format!("HTTP {}", response.status()),
+            Err(_) => last_error = "无法连接".to_owned(),
+        }
+    }
+    let bytes = fetched
+        .ok_or_else(|| format!("无法连接 NeoForge 版本服务（官方与镜像均失败：{last_error}）。"))?;
     let text = std::str::from_utf8(&bytes).map_err(|_| "NeoForge 版本列表不是有效文本。")?;
     let mut versions: Vec<String> = Vec::new();
     // maven-metadata.xml 很小且结构固定，抓 <version> 标签即可，不必引入 XML 解析器。
@@ -335,6 +378,22 @@ fn metadata_client() -> Result<reqwest::Client, String> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "无法初始化 HTTPS 客户端。".into())
+}
+
+/// 允许跟随重定向的客户端，只用于镜像。
+///
+/// BMCLAPI 对文件与元数据都返回 302，跳到 `*.sakura.sld.tw` 上的短时签名地址。
+/// 默认客户端设了 `Policy::none()`（安全考虑：不跟随任何跳转），所以镜像永远
+/// 拿到 302 而不是内容。这里单独开一个允许有限跳转的实例，并且仍然限制在 HTTPS。
+fn mirror_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("MFMCL/0.1.0")
+        .https_only(true)
+        // 限制跳转次数：镜像正常只用一次 302，多跳说明对方在绕圈。
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|_| "无法初始化镜像客户端。".into())
 }
 
 pub async fn install_loader(
@@ -557,8 +616,13 @@ async fn install_loader_inner(
                 &ArtifactSpec {
                     id: format!("loader:{name}"),
                     label: format!("加载器依赖 {name}"),
-                    url,
-                    mirror_url: None,
+                    url: url.clone(),
+                    /*
+                     * Fabric / Quilt 的库同样走 BMCLAPI。
+                     * `maven.fabricmc.net` 与 `maven.quiltmc.org` 在部分网络下不可达，
+                     * 而 BMCLAPI 镜像了它们，路径结构一致。
+                     */
+                    mirror_url: fabric_mirror(&url),
                     destination: root.join("libraries").join(&relative),
                     size,
                     sha1: Some(sha1),

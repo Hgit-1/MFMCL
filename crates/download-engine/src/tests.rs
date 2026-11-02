@@ -196,6 +196,50 @@ fn secure_sources_and_exact_mirror_hosts() {
     );
 }
 
+/// 调用方显式给出的镜像即使没有校验值也要用，且排在官方之前。
+///
+/// 这条守的是 Forge/NeoForge 加载器安装：NeoForge 不发布 `.sha1`，而
+/// `maven.neoforged.net` 在部分网络下完全不可达。曾经的规则是「无校验值就不用
+/// 镜像」，结果这两族加载器在国内网络下一个版本都装不上——版本列表拿不到、
+/// 安装器下载失败，用户看到的只有「下载失败」。
+#[test]
+fn explicit_mirror_is_used_even_without_a_checksum() {
+    let original =
+        Url::parse("https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.80/neoforge-21.1.80-installer.jar")
+            .unwrap();
+    let mirror = "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/21.1.80/neoforge-21.1.80-installer.jar";
+
+    for pinned in [false, true] {
+        let candidates = source_candidates_with_mirror(
+            original.clone(),
+            Some(mirror),
+            SourcePreference::Official,
+            pinned,
+        );
+        assert_eq!(
+            candidates.len(),
+            2,
+            "pinned={pinned} should offer mirror then official"
+        );
+        assert_eq!(candidates[0].as_str(), mirror, "mirror must come first");
+        assert_eq!(candidates[1], original);
+    }
+
+    // 非白名单主机仍然被拒绝，即使调用方显式给了它。
+    let hostile = source_candidates_with_mirror(
+        original,
+        Some("https://attacker.invalid/x"),
+        SourcePreference::Mixed,
+        false,
+    );
+    assert!(
+        hostile
+            .iter()
+            .all(|u| u.host_str() != Some("attacker.invalid")),
+        "explicit mirror must still pass the host allowlist"
+    );
+}
+
 #[test]
 fn hash_pinned_partial_identity_survives_source_changes() {
     let dir = TestDir::new();

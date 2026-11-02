@@ -1050,6 +1050,15 @@ async fn launch_instance(
     };
     let launcher_hidden = settings.launcher_visibility == launcher_core::LauncherVisibility::Hide;
     if launcher_hidden && let Some(window) = app.get_webview_window("main") {
+        /*
+         * 隐藏主窗口。
+         *
+         * 窗口隐藏后焦点交给窗口管理器决定，通常不是刚启动的游戏——用户看到的是
+         * 「启动器没了，游戏窗口也不在最前面」。系统托盘图标（见 `run()`）是这里
+         * 的兜底：游戏运行期间随时能点回来。
+         *
+         * 游戏进程退出后这里会重新 `show()`，见下方 `child.wait()` 之后。
+         */
         let _ = window.hide();
     }
     /*
@@ -1284,6 +1293,69 @@ pub fn run() {
              */
             llama_runtime::spawn_idle_reaper(app.handle().clone());
             app.manage(crash_ai_model::ModelDownloads::default());
+            /*
+             * 系统托盘图标。
+             *
+             * ## 为什么必须有
+             *
+             * 「游戏启动后隐藏」这个设置会把主窗口 `hide()` 掉，等游戏进程退出才
+             * 重新显示。问题在于：Ubuntu 的 GNOME 默认不显示隐藏窗口的任务栏项，
+             * 而启动器之前**没有任何托盘图标**——于是窗口一隐藏，用户在游戏运行
+             * 期间完全无法把启动器找回来，只能等游戏退出。
+             *
+             * 有了托盘图标，左键点一下即可恢复窗口；右键菜单里也给同样的入口，
+             * 因为不同桌面环境对左键点击的处理不一致（有的只在菜单里响应）。
+             */
+            {
+                use tauri::menu::{Menu, MenuItem};
+                use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+                let show_item = MenuItem::with_id(app, "show", "显示启动器", true, None::<&str>)?;
+                let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+                TrayIconBuilder::with_id("main-tray")
+                    .tooltip("MFMCL")
+                    .icon(app.default_window_icon().cloned().ok_or("缺少应用图标")?)
+                    .menu(&menu)
+                    /*
+                     * 不显示菜单的默认行为：Linux 上 `show_menu_on_left_click`
+                     * 为真时左键会弹菜单而不是直接恢复窗口，多一步点击。
+                     */
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id().as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        /*
+                         * 只处理「左键抬起」。
+                         * 用 `Up` 而不是 `Down`：`Down` 在部分环境里会与菜单
+                         * 交互冲突，导致点一次弹出两次。
+                         */
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    })
+                    .build(app)?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -49,7 +49,7 @@ mc-metadata = { path = "../crates/mc-metadata" }
 reqwest.workspace = true
 regex.workspace = true
 shlex.workspace = true
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
