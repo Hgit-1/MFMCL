@@ -339,10 +339,19 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
             <option value="custom">{t('settings.customDir')}</option>
           </select>)}
         {field(t('settings.launcherVisibility'), t('settings.launcherVisibilityHint'),
+          /*
+           * 只有「保持」与「隐藏」两项。
+           *
+           * 「启动后关闭」曾经在这里，但后端 `LauncherVisibility` 只有这两个变体，
+           * 前端把 `close` 翻译成 `closeAfterLaunch`，而那一项是被拒绝/归零的——
+           * 也就是说选了它什么都不会发生，界面却在承诺一件做不到的事。
+           *
+           * 隐藏后可以随时从系统托盘图标点回来，所以「隐藏」是可用的；
+           * 「关闭」需要重启启动器，在没有实现之前不该提供。
+           */
           <select value={prefs.launcherVisibility} onChange={e => update('launcherVisibility', e.target.value as LauncherPrefs['launcherVisibility'])}>
             <option value="keep">{t('settings.visibilityKeep')}</option>
             <option value="hide">{t('settings.visibilityHide')}</option>
-            <option value="close">{t('settings.visibilityClose')}</option>
           </select>)}
         {field(t('settings.processPriority'), t('settings.processPriorityHint'),
           <select value={prefs.processPriority} onChange={e => update('processPriority', e.target.value as LauncherPrefs['processPriority'])}>

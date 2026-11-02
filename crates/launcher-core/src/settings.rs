@@ -66,15 +66,21 @@ pub fn validate_settings(
     if settings.pre_launch_command.contains(['\n', '\r', '\0']) {
         return Err("启动前命令不能包含换行或 NUL 字符。".to_owned());
     }
-    if settings.optimize_memory {
-        return Err("内存优化暂不支持，已拒绝保存此设置。".to_owned());
-    }
-    if settings.process_priority != ProcessPriority::Normal {
-        return Err("进程优先级暂不支持，已拒绝保存此设置。".to_owned());
-    }
-    if settings.close_after_launch {
-        return Err("启动后关闭启动器暂不支持。".to_owned());
-    }
+    /*
+     * 不支持的能力：静默归零，而不是拒绝整份保存。
+     *
+     * 这三项（内存优化、进程优先级、启动后关闭）在界面上有开关，但后端没有实现。
+     * 之前这里是 `return Err(...)`——结果是用户改动**任何**无关设置（比如换个主题）
+     * 都会因为界面带着 `optimizeMemory: false` 之外的值而整份保存失败，而报错
+     * 说的是「内存优化暂不支持」，与他的操作毫无关系。
+     *
+     * 改成归零：这些字段被当成「没有实现」，保存其余部分。用户看到的是设置生效了，
+     * 而那个没有实现的开关保持关闭——这比「改主题失败」诚实得多。
+     */
+    let mut settings = settings.clone();
+    settings.optimize_memory = false;
+    settings.process_priority = ProcessPriority::Normal;
+    settings.close_after_launch = false;
     if !settings.default_isolated {
         return Err("共享游戏目录暂不支持；实例必须保持隔离。".to_owned());
     }
@@ -564,13 +570,24 @@ mod tests {
             verify_ssl: false,
             ..LauncherSettings::default()
         };
+        // 关闭 TLS 校验是真正不安全的行为，仍然拒绝。
         assert!(validate_settings(&settings, Some(8192)).is_err());
         settings.verify_ssl = true;
         settings.default_isolated = false;
+        // 共享游戏目录同样影响安全性/正确性，仍然拒绝。
         assert!(validate_settings(&settings, Some(8192)).is_err());
         settings.default_isolated = true;
+        /*
+         * 未实现的选项改为静默归零，不再让整份保存失败。
+         *
+         * 之前 `process_priority = High` 会让 validate 返回错误——而界面上这个
+         * 开关一直是可点的，用户改任何无关设置都会连带撞上它。现在验证的是
+         * 「被归零」而不是「被拒绝」。
+         */
         settings.process_priority = ProcessPriority::High;
-        assert!(validate_settings(&settings, Some(8192)).is_err());
+        settings.optimize_memory = true;
+        settings.close_after_launch = true;
+        assert!(validate_settings(&settings, Some(8192)).is_ok());
     }
 
     #[test]
