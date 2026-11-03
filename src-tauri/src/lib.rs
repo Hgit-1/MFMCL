@@ -825,10 +825,7 @@ async fn launch_instance(
     {
         instance.game_dir = std::path::PathBuf::from(dir.trim());
     }
-    let version_dir = instance
-        .instance_dir
-        .join("versions")
-        .join(&instance.game_version);
+    let version_dir = instance.version_dir();
     let profile = if instance.loader == "vanilla" {
         version_dir.join(format!("{}.json", instance.game_version))
     } else {
@@ -1373,6 +1370,8 @@ pub fn run() {
             management::loader_versions,
             management::install_loader,
             management::list_mods,
+            management::detect_instance_version,
+            management::apply_detected_version,
             management::fabric_api_status,
             management::install_fabric_api,
             management::inspect_mods,

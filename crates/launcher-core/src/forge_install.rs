@@ -577,6 +577,18 @@ async fn install_from_installer(
     needed.retain(|coord| !produced.contains(coord));
     needed.sort();
     needed.dedup();
+    /*
+     * 并发下载加载器依赖。
+     *
+     * 原来是逐个 `await`：NeoForge 一份 install profile 有几十个库，串行下载把
+     * 一次安装拖到几十秒，而其中绝大部分时间在等网络。下载引擎内部有信号量
+     * （`max_concurrent_downloads`，默认 4），所以一次把全部任务提交出去即可——
+     * 并发度由引擎控制，这里不需要自己再分片。
+     *
+     * 先在同步阶段算出「要下哪些、下到哪里」，再并发执行：这样已存在文件的复用
+     * 判断仍在下载开始前完成，不会出现两个任务抢写同一个目标。
+     */
+    let mut planned: Vec<(String, std::path::PathBuf, String, Option<String>)> = Vec::new();
     for coord in &needed {
         let repository = maven_repository_for(coord, kind)?;
         let relative = maven_relative(coord)?;
@@ -586,29 +598,43 @@ async fn install_from_installer(
             resolved.insert(coord.clone(), destination);
             continue;
         }
-        let url = format!("{repository}{relative}");
-        let sha1 = profile_artifact_sha1(&profile, coord);
-        engine
-            .download(
-                &artifact_with_mirror(
-                    format!("loader-dep:{coord}"),
-                    format!("加载器依赖 {coord}"),
-                    url,
-                    destination.clone(),
-                    sha1,
-                ),
-                progress.clone(),
-            )
-            .await
-            .map_err(|e| format!("下载加载器依赖 {coord} 失败：{e}"))?;
-        resolved.insert(coord.clone(), destination);
+        planned.push((
+            coord.clone(),
+            destination,
+            format!("{repository}{relative}"),
+            profile_artifact_sha1(&profile, coord),
+        ));
+    }
+
+    let downloads = planned.into_iter().map(|(coord, destination, url, sha1)| {
+        let engine = engine;
+        let progress = progress.clone();
+        async move {
+            engine
+                .download(
+                    &artifact_with_mirror(
+                        format!("loader-dep:{coord}"),
+                        format!("加载器依赖 {coord}"),
+                        url,
+                        destination.clone(),
+                        sha1,
+                    ),
+                    progress,
+                )
+                .await
+                .map_err(|e| format!("下载加载器依赖 {coord} 失败：{e}"))?;
+            Ok::<_, String>((coord, destination))
+        }
+    });
+    // `join_all` 保留全部错误中的任意一个即可：依赖链是「一个都不能少」，
+    // 报哪一个不影响用户能否继续。
+    for item in futures_util::future::join_all(downloads).await {
+        let (coord, destination) = item?;
+        resolved.insert(coord, destination);
     }
 
     // --- 4. 解析 data 占位符 -----------------------------------------------
-    let version_dir = instance
-        .instance_dir
-        .join("versions")
-        .join(&instance.game_version);
+    let version_dir = instance.version_dir();
     let minecraft_jar = version_dir.join(format!("{}.jar", instance.game_version));
     if !minecraft_jar.is_file() {
         return Err("缺少原版客户端 jar；请先完成原版安装。".into());

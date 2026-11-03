@@ -17,6 +17,7 @@ pub mod plugins;
 pub mod settings;
 mod store;
 pub mod updates;
+pub mod version_detect;
 
 pub use catalog::{CatalogMod, CatalogVersion};
 pub use diagnostics::{
