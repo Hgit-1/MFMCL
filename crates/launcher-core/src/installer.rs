@@ -228,7 +228,7 @@ async fn install_inner(
 
     tokio::fs::create_dir_all(&instance.instance_dir).await?;
     tokio::fs::create_dir_all(&instance.game_dir).await?;
-    let version_dir = instance.instance_dir.join("versions").join(&metadata.id);
+    let version_dir = instance.version_root().join(&metadata.id);
     let libraries_dir = data_root.join("libraries");
     let assets_dir = data_root.join("assets");
     let natives_dir = version_dir.join("natives");

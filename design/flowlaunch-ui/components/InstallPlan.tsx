@@ -27,7 +27,7 @@
 //
 // 所以「选 Fabric」不是把加载器参数塞进创建请求，而是在第 2 步完成之后再走第 3 步。
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Boxes, Check, Cpu, Package } from 'lucide-react';
 import { Button } from './Button';
 import { useI18n } from '../utils/i18n';
@@ -86,11 +86,36 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
 
   const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState('');
+  /**
+   * 用户是否手动改过名字。
+   *
+   * 改过之后就不再自动覆盖：选加载器时把用户刚输入的名字冲掉，会让人觉得输入无效。
+   * 没改过（默认名）时随加载器与版本自动更新，省掉一次输入。
+   */
+  const nameEdited = useRef(false);
+
+  /**
+   * 默认实例名：`<游戏版本> <加载器> <加载器版本>`，原版只有版本号。
+   *
+   * 例如 `1.21.1 neoforge 21.1.265`、`1.20.1 forge 47.4.28`、`1.21.1`。
+   * 这个名字同时会成为磁盘目录名（见后端 `directory_name_for`），所以它必须
+   * 一眼能看出「哪个版本、什么加载器」——用户要手动改 jar 或拷存档时全靠它。
+   */
+  const defaultName = useCallback(
+    (gameVersion: string, kind: LoaderChoice, version: string) => {
+      if (kind === 'vanilla') return gameVersion;
+      const label = LOADER_LABELS[kind];
+      const suffix = version.trim();
+      return suffix ? `${gameVersion} ${label.toLowerCase()} ${suffix}` : `${gameVersion} ${label.toLowerCase()}`;
+    },
+    [],
+  );
 
   // 换目标版本时重置：版本变了，加载器列表与默认名都要跟着变。
   useEffect(() => {
     if (!target) return;
-    setName(`Minecraft ${target.version}`);
+    nameEdited.current = false;
+    setName(defaultName(target.version, 'vanilla', ''));
     setLoader('vanilla');
     setLoaderVersion('');
     setVersions([]);
@@ -98,7 +123,7 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
     setVersionsError('');
     setPhase('idle');
     setError('');
-  }, [target]);
+  }, [target, defaultName]);
 
   /**
    * 选中加载器后拉取可用版本。
@@ -115,7 +140,15 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
       const list = await loaderVersions(kind, game);
       setVersions(list);
       // 默认选最新的稳定版：绝大多数用户要的就是这个。
-      setLoaderVersion(list.find(item => item.stable)?.version ?? list[0]?.version ?? '');
+      const preferred = list.find(item => item.stable)?.version ?? list[0]?.version ?? '';
+      setLoaderVersion(preferred);
+      /*
+       * 加载器版本定下来之后更新名字：`1.21.1 neoforge` → `1.21.1 neoforge 21.1.265`。
+       * 只有版本号才能说明「装的是哪个构建」，而它决定能装哪些模组。
+       */
+      if (!nameEdited.current && target && preferred) {
+        setName(defaultName(target.version, kind, preferred));
+      }
       setVersionsState('ready');
       if (list.length === 0) setVersionsError(t('install.noLoaderVersion'));
     } catch (cause) {
@@ -131,6 +164,14 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
     setVersions([]);
     setVersionsState('idle');
     setVersionsError('');
+    /*
+     * 名字跟着加载器走，但只在用户没手动改过时。
+     * 默认名（`1.21.1`）与选了加载器之后的（`1.21.1 neoforge ...`）是两种事实，
+     * 停在旧名字会与实际装的加载器不符。
+     */
+    if (!nameEdited.current && target) {
+      setName(defaultName(target.version, choice, ''));
+    }
     if (choice !== 'vanilla' && target) void loadVersions(choice, target.version);
   };
 
@@ -209,7 +250,10 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
         <span>{t('install.name')}</span>
         <input
           value={name}
-          onChange={event => setName(event.target.value)}
+          onChange={event => {
+            nameEdited.current = true;
+            setName(event.target.value);
+          }}
           placeholder={`Minecraft ${target.version}`}
           maxLength={48}
           disabled={busy}

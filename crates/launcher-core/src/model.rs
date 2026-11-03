@@ -357,6 +357,50 @@ pub struct InstanceRecord {
     pub last_launched_at: Option<String>,
 }
 
+impl InstanceRecord {
+    /// 版本文件所在的目录：`<game 根>/versions/<实例目录名>`。
+    ///
+    /// ## 为什么放在共享根目录下
+    ///
+    /// 用户期望的是 `~/.minecraft/versions/<名字>`——那是原版启动器与 PCL2 的布局，
+    /// 也是手动改配置、换 jar、装 OptiFine 时大家会去的地方。之前它藏在
+    /// `<app-data>/instances/<uuid>/versions/` 里，与 `.minecraft` 完全隔绝。
+    ///
+    /// ## 为什么用实例目录名而不是 MC 版本号
+    ///
+    /// 同一台机器上常有两个不同加载器的 1.21.1 实例（原版一个、NeoForge 一个），
+    /// 用 `versions/1.21.1` 会互相覆盖。实例目录名已经含版本与加载器信息
+    /// （`1.21.1 neoforge 21.1.265`），天然唯一。
+    ///
+    /// ## 旧实例的兼容
+    ///
+    /// 早期实例的版本文件在 `instance_dir/versions/<mc 版本>`。如果那个目录存在，
+    /// 仍然用它——不迁移、不复制。判断放在这里而不是调用点，三条路径
+    /// （安装 / 启动 / 加载器）就都自动一致。
+    pub fn version_root(&self) -> PathBuf {
+        let legacy = self.instance_dir.join("versions");
+        if legacy.is_dir() {
+            return legacy;
+        }
+        match self.instance_dir.file_name().and_then(|n| n.to_str()) {
+            Some(dir_name) => {
+                // `game_dir` 是 `<game 根>/shared`，上一级就是根目录。
+                match self.game_dir.parent() {
+                    Some(root) => root.join("versions").join(dir_name),
+                    // 没有共享根（隔离实例）：留在实例目录内。
+                    None => legacy,
+                }
+            }
+            None => legacy,
+        }
+    }
+
+    /// 这个实例的版本目录（`version_root()` 下以 MC 版本号命名的那一层）。
+    pub fn version_dir(&self) -> PathBuf {
+        self.version_root().join(&self.game_version)
+    }
+}
+
 /// Per-instance overrides of the global launcher settings.
 ///
 /// Every field is optional and `None` means "inherit the global value". That is
@@ -451,6 +495,43 @@ impl CreateInstanceInput {
         if self.game_version.contains(['/', '\\']) || self.game_version.contains("..") {
             return Err("版本标识包含不允许的路径字符。".to_owned());
         }
+        /*
+         * 实例名会成为磁盘上的目录名，所以必须拒绝路径分隔符。
+         * 之前只校验了长度，`../../etc` 这样的名字能一路走到 `join()` 里。
+         */
+        if name.contains(['/', '\\', '\0', ':', '*', '?', '"', '<', '>', '|']) {
+            return Err("实例名称不能包含 / \\ : * ? \" < > | 等字符。".to_owned());
+        }
         Ok(())
+    }
+}
+
+/// 目录名的最大长度。
+///
+/// 255 是常见文件系统的单段上限，但留给后续拼接 `-1`、`-2` 这类后缀，并且
+/// 中文按字符数而不是字节数限制（`~/.minecraft/versions/<名>` 里中文很常见）。
+const MAX_DIRECTORY_NAME_CHARS: usize = 120;
+
+/// 把实例名转成安全的目录名。
+///
+/// 保留中文与常规标点：`~/.minecraft/versions/1.21.1 neoforge 21.1.265` 这样的
+/// 名字正是用户期望的。只替换真正不能出现在路径里的字符，并且拒绝空结果。
+pub fn directory_name_for(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || "/\\:*?\"<>|".contains(c) {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    let cut: String = trimmed.chars().take(MAX_DIRECTORY_NAME_CHARS).collect();
+    if cut.is_empty() {
+        "instance".to_owned()
+    } else {
+        cut
     }
 }

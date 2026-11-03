@@ -374,7 +374,31 @@ impl LauncherStore {
     ) -> Result<InstanceRecord, StoreError> {
         input.validate().map_err(StoreError::Invalid)?;
         let id = Uuid::new_v4().to_string();
-        let instance_dir = data_root.join("instances").join(&id);
+        /*
+         * 目录名用实例名，不再用 UUID。
+         *
+         * 为什么改：`instances/<uuid>/versions/1.21.1` 在文件管理器里是一串无意义
+         * 的十六进制，用户想手动改配置或拷存档时根本分不清哪个是哪个。PCL2 之类
+         * 的启动器一直用可读名字，这也是用户明确要求的形式。
+         *
+         * 冲突处理：同名实例不该共享目录（会互相覆盖 `versions/`、`mods/`），
+         * 所以第二个同名实例得到 `名字-1`，再冲突就是 `-2`，与用户要求一致。
+         */
+        let base_name = crate::model::directory_name_for(input.name.trim());
+        /*
+         * 已占用的目录：读一次性读全，不要每轮循环查库（那会在持锁期间开新查询）。
+         * 读失败按「没有记录」处理——宁可让目录名冲突被文件系统判断兜住，
+         * 也不要因为一次查询失败而拒绝创建实例。
+         */
+        let taken: Vec<String> = self
+            .list_instances()
+            .map(|list| {
+                list.into_iter()
+                    .map(|item| path_to_string(&item.instance_dir))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let instance_dir = unique_directory(data_root.join("instances"), &base_name, &taken)?;
         /*
          * 共享根目录下的游戏目录。
          *
@@ -666,6 +690,26 @@ impl LauncherStore {
         Ok(())
     }
 
+    /// 改写实例记录的 Minecraft 版本。
+    ///
+    /// 用于「识别出的版本与记录不一致，用户确认后修正」。不校验版本是否存在：
+    /// 识别结果来自磁盘上的真实文件，而那些文件正是由这个版本号命名的。
+    pub fn set_instance_game_version(&self, id: &str, version: &str) -> Result<(), StoreError> {
+        let version = version.trim();
+        if version.is_empty() || version.len() > 64 || version.contains(['/', '\\']) {
+            return Err(StoreError::Invalid("Minecraft 版本标识无效。".to_owned()));
+        }
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        if connection.execute(
+            "UPDATE instances SET game_version = ?1 WHERE id = ?2",
+            params![version, id],
+        )? == 0
+        {
+            return Err(StoreError::Invalid("Instance not found".into()));
+        }
+        Ok(())
+    }
+
     /// Read one instance's overrides. A missing row means "inherits everything",
     /// which is why this returns the type default rather than `None`: callers
     /// always want a usable value, and an empty override set resolves to exactly
@@ -817,6 +861,32 @@ impl LauncherStore {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+/// 找一个还没被占用的目录：`base`、`base-1`、`base-2`…
+///
+/// 两个来源都要看：
+///   - **数据库已有记录**：实例刚创建时目录还没落盘，只查文件系统会让连续创建的
+///     两个同名实例拿到同一个目录，等写文件时才互相覆盖。
+///   - **文件系统**：目录可能被用户手动创建、或上次删除失败留下，那些情况下数据库
+///     里没有记录但路径确实存在。
+///
+/// 上限 9999 只是防止异常情况下死循环。
+fn unique_directory(parent: PathBuf, base: &str, taken: &[String]) -> Result<PathBuf, StoreError> {
+    for index in 0..10_000u32 {
+        let candidate = if index == 0 {
+            parent.join(base)
+        } else {
+            parent.join(format!("{base}-{index}"))
+        };
+        let candidate_text = path_to_string(&candidate);
+        if !candidate.exists() && !taken.iter().any(|used| used == &candidate_text) {
+            return Ok(candidate);
+        }
+    }
+    Err(StoreError::Invalid(format!(
+        "同名实例过多，无法为「{base}」分配目录。"
+    )))
 }
 
 #[cfg(test)]
@@ -1158,8 +1228,61 @@ mod tests {
             PathBuf::from("/home/someone/.minecraft/shared")
         );
         assert!(!instance.isolated, "共享根目录的实例不再是隔离的");
-        // 版本文件仍然私有，否则两个实例会互相覆盖同一个版本目录。
-        assert!(instance.instance_dir.ends_with(&instance.id));
+        /*
+         * 目录名用实例名，不再用 UUID。
+         * 用户需要在文件管理器里一眼认出哪个目录对应哪个实例。
+         */
+        assert!(
+            instance.instance_dir.ends_with("Shared"),
+            "instance dir should be named after the instance, got {:?}",
+            instance.instance_dir
+        );
+        assert!(!instance.instance_dir.ends_with(&instance.id));
+    }
+
+    /// 同名实例得到 `-1`、`-2` 后缀，不会共用目录。
+    ///
+    /// 共用目录意味着两个实例会互相覆盖 `versions/`、`mods/` 与存档——
+    /// 这是最难排查的一类数据损坏。
+    #[test]
+    fn duplicate_names_get_numbered_directories() {
+        let root = std::env::temp_dir().join(format!("mfmcl-dup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = LauncherStore::open(":memory:").unwrap();
+        let make = || CreateInstanceInput {
+            name: "1.21.1 neoforge 21.1.265".into(),
+            game_version: "1.21.1".into(),
+        };
+        let first = store.create_instance_in(&make(), &root, None).unwrap();
+        // 创建目录，模拟「第一个实例已经开始写文件」。
+        std::fs::create_dir_all(&first.instance_dir).unwrap();
+        let second = store.create_instance_in(&make(), &root, None).unwrap();
+
+        assert_ne!(first.instance_dir, second.instance_dir);
+        assert!(first.instance_dir.ends_with("1.21.1 neoforge 21.1.265"));
+        assert!(
+            second.instance_dir.ends_with("1.21.1 neoforge 21.1.265-1"),
+            "got {:?}",
+            second.instance_dir
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 实例名不能带路径分隔符：它会成为磁盘目录名。
+    #[test]
+    fn path_separators_are_rejected_in_instance_names() {
+        let store = LauncherStore::open(":memory:").unwrap();
+        for bad in ["../escape", "a/b", "a\\b", ""] {
+            let result = store.create_instance_in(
+                &CreateInstanceInput {
+                    name: bad.into(),
+                    game_version: "1.21.4".into(),
+                },
+                Path::new("/tmp/mfmcl-test"),
+                None,
+            );
+            assert!(result.is_err(), "{bad:?} should be rejected");
+        }
     }
 
     /// 没有根目录时退回实例私有目录，与旧行为一致。

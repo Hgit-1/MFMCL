@@ -492,10 +492,7 @@ async fn install_loader_inner(
     if patch.get("processors").is_some() {
         return Err("加载器配置包含不支持的处理器；不会执行任意程序。".into());
     }
-    let version_dir = instance
-        .instance_dir
-        .join("versions")
-        .join(&instance.game_version);
+    let version_dir = instance.version_dir();
     let version_dir_meta = tokio::fs::symlink_metadata(&version_dir)
         .await
         .map_err(|e| e.to_string())?;
@@ -773,11 +770,7 @@ pub fn loader_overlay_is_installed(
     if instance.loader != format!("{}@{version}", kind.name()) {
         return Ok(false);
     }
-    let path = instance
-        .instance_dir
-        .join("versions")
-        .join(&instance.game_version)
-        .join("launch.json");
+    let path = instance.version_dir().join("launch.json");
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -833,11 +826,7 @@ pub fn diagnose_loader(instance: &InstanceRecord, libraries_dir: &Path) -> Loade
     let Some(kind) = LoaderKind::from_name(kind) else {
         return LoaderHealth::Broken(format!("未识别的加载器：{kind}"));
     };
-    let path = instance
-        .instance_dir
-        .join("versions")
-        .join(&instance.game_version)
-        .join("launch.json");
+    let path = instance.version_dir().join("launch.json");
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

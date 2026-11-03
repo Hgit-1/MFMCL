@@ -303,7 +303,7 @@ fn prepare_with_runtime(
             "profile version does not match instance".into(),
         ));
     }
-    let version_dir = instance.instance_dir.join("versions").join(&metadata.id);
+    let version_dir = instance.version_root().join(&metadata.id);
     let client_jar = version_dir.join(format!("{}.jar", metadata.id));
     require_file(&client_jar)?;
     let libraries_dir = data_root.join("libraries");

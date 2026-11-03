@@ -1792,6 +1792,32 @@ export interface FabricApiStatus {
   version: string | null
 }
 
+/** 对应 Rust `VersionDetection`：从磁盘读出的真实版本。 */
+export interface VersionDetection {
+  version: string | null
+  loader: string | null
+  loaderVersion: string | null
+  confidence: 'exact' | 'inferred' | null
+  /** 结论来自哪里（`inheritsFrom` / `libraries` / 实例名…），供界面解释。 */
+  source: string
+  /** 记录里存的值。与 `version` 不同时说明记录已过时。 */
+  recorded: string
+}
+
+export async function detectInstanceVersion(instanceId: string): Promise<VersionDetection> {
+  if (!isDesktopShell()) {
+    // 预览没有真实文件可读，返回与记录一致的空结论。
+    return { version: null, loader: null, loaderVersion: null, confidence: null, source: '', recorded: '' }
+  }
+  return invoke<VersionDetection>('detect_instance_version', { instanceId })
+}
+
+/** 把识别出的版本写回记录，返回最新的识别结果。 */
+export async function applyDetectedVersion(instanceId: string): Promise<VersionDetection> {
+  requireDesktop('修正实例版本')
+  return invoke<VersionDetection>('apply_detected_version', { instanceId })
+}
+
 export async function fabricApiStatus(instanceId: string): Promise<FabricApiStatus> {
   if (!isDesktopShell()) {
     /*

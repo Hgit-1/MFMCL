@@ -127,6 +127,39 @@ pub fn list_mods(
     mods::list_mods(&instance(&store, &instance_id)?)
 }
 
+/// 从磁盘识别实例的真实版本（与记录可能不一致）。
+///
+/// 只读不写：是否把识别结果写回记录由用户决定。静默改掉 `game_version` 会让
+/// 「我明明设成了 X」变成一个无法解释的状态。
+#[tauri::command]
+pub fn detect_instance_version(
+    instance_id: String,
+    store: State<'_, LauncherStore>,
+) -> Result<launcher_core::version_detect::VersionDetection, String> {
+    let target = instance(&store, &instance_id)?;
+    Ok(launcher_core::version_detect::detect_instance_version(
+        &target,
+    ))
+}
+
+/// 把识别出的版本写回实例记录。
+///
+/// 只有用户确认后才应调用。写入前重新识别一次，避免界面上看到的旧快照被写入。
+#[tauri::command]
+pub fn apply_detected_version(
+    instance_id: String,
+    store: State<'_, LauncherStore>,
+) -> Result<launcher_core::version_detect::VersionDetection, String> {
+    let target = instance(&store, &instance_id)?;
+    let detected = launcher_core::version_detect::detect_instance_version(&target);
+    if let Some(version) = &detected.version {
+        store
+            .set_instance_game_version(&instance_id, version)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(detected)
+}
+
 /// 查询实例的 Fabric API 状态（是否适用、是否已装、可装哪个版本）。
 ///
 /// 拆成「查」与「装」两条命令而不是一条：界面需要在用户点击之前就告诉他是

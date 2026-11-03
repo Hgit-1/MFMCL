@@ -17,16 +17,40 @@ import type { Account, GameInstance } from '../types';
 import type { AccountProfile, InstanceRecord, LauncherSettings } from './native';
 
 /** 后端 loader 是自由字符串；界面只认五个已知值，其余一律按原版处理。 */
+/**
+ * `InstanceRecord.loader` → 界面加载器类型。
+ *
+ * 后端存的是 `neoforge@21.1.265` 这种「名字@版本」形式（见
+ * `loaders.rs` / `forge_install.rs` 的 `set_instance_loader`），而界面只需要
+ * 名字部分。之前这里直接拿整串去 match 四个裸名，于是**所有装过加载器的实例
+ * 都被显示成「原版」**——数据库里明明是 `neoforge@21.1.265`，界面上写着原版，
+ * 用户完全无法判断加载器是否装成功。
+ */
 function normalizeLoader(loader: string): GameInstance['loader'] {
-  switch (loader) {
+  // 只取 `@` 之前的部分；没有 `@` 时就是裸名（如 'vanilla'）。
+  const name = loader.split('@', 1)[0]?.trim().toLowerCase() ?? '';
+  switch (name) {
     case 'fabric':
     case 'quilt':
     case 'forge':
     case 'neoforge':
-      return loader;
+      return name;
     default:
       return 'vanilla';
   }
+}
+
+/**
+ * 从 `neoforge@21.1.265` 里取出加载器版本。
+ *
+ * 后端一直记着这个值，但界面从来没读过，所以实例卡片与详情页都只说「NeoForge」，
+ * 说不出装的是哪个构建。加载器版本决定它能装哪些模组，属于用户会想知道的信息。
+ */
+function loaderVersionOf(loader: string): string | undefined {
+  const index = loader.indexOf('@');
+  if (index < 0) return undefined;
+  const version = loader.slice(index + 1).trim();
+  return version || undefined;
 }
 
 /**
@@ -61,8 +85,12 @@ export function toGameInstance(record: InstanceRecord, modCount = 0): GameInstan
     name: record.name,
     version: record.gameVersion,
     loader: normalizeLoader(record.loader),
-    // 后端不记录加载器版本；留 undefined 让界面省略这一段，而不是显示空值。
-    loaderVersion: undefined,
+    /*
+     * 加载器版本。之前这里写死 `undefined`（注释说「后端不记录」），但后端其实
+     * 一直记着（`neoforge@21.1.265`）。补上之后，实例页能显示具体构建，
+     * 用户才能判断「我装的这个加载器能不能跑我要的模组」。
+     */
+    loaderVersion: loaderVersionOf(record.loader),
     javaVersion: '',
     // 后端现在记录上次成功启动的时间；解析失败时留 undefined，让卡片上那一行
     // 自动不渲染，而不是显示 Invalid Date。

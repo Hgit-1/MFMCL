@@ -61,6 +61,7 @@ import {
 import { InstanceJavaCard } from './InstanceJavaCard';
 import { ModManager } from './ModManager';
 import { LoaderInstallCard } from './LoaderInstallCard';
+import { VersionCheck } from './VersionCheck';
 import { BackupDiagnostics } from './BackupDiagnostics';
 import { InstanceMaintenance } from './InstanceMaintenance';
 import { ExportPackCard, InstanceFiles } from './InstanceFiles';
@@ -683,6 +684,12 @@ export function InstanceSettings({
             <h2>{t('loader.sectionTitle')}</h2>
             <small>{t('loader.sectionHint')}</small>
           </div>
+          {/*
+            版本识别结果。
+            放在加载器卡片之上：如果记录的版本与磁盘上的实际文件不符，先修这个
+            再装加载器——否则加载器会按错的 MC 版本去选构建，装完也跑不起来。
+          */}
+          <VersionCheck instance={instance} onNotice={onNotice} onFixed={onModsChanged} />
           <div className={styles.javaCard}>
             <LoaderInstallCard
               instance={instance}
