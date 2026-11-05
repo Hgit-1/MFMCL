@@ -85,3 +85,25 @@
   display: flex;
   gap: 8px;
 }
+
+/* 两个关键入口：注册与审核。做成明显的链接，因为它们是这一步唯一要做的事。 */
+.links {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.links a {
+  color: var(--color-primary-500);
+  text-decoration: none;
+}
+
+.links a:hover {
+  text-decoration: underline;
+}
+
+.links span {
+  color: var(--color-text-disabled);
+}
