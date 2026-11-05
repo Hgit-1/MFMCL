@@ -104,6 +104,24 @@ export function MicrosoftClientIdCard({ onChanged }: MicrosoftClientIdCardProps)
         {status.configured ? t('msId.configuredHint') : t('msId.needId')}
       </p>
 
+      {/*
+        把两个关键入口做成可点的链接。
+        纯文本里写「portal.azure.com」用户得手动复制、再猜协议；直接给链接能省掉
+        最容易出错的一步。`aka.ms/mce-reviewappid` 是审核表单——注意不是
+        `aka.ms/mcapi`，那个短链指向微软内部 SharePoint，外部访问返回 401。
+      */}
+      {!status.configured && (
+        <p className={styles.links}>
+          <a href="https://portal.azure.com" target="_blank" rel="noreferrer noopener">
+            {t('msId.openPortal')}
+          </a>
+          <span aria-hidden="true">·</span>
+          <a href="https://aka.ms/mce-reviewappid" target="_blank" rel="noreferrer noopener">
+            {t('msId.openReview')}
+          </a>
+        </p>
+      )}
+
       {status.problem && (
         <p className={styles.error} role="alert">
           <AlertTriangle size={12} />
