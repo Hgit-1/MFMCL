@@ -17,6 +17,8 @@ import { readPrefs, DEFAULT_PREFS, SETTINGS_STORAGE_KEY, type LauncherPrefs } fr
 import { primeDeviceMemory } from '../utils/memory';
 import { confirmAction } from '../utils/confirm';
 import { isOnboardingPending, markOnboardingComplete, resetOnboarding } from '../utils/onboarding';
+import { acceptEula, hasAcceptedEula } from '../utils/eula';
+import { LegalNotice } from '../components/LegalNotice';
 import { applyMotionLevel, readMotionLevel } from '../utils/motion';
 import {
   loadPluginStore,
@@ -576,6 +578,12 @@ function App() {
    */
   const updatableCount = updatablePluginCount(pluginStore);
   const [showFirstRun, setShowFirstRun] = useState(() => isOnboardingPending());
+  /*
+   * 协议确认排在引导之前。
+   * 引导问的是「你想怎么用」，而协议要先回答「你是否接受使用条件」——顺序反过来
+   * 会让用户在还没同意的情况下先做了一堆设置。
+   */
+  const [eulaAccepted, setEulaAccepted] = useState(() => hasAcceptedEula());
   const [storeCategory, setStoreCategory] = useState<StoreCategory>('vanilla');
   const [storeMenuOpen, setStoreMenuOpen] = useState(false);
 
@@ -1447,6 +1455,19 @@ function App() {
     }
     applyAccent(manual);
   }, [background, slideIndex, globalPrefs.customAccent, resolvedTheme]);
+
+  if (!eulaAccepted) {
+    return (
+      <div className={styles.app}>
+        <LegalNotice
+          onAccept={() => {
+            acceptEula();
+            setEulaAccepted(true);
+          }}
+        />
+      </div>
+    );
+  }
 
   // 首次运行引导
   if (showFirstRun) {

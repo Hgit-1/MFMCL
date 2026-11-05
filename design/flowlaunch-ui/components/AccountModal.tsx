@@ -590,6 +590,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                 <li>{t('account.offlineLimit2')}</li>
                 <li>{t('account.offlineLimit3')}</li>
                 <li>{t('account.offlineLimit4')}</li>
+                <li>{t('account.offlineLimit5')}</li>
               </ul>
             </div>
           </div>
