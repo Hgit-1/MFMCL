@@ -18,6 +18,8 @@ import { primeDeviceMemory } from '../utils/memory';
 import { confirmAction } from '../utils/confirm';
 import { isOnboardingPending, markOnboardingComplete, resetOnboarding } from '../utils/onboarding';
 import { acceptEula, hasAcceptedEula } from '../utils/eula';
+import { renderSkinAvatar, skinSourceOf } from '../utils/skinAvatar';
+import type { SkinSetting } from '../components/SkinSection';
 import { LegalNotice } from '../components/LegalNotice';
 import { applyMotionLevel, readMotionLevel } from '../utils/motion';
 import {
@@ -172,16 +174,53 @@ const PluginsIcon = () => (
     <path d="M10 14v4" />
   </svg>
 );
-function SidebarAccountAvatar({ account }: { account?: Account }) {
+/**
+ * 侧栏底部的账户头像。
+ *
+ * 优先用从皮肤裁出的脸（本地渲染，见 `utils/skinAvatar`），拿不到时回落到
+ * 通用人形图标。三条来源依次尝试：
+ *
+ *   1. 账户自带的 `avatar`（第三方皮肤站可能直接给一个 URL）；
+ *   2. 全局皮肤设置里的自定义皮肤（用户上传的那张）；
+ *   3. 默认人形图标。
+ *
+ * 不请求 crafatar / minotar 这类第三方头像服务：那会把玩家 UUID 发给一个与
+ * 启动器无关的接收方，为了一张 32 像素的图不值得。
+ */
+function SidebarAccountAvatar({ account, skin }: { account?: Account; skin?: SkinSetting }) {
   const { t } = useI18n();
-  if (!account?.avatar) return <DefaultUserAvatar className={styles.defaultUserAvatar} />;
-  return (
-    <img
-      className={styles.sidebarAvatar}
-      src={account.avatar}
-      alt={t('account.avatarAlt', { values: { name: account.username } })}
-    />
-  );
+  const [rendered, setRendered] = useState<string | null>(null);
+
+  const customSource = skin ? skinSourceOf(skin) : null;
+  // 账户直接给的地址优先；否则用本地皮肤。
+  const source = account?.avatar ?? customSource;
+  const alt = account
+    ? t('account.avatarAlt', { values: { name: account.username } })
+    : t('account.avatarPlaceholder', { values: { name: '' } });
+
+  useEffect(() => {
+    let alive = true;
+    if (!source) {
+      setRendered(null);
+      return;
+    }
+    void renderSkinAvatar({ source }).then(result => {
+      if (alive) setRendered(result);
+    });
+    return () => { alive = false; };
+  }, [source]);
+
+  if (rendered) {
+    return (
+      <img
+        className={styles.sidebarAvatar}
+        src={rendered}
+        alt={alt}
+        title={account?.username}
+      />
+    );
+  }
+  return <DefaultUserAvatar className={styles.defaultUserAvatar} />;
 }
 
 const SunIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="10" cy="10" r="4"/><path d="M10 2v2m0 12v2M2 10h2m12 0h2m-2.8-5.2l1.4-1.4m-11.2 0L4 4.8m11.2 11.2l1.4 1.4m-11.2 0L4 15.2"/></svg>;
@@ -280,9 +319,20 @@ function toJavaRuntime(runtime: JavaRuntimeInfo): JavaRuntime {
  * 把后端字段翻译过去，只填那些后端真正会读的项：界面不展示、后端也不读的字段
  * （透明度、标题栏样式等）保持默认值即可，反正没有任何代码会看它们。
  */
-function prefFromSettings(settings: LauncherSettings): LauncherPrefs {
+function prefFromSettings(settings: LauncherSettings, current?: LauncherPrefs): LauncherPrefs {
   return {
     ...DEFAULT_PREFS,
+    /*
+     * 皮肤只存在前端，后端没有对应字段。
+     *
+     * 这里必须显式保留调用方当前的皮肤，否则每次从后端同步设置都会把它冲回
+     * `DEFAULT_PREFS.skin`——用户上传的皮肤在重启、或随便保存一次设置之后就
+     * 悄悄没了，而界面上看不出任何操作与它的关联。
+     *
+     * 调用方通过 `prefFromSettings(settings, current)` 传入现值；省略时退回默认值
+     * （首次加载，本来就没有可保留的）。
+     */
+    skin: current?.skin ?? DEFAULT_PREFS.skin,
     theme: settings.themeMode,
     themePreset: settings.themePreset,
     customAccent: settings.customAccent,
@@ -666,7 +716,7 @@ function App() {
       setCurrentAccount(mappedAccounts.find((_, index) => profiles[index].selected));
 
       if (settings) {
-        setGlobalPrefs(prefFromSettings(settings));
+        setGlobalPrefs(previous => prefFromSettings(settings, previous));
         setGlobalJavaPath(settings.javaPath ?? '');
         setNaturalSettings(settings);
       }
@@ -804,7 +854,7 @@ function App() {
         const merged = prefsToSettings(next, base);
         await saveSettingsNative(merged);
         setNaturalSettings(merged);
-        setGlobalPrefs(prefFromSettings(merged));
+        setGlobalPrefs(previous => prefFromSettings(merged, previous));
         setGlobalJavaPath(merged.javaPath ?? '');
       } catch (error) {
         setToast(errorText(error, '无法保存引导里的设置，稍后可在设置页重新调整。'));
@@ -1701,7 +1751,7 @@ function App() {
             aria-label={t('app.account')}
             title={t('app.account')}
           >
-            <SidebarAccountAvatar account={currentAccount} />
+            <SidebarAccountAvatar account={currentAccount} skin={globalPrefs.skin} />
             <span>{currentAccount ? currentAccount.username : t('app.login')}</span>
             {/*
               已登录时在名字右侧放一个「退出登录」按钮。用 <span role="button"> 而
@@ -2226,7 +2276,7 @@ function App() {
           const next = prefsToSettings(nextPrefs, base);
           await saveSettingsNative(next);
           setNaturalSettings(next);
-          setGlobalPrefs(prefFromSettings(next));
+          setGlobalPrefs(previous => prefFromSettings(next, previous));
           setGlobalJavaPath(next.javaPath ?? '');
         }}
       />}
