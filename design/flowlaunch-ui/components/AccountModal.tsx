@@ -7,6 +7,7 @@ import type { Account } from '../types';
 import { useI18n } from '../utils/i18n';
 import { addOfflineAccount, errorText, microsoftLogin, removeAccount, skinLogin, skinSelectProfile } from '../utils/native';
 import { confirmAction } from '../utils/confirm';
+import { MicrosoftClientIdCard } from './MicrosoftClientIdCard';
 import { toAccount } from '../utils/adapters';
 import styles from './AccountModal.module.css';
 
@@ -526,6 +527,13 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
               <p>{t('account.microsoftLoginHint')}</p>
             </div>
           </div>
+
+          {/*
+            应用 ID 配置。
+            放在流程说明之上：没有它登录必然失败，先让用户看到该做什么。
+            构建时已注入 ID 的发行版不会渲染这一块（组件内部判断）。
+          */}
+          <MicrosoftClientIdCard />
 
           <div className={styles.infoBox}>
             <h4>{t('account.loginFlow')}</h4>

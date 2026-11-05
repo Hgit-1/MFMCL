@@ -1005,6 +1005,33 @@ export async function removeAccount(accountId: string): Promise<void> {
 }
 
 /** 微软登录会打开系统浏览器完成授权；`clientId` 留空则用构建时内置的 ID。 */
+/** 对应 Rust `ClientIdStatus`：Microsoft 应用 ID 的配置状态。 */
+export interface MicrosoftClientIdStatus {
+  configured: boolean
+  /** `builtin` = 编译时注入，`user` = 运行时填写。 */
+  source: 'builtin' | 'user' | null
+  problem: string | null
+}
+
+export async function microsoftClientIdStatus(): Promise<MicrosoftClientIdStatus> {
+  if (!isDesktopShell()) {
+    // 预览没有后端，也读不到系统凭据库。
+    return { configured: false, source: null, problem: null }
+  }
+  return invoke<MicrosoftClientIdStatus>('microsoft_client_id_status')
+}
+
+/** 保存运行时填写的应用 ID。返回值不回传 ID 本身。 */
+export async function microsoftSaveClientId(clientId: string): Promise<MicrosoftClientIdStatus> {
+  requireDesktop('保存 Microsoft 应用 ID')
+  return invoke<MicrosoftClientIdStatus>('microsoft_save_client_id', { clientId })
+}
+
+export async function microsoftClearClientId(): Promise<MicrosoftClientIdStatus> {
+  requireDesktop('清除 Microsoft 应用 ID')
+  return invoke<MicrosoftClientIdStatus>('microsoft_clear_client_id')
+}
+
 export async function microsoftLogin(clientId = ''): Promise<AccountProfile> {
   requireDesktop('Microsoft 登录')
   return invoke<AccountProfile>('microsoft_login', { clientId })
