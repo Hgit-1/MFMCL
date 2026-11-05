@@ -12,8 +12,20 @@ use crate::{
     decode, http_client, secrets_equal, valid_secret,
 };
 
-const AUTHORIZE_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize";
-const TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
+/*
+ * 用 `common` 而不是 `consumers`。
+ *
+ * `consumers` 只接受个人 Microsoft 账号。用它时，工作/学校账号（Entra ID 组织
+ * 账号）在授权阶段就会被拒绝——注册应用时选了「任何组织目录中的账户和个人
+ * Microsoft 账户」也没用，因为端点本身不认那类租户，报 `AADSTS700038`
+ * （scope 在该租户不受支持）。
+ *
+ * `common` 同时接受个人账号与任何组织租户，是「两类账号都要支持」的唯一选择。
+ * Minecraft 服务本身对个人账号与持有游戏授权的组织账号都有效，所以放宽端点不会
+ * 引入越权——真正的授权判定仍在 entitlements 那一步。
+ */
+const AUTHORIZE_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+const TOKEN_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 const SCOPE: &str = "XboxLive.signin offline_access";
 const XBOX_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
