@@ -1,0 +1,136 @@
+/*
+ * 首次启动的协议确认。
+ *
+ * 盖满整个窗口而不是弹在一个已经渲染好的界面之上：意式上「尚未同意就不使用」，
+ * 让背后的界面先画出来再挡住，会让人以为随便点哪里都能跳过。
+ */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--color-bg-primary);
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  width: min(620px, 100%);
+  max-height: min(760px, 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 14px);
+  background: var(--color-bg-elevated);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 28%);
+  overflow: hidden;
+}
+
+.head {
+  display: flex;
+  gap: 13px;
+  padding: 22px 24px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-primary-500) 12%, transparent);
+  color: var(--color-primary-500);
+}
+
+.head h1 {
+  margin: 0 0 3px;
+  color: var(--color-text-primary);
+  font-size: var(--text-lg);
+  font-weight: 650;
+}
+
+.head p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 18px 24px;
+}
+
+/* 要点列表：短句 + 项目符号，比整段法律文本更容易真的被读到。 */
+.points {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+}
+
+.points li {
+  position: relative;
+  padding-left: 16px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+
+.points li::before {
+  content: '';
+  position: absolute;
+  top: 0.62em;
+  left: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-primary-500);
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-primary-500);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+
+.links a:hover {
+  text-decoration: underline;
+}
+
+.declined {
+  margin: 14px 0 0;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-danger-500) 35%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-danger-500) 8%, transparent);
+  color: var(--color-danger-500);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}
