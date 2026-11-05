@@ -4,7 +4,6 @@ import { useTheme } from '../hooks/useTheme';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { AccountModal } from '../components/AccountModal';
-import { DefaultUserAvatar } from '../components/DefaultUserAvatar';
 import { SettingsPanel } from '../components/SettingsPanel';
 import { Modal } from '../components/Modal';
 import { InstanceSettings } from '../components/InstanceSettings';
@@ -18,7 +17,6 @@ import { primeDeviceMemory } from '../utils/memory';
 import { confirmAction } from '../utils/confirm';
 import { isOnboardingPending, markOnboardingComplete, resetOnboarding } from '../utils/onboarding';
 import { acceptEula, hasAcceptedEula } from '../utils/eula';
-import { renderSkinAvatar, skinSourceOf } from '../utils/skinAvatar';
 import type { SkinSetting } from '../components/SkinSection';
 import { LegalNotice } from '../components/LegalNotice';
 import { applyMotionLevel, readMotionLevel } from '../utils/motion';
@@ -105,6 +103,7 @@ import {
   type JavaRuntimeInfo,
   type LauncherSettings,
 } from '../utils/native';
+import { AccountAvatar } from '../components/AccountAvatar';
 import { toAccount, toGameInstance } from '../utils/adapters';
 import styles from './App.module.css';
 import '../styles/globals.css';
@@ -187,40 +186,23 @@ const PluginsIcon = () => (
  * 不请求 crafatar / minotar 这类第三方头像服务：那会把玩家 UUID 发给一个与
  * 启动器无关的接收方，为了一张 32 像素的图不值得。
  */
+/**
+ * 侧栏里的账户头像。
+ *
+ * 已经改用共享的 `AccountAvatar`——账户弹窗用的是同一个组件，两处显示必然一致。
+ * 之前这里与弹窗各写一套，离线档案在侧栏能显示上传的皮肤、在弹窗里却是灰色占位。
+ *
+ * 侧栏只关心尺寸，所以把尺寸交给类名（20px，与相邻导航图标对齐）。
+ */
 function SidebarAccountAvatar({ account, skin }: { account?: Account; skin?: SkinSetting }) {
-  const { t } = useI18n();
-  const [rendered, setRendered] = useState<string | null>(null);
-
-  const customSource = skin ? skinSourceOf(skin) : null;
-  // 账户直接给的地址优先；否则用本地皮肤。
-  const source = account?.avatar ?? customSource;
-  const alt = account
-    ? t('account.avatarAlt', { values: { name: account.username } })
-    : t('account.avatarPlaceholder', { values: { name: '' } });
-
-  useEffect(() => {
-    let alive = true;
-    if (!source) {
-      setRendered(null);
-      return;
-    }
-    void renderSkinAvatar({ source }).then(result => {
-      if (alive) setRendered(result);
-    });
-    return () => { alive = false; };
-  }, [source]);
-
-  if (rendered) {
-    return (
-      <img
-        className={styles.sidebarAvatar}
-        src={rendered}
-        alt={alt}
-        title={account?.username}
-      />
-    );
-  }
-  return <DefaultUserAvatar className={styles.defaultUserAvatar} />;
+  return (
+    <AccountAvatar
+      account={account}
+      skin={skin}
+      imageClassName={styles.sidebarAvatar}
+      fallbackClassName={styles.defaultUserAvatar}
+    />
+  );
 }
 
 const SunIcon = () => <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="10" cy="10" r="4"/><path d="M10 2v2m0 12v2M2 10h2m12 0h2m-2.8-5.2l1.4-1.4m-11.2 0L4 4.8m11.2 11.2l1.4 1.4m-11.2 0L4 15.2"/></svg>;
@@ -253,8 +235,50 @@ const TASK_STATUS_KEYS: Record<DownloadTask['status'], MessageKey> = {
   cancelled: 'app.taskCancelled',
 };
 
+/*
+ * 任务行的控制图标。
+ *
+ * 为什么用图标而不是「暂停」「取消」这类文字按钮：任务卡右侧空间有限，两三个
+ * 中文文字按钮并排时会互相挤，安装过程中最常点的几个动作反而不显眼。图标是
+ * 通用形状，不随界面语言变宽变窄，也不会在窄窗口里换行。
+ *
+ * 形状取业界通行的那一套，避免歧义：
+ *   - 暂停：两条等宽竖条（媒体播放器的 pause）；
+ *   - 继续：实心右向三角（play），与暂停互斥，同一个位置切换；
+ *   - 取消：叉号。不用垃圾桶——那是「删除记录」，而这里停的是正在进行的传输。
+ *
+ * 描边 2、圆头圆角、16px，与项目里 lucide 图标（strokeWidth 1.8–2）等重。
+ * 三者都带 `aria-hidden`，可访问名由外层按钮的 `aria-label` 提供。
+ */
+const PauseIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+    <rect x="6" y="4" width="4" height="16" rx="1.5" />
+    <rect x="14" y="4" width="4" height="16" rx="1.5" />
+  </svg>
+);
+
+const ResumeIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+    <path d="M8 5.14v13.72a1 1 0 0 0 1.52.85l11.02-6.86a1 1 0 0 0 0-1.7L9.52 4.29A1 1 0 0 0 8 5.14z" />
+  </svg>
+);
+
+const CancelIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" focusable="false">
+    <path d="M6 6l12 12M18 6L6 18" />
+  </svg>
+);
+
 /** 仍在进行中的任务状态。已完成/失败/取消的任务不再计入侧栏徽章。 */
 const ACTIVE_TASK_STATUSES: DownloadTask['status'][] = ['queued', 'downloading', 'verifying', 'installing'];
+
+/**
+ * 「正在下载的文件」默认展开的行数。
+ *
+ * 与保留上限（100 条）分开：保留是为了能回看「刚才下完了哪些」，默认只展开几条
+ * 是为了不让这个区域把任务列表挤出视野。用户可以点「展开全部」看完整历史。
+ */
+const FILE_PROGRESS_VISIBLE = 4;
 
 /**
  * 启动阶段 → 文案键。
@@ -381,15 +405,18 @@ function prefFromSettings(settings: LauncherSettings, current?: LauncherPrefs): 
 /**
  * 后端任务 → 界面任务行。
  *
- * 界面上的 `progress` 是 0–100 的百分比，后端只有已下载/总字节。总量未知时给 0
- * 并让列表显示「…」，而不是假装 100%。
+ * 界面上的 `progress` 是 0–100 的百分比。后端只给字节数，百分比在**这里**算，
+ * 而且是**整体**的：`completed_bytes / total_bytes` 由下载引擎对整次任务累计
+ * （见 `download_engine::TaskProgress`），不是某个文件的进度。总量未知时保持 0，
+ * 让列表显示不确定态而不是假装 100%。
  *
  * 状态映射：后端有 `running` 而没有 `downloading`/`installing`，界面两者都有。
  * `running` 归到 `downloading`——这是用户最常看到的阶段；后端的 `interrupted`
  * 则归到 `failed`，因为用户要做的处理（重试）是一样的。
  */
 function taskToUi(task: NativeDownloadTask): DownloadTask {
-  const percent = task.totalBytes ? Math.min(100, Math.round((task.completedBytes / task.totalBytes) * 100)) : 0;
+  const total = task.totalBytes ?? undefined;
+  const percent = total ? Math.min(100, Math.round((task.completedBytes / total) * 100)) : 0;
   const status: DownloadTask['status'] = task.state === 'running'
     ? 'downloading'
     : task.state === 'interrupted'
@@ -401,7 +428,10 @@ function taskToUi(task: NativeDownloadTask): DownloadTask {
     type: 'game',
     status,
     progress: percent,
-    total: task.totalBytes ?? undefined,
+    total,
+    completedBytes: task.completedBytes,
+    files: task.files ?? undefined,
+    completedFiles: task.completedFiles ?? undefined,
     /** 后端任务只带 instanceId；下载页据此跳回对应实例。 */
     instanceId: task.instanceId,
     targetInstance: task.instanceId,
@@ -572,6 +602,8 @@ function App() {
    * 就会出现两个来源，一个是刷新过的、一个是打开应用时的快照，反而容易不一致。
    */
   const [progress, setProgress] = useState<Array<{ artifactId: string; label: string; received: number; total: number | null; source: string; stage: string }>>([]);
+  /** 「正在下载的文件」是否展开全部历史。默认收起，避免几百行把任务列表挤走。 */
+  const [showAllFileProgress, setShowAllFileProgress] = useState(false);
   /**
    * 当前正在传输的文件数（并行下载数）。
    *
@@ -783,16 +815,35 @@ function App() {
     void (async () => {
       const subscriptions = await Promise.all([
         onInstallationTask(payload => {
+          /*
+           * 先更新这一条任务，再决定要不要清文件级进度。
+           *
+           * 清理的判据是「整个列表里还有没有正在跑的任务」，不是「刚结束的这一条
+           * 是不是结束了」。多个实例可以同时安装，A 完成时把 B 的文件行一起清掉，
+           * 用户会以为 B 也停了——而它其实还在下载。
+           */
+          const finished = payload.task.state !== 'running' && payload.task.state !== 'paused';
           setDownloadTasks(current => {
             const next = current.filter(task => task.id !== payload.task.id);
-            return [taskToUi(payload.task), ...next];
+            const updated = [taskToUi(payload.task), ...next];
+            if (finished && !updated.some(task => ACTIVE_TASK_STATUSES.includes(task.status) || task.status === 'paused')) {
+              // 任务全部结束：这些文件行已经是历史，留着会让人以为还有东西在下。
+              setProgress([]);
+            }
+            return updated;
           });
         }),
         onDownloadProgress(payload => {
-          // 同一文件只保留最新进度，避免列表被同一个 artifact 刷屏。
+          /*
+           * 同一文件只保留最新进度，避免列表被同一个 artifact 刷屏。
+           *
+           * 保留 100 条而不是 60：真实安装里同时在跑的连接数默认就有 16 个，每个
+           * 文件在排队前后都会出现一次，60 条只能覆盖几秒的历史，用户回看时中间
+           * 全是断档。100 条足够看清「刚才下完了哪些」。
+           */
           setProgress(current => {
             const next = current.filter(item => item.artifactId !== payload.artifactId);
-            return [...next, payload].slice(-60);
+            return [...next, payload].slice(-100);
           });
         }),
         onGameProcess(payload => {
@@ -1173,6 +1224,29 @@ function App() {
     if (context !== 'instance-detail' || !selectedInstance) return;
     void loadInstanceSettings(selectedInstance.id);
   }, [context, loadInstanceSettings, selectedInstance]);
+
+  /**
+   * 暂停或继续一个下载任务。
+   *
+   * 必须调用后端的 `control_download`：只把界面上那一行改成「已暂停」并不会真的
+   * 停止传输，文件还在往下写。后端的状态会通过 `installation-task` 事件推回来，
+   * 所以这里不本地改状态，避免界面领先于真实情况。
+   */
+  const setTaskPaused = (taskId: string, paused: boolean) => {
+    const task = downloadTasks.find(item => item.id === taskId);
+    if (!task) return;
+    if (!task.instanceId) {
+      setToast(t(paused ? 'app.pauseFailed' : 'app.resumeFailed'));
+      return;
+    }
+    void (async () => {
+      try {
+        await controlDownload(task.instanceId!, paused ? 'pause' : 'resume');
+      } catch (error) {
+        setToast(errorText(error, t(paused ? 'app.pauseFailed' : 'app.resumeFailed')));
+      }
+    })();
+  };
 
   /**
    * 取消一个下载任务。
@@ -2106,60 +2180,118 @@ function App() {
               </div>
             ) : (
               <div className={styles.taskList}>
-                {downloadTasks.map(task => (
-                  <Card key={task.id} padding="md">
-                    <div className={styles.taskCard}>
-                      <div className={styles.taskInfo}>
-                        <h3>{task.name}</h3>
-                        <div className={styles.taskProgress}>
-                          <div className={styles.progressBar}>
-                            <div 
-                              className={styles.progressFill}
-                              style={{ width: `${task.progress}%` }}
-                            />
+                {downloadTasks.map(task => {
+                  /*
+                   * 任务卡画的是**整体**进度：`completedBytes / total`。
+                   *
+                   * 这两个数字由后端按整次任务累计（下载引擎的 TaskProgress），
+                   * 不是某一个文件的。总量未知时进度条走不确定态，而不是画一个
+                   * 假的 0% 或 100%——那会让用户以为卡死或早已完成。
+                   */
+                  const known = !!task.total && task.total > 0;
+                  const percent = known ? Math.min(100, Math.round(((task.completedBytes ?? 0) / task.total!) * 100)) : task.progress;
+                  const paused = task.status === 'paused';
+                  const active = ACTIVE_TASK_STATUSES.includes(task.status);
+                  return (
+                    <Card key={task.id} padding="md">
+                      <div className={styles.taskCard}>
+                        <div className={styles.taskInfo}>
+                          <h3>{task.name}</h3>
+                          <div className={styles.taskProgress}>
+                            <div className={`${styles.progressBar} ${!known && active && !paused ? styles.progressIndeterminate : ''}`}>
+                              <div
+                                className={`${styles.progressFill} ${paused ? styles.progressPaused : ''} ${task.status === 'failed' ? styles.progressFailed : ''}`}
+                                style={!known && active && !paused ? undefined : { width: `${percent}%` }}
+                              />
+                            </div>
+                            <span>{known || !active || paused ? `${percent}%` : '—'}</span>
                           </div>
-                          <span>{task.progress}%</span>
-                        </div>
+                          <div className={styles.taskMeta}>
                             {/* 状态文字：让侧栏徽章的数字在列表里有对应物。 */}
-                        <span className={styles.taskStatus}>{t(TASK_STATUS_KEYS[task.status])}</span>
-                        {/*
-                          实例级的最后一行日志：这是「装完了能不能跑」最直接的证据。
-                          只在有日志时才渲染，避免占位空行。
-                        */}
-                        {task.instanceId && gameLogs[task.instanceId] && (
-                          <span className={styles.taskStatus}>{gameLogs[task.instanceId]}</span>
-                        )}
-                        {task.instanceId && gameStatus[task.instanceId]?.status === 'running' && (
-                          <Button variant="ghost" size="sm" onClick={() => stopInstance(task.instanceId!)}>
-                            关闭游戏
-                          </Button>
-                        )}
+                            <span className={styles.taskStatus}>{t(TASK_STATUS_KEYS[task.status])}</span>
+                            {/*
+                              文件数与字节数：进度条只给出比例，这两个数字回答「还剩多少」。
+                              总量未知时不显示字节数——「x / 未知」对下载没有任何帮助。
+                            */}
+                            {task.files != null && task.files > 0 && (
+                              <span className={styles.taskStatus}>
+                                {t('app.taskFilesSummary', { values: { done: task.completedFiles ?? 0, total: task.files } })}
+                              </span>
+                            )}
+                            {known && (
+                              <span className={styles.taskStatus}>
+                                {t('app.taskBytesSummary', {
+                                  values: { done: formatBytes(task.completedBytes ?? 0), total: formatBytes(task.total!) },
+                                })}
+                              </span>
+                            )}
+                          </div>
+                          {/*
+                            暂停态要说明「继续」不会从头再来。
+                            用户按下暂停后最常见的疑问是「已下载的会不会丢」，
+                            不回答就会有人宁可取消重装。
+                          */}
+                          {paused && (
+                            <span className={styles.taskStatus}>{t('app.taskPausedHint')}</span>
+                          )}
+                          {/*
+                            实例级的最后一行日志：这是「装完了能不能跑」最直接的证据。
+                            只在有日志时才渲染，避免占位空行。
+                          */}
+                          {task.instanceId && gameLogs[task.instanceId] && (
+                            <span className={styles.taskStatus}>{gameLogs[task.instanceId]}</span>
+                          )}
+                        </div>
+                        <div className={styles.taskActions}>
+                          {task.instanceId && gameStatus[task.instanceId]?.status === 'running' && (
+                            <Button variant="ghost" size="sm" onClick={() => stopInstance(task.instanceId!)}>
+                              关闭游戏
+                            </Button>
+                          )}
+                          {/*
+                            暂停 / 继续是同一个按钮位：正在跑的任务显示暂停，已暂停的
+                            显示继续。两个按钮并排会让人分不清哪个是「现在能点的」。
+                          */}
+                          {(active || paused) && (
+                            <button
+                              type="button"
+                              className={styles.iconButton}
+                              onClick={() => setTaskPaused(task.id, !paused)}
+                              aria-label={t(paused ? 'app.resumeTask' : 'app.pauseTask')}
+                              title={t(paused ? 'app.resumeTask' : 'app.pauseTask')}
+                            >
+                              {paused ? <ResumeIcon /> : <PauseIcon />}
+                            </button>
+                          )}
+                          {/*
+                            只对仍在进行中的任务显示「取消」。
+                            已完成/失败/已取消的任务放一个灰掉的按钮，视觉上仍占位，
+                            用户会反复去点它；这些状态下本来就没有可取消的动作，直接
+                            不渲染按钮比禁用更清楚。
+                          */}
+                          {(active || paused) && (
+                            <button
+                              type="button"
+                              className={`${styles.iconButton} ${styles.iconButtonDanger}`}
+                              onClick={() => cancelTask(task.id)}
+                              aria-label={t('app.cancelTask')}
+                              title={t('app.cancelTask')}
+                            >
+                              <CancelIcon />
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      {/*
-                        只对仍在进行中的任务显示「取消」。
-                        已完成/失败/已取消的任务放一个灰掉的按钮，视觉上仍占位，
-                        用户会反复去点它；这些状态下本来就没有可取消的动作，直接
-                        不渲染按钮比禁用更清楚。
-                      */}
-                      {ACTIVE_TASK_STATUSES.includes(task.status) && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => cancelTask(task.id)}
-                        >
-                          {t('app.cancel')}
-                        </Button>
-                      )}
-                    </div>
-                  </Card>
-                ))}
+                    </Card>
+                  );
+                })}
               </div>
             )}
 
             {/*
               文件级进度。它不是任务列表的一部分：一个安装任务包含上百个文件，
-              放在任务行里会把列表冲垮。单独一段、只留最近几条，回答的是
-              「现在具体在下什么」这个问题。
+              放在任务行里会把列表冲垮。单独一段、保留最近 100 条，回答的是
+              「现在具体在下什么 / 刚才下完了哪些」这个问题。
 
               每行按 PCL2 的 NetState 思路给出三件事：
                 - 阶段（连接中 / 下载中 / 校验中 / 已完成 / 失败）；
@@ -2171,11 +2303,30 @@ function App() {
               <div className={styles.taskList} aria-live="polite">
                 <div className={styles.fileProgressHeader}>
                   <span className={styles.fileProgressTitle}>{t('app.fileProgressTitle')}</span>
-                  <span className={styles.fileProgressCount}>
-                    {t('app.fileProgressParallel', { values: { count: parallelDownloads } })}
+                  <span className={styles.fileProgressHeaderMeta}>
+                    <span className={styles.fileProgressCount}>
+                      {t('app.fileProgressParallel', { values: { count: parallelDownloads } })}
+                    </span>
+                    {/*
+                      保留 100 条历史，但默认只展开最近几条。
+                      一次安装会经过几百个文件，全铺开会把任务列表挤出视野；100 条
+                      只是「回看的上限」，不是默认要看的量。
+                    */}
+                    {progress.length > FILE_PROGRESS_VISIBLE && (
+                      <button
+                        type="button"
+                        className={styles.fileProgressToggle}
+                        onClick={() => setShowAllFileProgress(current => !current)}
+                        aria-expanded={showAllFileProgress}
+                      >
+                        {showAllFileProgress
+                          ? t('app.fileProgressShowLess')
+                          : t('app.fileProgressShowAll', { values: { count: progress.length } })}
+                      </button>
+                    )}
                   </span>
                 </div>
-                {progress.slice(-8).reverse().map(item => {
+                {(showAllFileProgress ? progress.slice(-100) : progress.slice(-FILE_PROGRESS_VISIBLE)).reverse().map(item => {
                   const known = item.total != null && item.total > 0;
                   const pct = known ? Math.min(100, Math.round((item.received / item.total!) * 100)) : null;
                   const stage = FILE_STAGE_META[item.stage] ?? FILE_STAGE_META.downloading;
@@ -2219,7 +2370,6 @@ function App() {
             )}
           </div>
         )}
-
         {/*
           启动进度条：固定在内容区底部。
 
@@ -2259,6 +2409,8 @@ function App() {
         onLogin={handleLogin}
         recentAccounts={recentAccounts.filter(a => a.id !== currentAccount?.id)}
         onNotice={setToast}
+        /* 离线档案的头像来自这里上传的皮肤；与侧栏共用同一份设置。 */
+        skin={globalPrefs.skin}
         /* 账户被移除后需要重新读一次：后端会同时删掉凭据，选中项可能随之变化。 */
         onChanged={() => { void refreshAccounts(); }}
       />

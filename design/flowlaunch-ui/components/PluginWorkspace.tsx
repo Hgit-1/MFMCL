@@ -34,6 +34,8 @@ import { confirmAction } from '../utils/confirm';
 import {
   allPlugins,
   enabledPluginCount,
+  EXECUTING_HOOKS,
+  installedPluginCount,
   hookHint,
   hookLabel,
   isPluginEnabled,
@@ -219,12 +221,22 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
 
   const plugins = useMemo(() => allPlugins(store), [store]);
   const enabledCount = useMemo(() => enabledPluginCount(store), [store]);
+  /** 已安装数（不含计划中的条目）：页头的「已安装 N 个」不能把预告算进去。 */
+  const installedCount = useMemo(() => installedPluginCount(store), [store]);
   const text = (value: Localized) => renderLocalized(language, value);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return plugins.filter(plugin => {
       const enabled = isPluginEnabled(plugin, store);
+      /*
+       * 「已启用 / 已停用」两个筛选都排除计划中的条目。
+       *
+       * 计划中的插件既没装也没启用，出现在「已停用 1 个」里会让这个筛选失去意义
+       * ——用户点它想看「我关掉了什么」，而不是「我还没有什么」。它只在「全部」
+       * 与搜索里出现。
+       */
+      if (plugin.planned && (filter === 'enabled' || filter === 'disabled')) return false;
       if (filter === 'enabled' && !enabled) return false;
       if (filter === 'disabled' && enabled) return false;
       if (filter === 'attention' && !pluginNeedsAttention(plugin, pendingRestart)) return false;
@@ -407,7 +419,7 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
           <h1>{t('plugin.title')}</h1>
           <p>{t('plugin.subtitle')}</p>
           <div className={styles.counts}>
-            <span>{t('plugin.installedCount', { count: plugins.length })}</span>
+            <span>{t('plugin.installedCount', { count: installedCount })}</span>
             <span>{t('plugin.enabledCount', { count: enabledCount })}</span>
           </div>
         </div>
@@ -494,8 +506,16 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
               const Glyph = GLYPH_ICONS[plugin.glyph] ?? Plug;
               const open = expanded === plugin.id;
               const name = text(plugin.name);
+              /*
+               * 计划中的插件用虚线卡片。
+               *
+               * 它既不是「已启用」也不是「用户停用的」——两种实线外观都会让人以为
+               * 它已经装在这台机器上。虚线是唯一能表达「还不在那里」的画法，而且
+               * 不依赖颜色（在灰度或高对比主题下同样可辨）。
+               */
+              const cardClass = plugin.planned ? styles.cardPlanned : (enabled ? '' : styles.cardOff);
               return (
-                <article key={plugin.id} className={`${styles.card} ${enabled ? '' : styles.cardOff}`}>
+                <article key={plugin.id} className={`${styles.card} ${cardClass}`}>
                   <div className={styles.cardHead}>
                     <span
                       className={`${styles.glyph} ${enabled ? '' : styles.glyphOff}`}
@@ -509,6 +529,10 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
                       <div className={styles.nameLine}>
                         <span className={styles.name} title={name}>{name}</span>
                         <span className={styles.tag}>{t(plugin.builtin ? 'plugin.builtin' : 'plugin.thirdParty')}</span>
+                        {/* 「计划中」与「第三方」并列：身份和状态是两件事，缺一项都会误导。 */}
+                        {plugin.planned && (
+                          <span className={`${styles.tag} ${styles.tagPlanned}`}>{t('plugin.planned')}</span>
+                        )}
                         {plugin.incompatible && (
                           <span className={`${styles.tag} ${styles.tagError}`}>{t('plugin.incompatible')}</span>
                         )}
@@ -551,9 +575,11 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
                   <div className={styles.cardFoot}>
                     <span className={`${styles.state} ${enabled ? styles.stateOn : ''}`}>
                       <i className={styles.stateDot} />
-                      {plugin.incompatible
-                        ? t('plugin.incompatible')
-                        : enabled ? t('plugin.enabled') : t('plugin.disabled')}
+                      {plugin.planned
+                        ? t('plugin.planned')
+                        : plugin.incompatible
+                          ? t('plugin.incompatible')
+                          : enabled ? t('plugin.enabled') : t('plugin.disabled')}
 
                     </span>
                     <div className={styles.footActions}>
@@ -574,7 +600,12 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
                           {t('plugin.update')}
                         </button>
                       )}
-                      {!plugin.builtin && (
+                      {/*
+                        只有用户自己装进来的插件才能移除。
+                        计划中的插件根本没被安装，给它一个「移除」按钮只会让用户以为
+                        自己装过它；内置插件则由启动器负责，同样不给移除。
+                      */}
+                      {!plugin.builtin && !plugin.planned && (
                         <button
                           type="button"
                           className={`${styles.ghostButton} ${styles.dangerButton}`}
@@ -595,13 +626,20 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
                         {open ? t('plugin.collapse') : t('plugin.expand')}
                         <ChevronDown size={12} />
                       </button>
+                      {/*
+                        计划中的插件开关恒为禁用。
+                        它还没有实现，拨动开关不会改变任何东西——而插件页的一条规矩
+                        正是「不提供没有效果的开关」。置灰之外再加一句 aria 说明，
+                        读屏用户也能知道为什么点不动。
+                      */}
                       <button
                         type="button"
                         role="switch"
                         aria-checked={enabled}
                         aria-label={t('plugin.toggleAria', { values: { name } })}
+                        title={plugin.planned ? t('plugin.plannedHint') : undefined}
                         className={`${styles.switch} ${enabled ? styles.switchOn : ''}`}
-                        disabled={plugin.incompatible}
+                        disabled={plugin.incompatible || plugin.planned}
                         onClick={() => setEnabled(plugin, !enabled)}
                       ><i /></button>
                     </div>
@@ -609,6 +647,23 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
 
                   {open && (
                     <div className={styles.details}>
+                      {/*
+                        计划中的插件：详情第一块就交代「还没有实现」。
+                        放在最上面而不是段落末尾——用户展开详情的第一件事是判断
+                        「这东西能不能用」，先给结论比让他读完权限再发现更好。
+                      */}
+                      {plugin.planned && (
+                        <div className={`${styles.block} ${styles.blockPlanned}`}>
+                          <div className={styles.blockTitle}>
+                            {t('plugin.plannedDetails')}
+                            <small>{t('plugin.plannedDetailsHint')}</small>
+                          </div>
+                          <p className={styles.summary}>
+                            <AlertTriangle size={11} />
+                            {t('plugin.plannedHint')}
+                          </p>
+                        </div>
+                      )}
                       <div className={styles.block}>
                         <div className={styles.blockTitle}>
                           {t('plugin.hooks')}
@@ -617,11 +672,28 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
                         <div className={styles.chips}>
                           {plugin.hooks.length === 0
                             ? <span className={styles.chip}>{t('common.none')}</span>
-                            : plugin.hooks.map(hook => (
-                              <span className={`${styles.chip} ${styles.chipStrong}`} key={hook} title={text(hookHint(hook))}>
-                                {text(hookLabel(hook))}
-                              </span>
-                            ))}
+                            : plugin.hooks.map(hook => {
+                              /*
+                               * 只有会真正触发的时机才用强调色。
+                               *
+                               * 之前所有 chip 一视同仁，于是「界面主题」「侧栏入口」这两个
+                               * 永远不会被调用的时机看起来和「启动游戏前」一样有效——用户
+                               * 会以为插件已经在那些位置生效了。现在未支持的时机降为普通
+                               * chip，并在悬停时说明原因。
+                               *
+                               * 这对计划中的插件尤其重要：它的三个扩展点目前一个都不会触发，
+                               * 逐条标出来比卡片上补一段长解释更直接。
+                               */
+                              const executes = EXECUTING_HOOKS.includes(hook);
+                              const hint = executes
+                                ? text(hookHint(hook))
+                                : `${text(hookHint(hook))} · ${t('plugin.hookDeclaredOnly')}`;
+                              return (
+                                <span className={`${styles.chip} ${executes ? styles.chipStrong : styles.chipDeclared}`} key={hook} title={hint}>
+                                  {text(hookLabel(hook))}
+                                </span>
+                              );
+                            })}
                         </div>
                       </div>
 

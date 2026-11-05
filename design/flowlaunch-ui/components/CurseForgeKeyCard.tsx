@@ -137,12 +137,15 @@ export function CurseForgeKeyCard({ onStatusChange, onNotice, compact = false }:
         </div>
       </div>
 
-      {status?.problem && (
+      {status?.problemCode === 'preview' || status?.problem ? (
         <div className={styles.warn} role="alert">
           <AlertTriangle size={14} />
-          <span>{status.problem}</span>
+          <span>
+            {/* 有原因代码时走词典；拿不到代码才退回后端原文。 */}
+            {status.problemCode === 'preview' ? t('cf.keyPreviewOnly') : status.problem}
+          </span>
         </div>
-      )}
+      ) : null}
 
       <label className={styles.field}>
         <span>{t('cf.keyLabel')}</span>

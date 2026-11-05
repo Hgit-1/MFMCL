@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Modal } from './Modal';
-import { DefaultUserAvatar } from './DefaultUserAvatar';
+import { AccountAvatar } from './AccountAvatar';
 import type { Account } from '../types';
+import type { SkinSetting } from './SkinSection';
 import { useI18n } from '../utils/i18n';
 import { addOfflineAccount, errorText, microsoftLogin, removeAccount, skinLogin, skinSelectProfile } from '../utils/native';
 import { confirmAction } from '../utils/confirm';
@@ -38,26 +39,59 @@ interface Props {
   currentAccount?: Account;
   onLogin: (account: Account | undefined) => void;
   recentAccounts?: Account[];
+  /**
+   * 设置里的离线皮肤。
+   *
+   * 离线档案没有服务器皮肤，用户上传的那张 PNG 就是它唯一的形象来源。这里必须
+   * 传进来，否则弹窗里只能显示灰色占位，而侧栏同时显示着那张皮肤——同一个账户
+   * 在两个位置长得不一样。
+   */
+  skin?: SkinSetting;
   /** 后端错误与操作结果通过它显示在应用外壳的提示条里。 */
   onNotice?: (message: string) => void;
   /** 账户列表发生变化（添加/移除）后通知外壳重新读取。 */
   onChanged?: () => void;
 }
 
-function PlayerAvatar({ username, avatar, size = 36 }: { username: string; avatar?: string; size?: number }) {
-  const { t } = useI18n();
+/**
+ * 账户弹窗里的头像。
+ *
+ * 只负责那圈带圆角的框与尺寸，图片本身交给共享的 `AccountAvatar`——侧栏用的是
+ * 同一个组件，两处显示必然一致。之前这里自成一套、只看账户自带头像，于是离线
+ * 档案在侧栏显示上传的皮肤、在弹窗里却是灰色占位。
+ */
+function PlayerAvatar({
+  username,
+  avatar,
+  size = 36,
+  skin,
+  accountType,
+}: {
+  username: string;
+  avatar?: string;
+  size?: number;
+  /** 离线皮肤设置；离线档案没有自带头像时用它显示上传的皮肤。 */
+  skin?: SkinSetting;
+  accountType?: Account['type'];
+}) {
   return (
     <div className={styles.playerAvatarFrame} style={{ width: size, height: size }}>
-      {avatar ? (
-        <img className={styles.playerAvatar} src={avatar} alt={t('account.avatarAlt', { values: { name: username } })} />
-      ) : (
-        <DefaultUserAvatar className={styles.playerAvatarFallback} label={t('account.avatarPlaceholder', { values: { name: username } })} />
-      )}
+      <AccountAvatar
+        /*
+         * 组件要的是整个账户对象，而这里只拿得到拆开的字段（列表项来自后端记录）。
+         * 组装一个最小对象即可：`AccountAvatar` 只读 `avatar`、`username`、`type`。
+         * 其余字段（uuid、hasMinecraft 等）与头像无关。
+         */
+        account={{ id: '', username, uuid: '', type: accountType ?? 'offline', avatar, hasMinecraft: false }}
+        skin={skin}
+        imageClassName={styles.playerAvatar}
+        fallbackClassName={styles.playerAvatarFallback}
+      />
     </div>
   );
 }
 
-export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentAccounts = [], onNotice, onChanged }: Props) {
+export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentAccounts = [], onNotice, onChanged, skin }: Props) {
   const { t } = useI18n();
   const [method, setMethod] = useState<LoginMethod | null>(null);
   const [offlineName, setOfflineName] = useState('');
@@ -207,7 +241,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
       <Modal isOpen={isOpen} onClose={() => setEditingAccount(null)} title={t('account.management')} size="md">
         <div className={styles.editAccount}>
           <div className={styles.editPreview}>
-            <PlayerAvatar username={editingAccount.username} avatar={editingAccount.avatar} size={80} />
+            <PlayerAvatar username={editingAccount.username} avatar={editingAccount.avatar} size={80} skin={skin} accountType={editingAccount.type} />
             <div className={styles.editInfo}>
               <h3>{editingAccount.username}</h3>
               <p className={styles.accountType}>
@@ -246,7 +280,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
           <div className={styles.currentAccountSection}>
             <h3>{t('account.current')}</h3>
             <div className={styles.accountInfo}>
-              <PlayerAvatar username={currentAccount.username} avatar={currentAccount.avatar} size={64} />
+              <PlayerAvatar username={currentAccount.username} avatar={currentAccount.avatar} size={64} skin={skin} accountType={currentAccount.type} />
               <div className={styles.accountDetails}>
                 <h4>{currentAccount.username}</h4>
                 <p className={styles.accountType}>
@@ -282,7 +316,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                     onMouseLeave={() => setHoveredAccountId(null)}
                   >
                     <div className={styles.gridItemContent}>
-                      <PlayerAvatar username={account.username} avatar={account.avatar} size={48} />
+                      <PlayerAvatar username={account.username} avatar={account.avatar} size={48} skin={skin} accountType={account.type} />
                       <div className={styles.gridItemInfo}>
                         <span className={styles.gridItemName}>{account.username}</span>
                         <span className={styles.gridItemType}>
@@ -437,7 +471,7 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                       onMouseLeave={() => setHoveredAccountId(null)}
                     >
                       <div className={styles.recentAccount}>
-                        <PlayerAvatar username={account.username} avatar={account.avatar} size={36} />
+                        <PlayerAvatar username={account.username} avatar={account.avatar} size={36} skin={skin} accountType={account.type} />
                         <div className={styles.recentInfo}>
                           <span className={styles.recentName}>{account.username}</span>
                           <span className={styles.recentType}>

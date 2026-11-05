@@ -26,8 +26,8 @@ pub enum ThemePreset {
 #[serde(rename_all = "camelCase")]
 pub struct DownloadSettings {
     pub source: SourcePreference,
-    pub max_concurrent_downloads: u8,
-    pub connections_per_file: u8,
+    pub max_concurrent_downloads: u16,
+    pub connections_per_file: u16,
     pub aria2_enabled: bool,
 }
 
@@ -44,8 +44,8 @@ impl Default for DownloadSettings {
              * 体积最大的那一批文件，正是用户感知最明显的地方。
              */
             source: SourcePreference::Mixed,
-            max_concurrent_downloads: 4,
-            connections_per_file: 4,
+            max_concurrent_downloads: 16,
+            connections_per_file: 256,
             aria2_enabled: true,
         }
     }
@@ -472,6 +472,20 @@ pub struct DownloadTask {
     pub state: DownloadTaskState,
     pub completed_bytes: u64,
     pub total_bytes: Option<u64>,
+    /*
+     * 任务级的文件计数。
+     *
+     * 为什么需要和字节数并列：进度条只给出比例，而「3/12 个文件」回答的是
+     * 「还剩几个」。安装大版本时两者差别明显——90% 的字节可能只差一个小库，
+     * 也可能是最后 10 个资源文件之一。
+     *
+     * 全部 `serde(default)` 且可空：旧库里的记录没有这两列，读出时是 0/None，
+     * 界面据此不显示文件计数，而不是显示「0/0 个文件」。
+     */
+    #[serde(default)]
+    pub files: Option<u32>,
+    #[serde(default)]
+    pub completed_files: Option<u32>,
     pub created_at: String,
     pub updated_at: String,
 }

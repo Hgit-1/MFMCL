@@ -189,7 +189,16 @@ function buildVersionMeta(
   }
   if ((version.downloads ?? 0) > 0) {
     const n = version.downloads!;
-    const shown = n >= 100_000 ? `${(n / 10_000).toLocaleString(locale, { maximumFractionDigits: 0 })}万` : n.toLocaleString(locale);
+    /*
+     * 「万」是中文的数量级写法，英文和日文读者不会这么读。
+     *
+     * 之前无论什么语言都套「万」，于是英文界面上出现「2946万 downloads」这种
+     * 半中半英的数字。改成按语言选择：中文用「万」，其他语言交给 `Intl` 做
+     * 千分位（英文 `294,620,270`、日文同）。
+     */
+    const shown = locale === 'zh-CN' && n >= 100_000
+      ? `${(n / 10_000).toLocaleString(locale, { maximumFractionDigits: 0 })}万`
+      : n.toLocaleString(locale);
     parts.push(t('store.downloadsTimes', { values: { value: shown } }));
   }
   if (version.dateCreated) {
@@ -494,6 +503,33 @@ export function StoreWorkspace({
   const [modVersion, setModVersion] = useState('');
   /** 加载器筛选；`any` 表示不限制，空表示跟随目标实例。 */
   const [modLoader, setModLoader] = useState('');
+
+  /**
+   * 「跟随实例」在加载器筛选里的实际含义。
+   *
+   * 原版（vanilla）实例没有模组加载器，后端 `instance_loader_name` 对它返回 `None`，
+   * 搜索结果因此**不加加载器 facet**——效果等于「任意加载器」。
+   *
+   * 所以原版实例下这个下拉**不显示「跟随实例」这一项**，直接落在「任意加载器」：
+   * 保留它只会让用户以为选了「vanilla 加载器筛选」，而 vanilla 并不是一个能被筛的
+   * 加载器；同时也让真正等价的「任意加载器」看起来重复。两者本来就是同一件事，
+   * 界面上就该只留一个选项。
+   */
+  const followsVanilla = target?.loader === 'vanilla';
+  /** 有目标实例、且它不是原版时，「跟随实例 · X」才有意义。 */
+  const targetLoader = target?.loader ?? '';
+  const loaderFollowLabel: string | null =
+    targetLoader !== '' && targetLoader !== 'vanilla'
+      ? t('store.loaderFollowInstance', { values: { loader: targetLoader } })
+      : null;
+  /**
+   * 下拉真正显示的加载器值。
+   *
+   * 原版实例的空值语义等同 `any`：后端对原版不加加载器 facet，用户看到的那一项
+   * 就该是「任意加载器」。这样显示值与实际发出的请求一致，不会出现「界面写着
+   * 跟随实例、请求却没带加载器」这种看不懂的差别。
+   */
+  const loaderSelectValue = followsVanilla && modLoader === '' ? 'any' : modLoader;
 
   /** 正在为哪个版本配置安装。null 表示面板关闭。 */
   const [installTarget, setInstallTarget] = useState<{ version: string } | null>(null);
@@ -1031,16 +1067,16 @@ export function StoreWorkspace({
     }
   };
 
-  const installVersion = async (version: CatalogVersion) => {
+  const installVersion = async (version: CatalogVersion, projectName?: string) => {
     setInstalling(version.versionId);
     try {
       // 后端会在下载后按清单里的 SHA-1 校验；返回的是安装到的文件路径。
       // 项目类型决定落盘目录：资源包进 `resourcepacks/`，模组进 `mods/`。
-      const path = await installModVersion(targetInstanceId, version, projectTypeOf(category));
-      onNotice(`已安装 ${version.fileName} → ${path}`);
+      const path = await installModVersion(targetInstanceId, version, projectTypeOf(category), projectName);
+      onNotice(t('store.modInstalled', { values: { name: version.fileName, path } }));
       onTasksChanged();
     } catch (error) {
-      onNotice(errorText(error, '安装失败。'));
+      onNotice(errorText(error, t('store.modInstallFailed')));
     } finally {
       setInstalling('');
     }
@@ -1076,12 +1112,12 @@ export function StoreWorkspace({
     return picked;
   };
 
-  const downloadVersion = async (version: CatalogVersion) => {
+  const downloadVersion = async (version: CatalogVersion, projectName?: string) => {
     const directory = await requireDownloadDirectory();
     if (!directory) return;
     setInstalling(version.versionId);
     try {
-      const path = await downloadModVersion(targetInstanceId, version, directory);
+      const path = await downloadModVersion(targetInstanceId, version, directory, projectName);
       setLastSaved({ name: version.fileName, path });
       onNotice(t('store.directDownloadDone', { values: { name: version.fileName, path } }));
       onTasksChanged();
@@ -1129,28 +1165,28 @@ export function StoreWorkspace({
   };
 
   /** 安装一个 CurseForge 文件。受限文件由后端拒绝并给出手动下载提示。 */
-  const installCfVersion = async (version: CurseForgeVersion) => {
+  const installCfVersion = async (version: CurseForgeVersion, projectName?: string) => {
     if (!target) return;
     setInstalling(version.versionId);
     try {
-      const name = await curseforgeInstall(target.id, version, 'mod');
+      const name = await curseforgeInstall(target.id, version, 'mod', projectName);
       onNotice(t('cf.installedKind', { values: { kind: t('cf.kindMod'), name } }));
       onTasksChanged();
     } catch (error) {
-      onNotice(errorText(error, t('cf.searchFailed')));
+      onNotice(errorText(error, t('store.modInstallFailed')));
     } finally {
       setInstalling('');
     }
   };
 
   /** 把 CurseForge 文件直接下载到侧栏选定的目录，不装进实例。 */
-  const downloadCfVersion = async (version: CurseForgeVersion) => {
+  const downloadCfVersion = async (version: CurseForgeVersion, projectName?: string) => {
     if (!target) return;
     const directory = await requireDownloadDirectory();
     if (!directory) return;
     setInstalling(version.versionId);
     try {
-      const path = await curseforgeDownload(target.id, version, 'mod', directory);
+      const path = await curseforgeDownload(target.id, version, 'mod', directory, projectName);
       setLastSaved({ name: version.fileName, path });
       onNotice(t('store.directDownloadDone', { values: { name: version.fileName, path } }));
       onTasksChanged();
@@ -1219,7 +1255,7 @@ export function StoreWorkspace({
   };
 
   const pickPack = async () => {
-    const path = await pickFile('选择整合包', [{ name: 'Minecraft 整合包', extensions: ['zip', 'mrpack'] }]);
+    const path = await pickFile(t('store.packPickTitle'), [{ name: t('store.packFileFilter'), extensions: ['zip', 'mrpack'] }]);
     if (!path) return;
     setPackPath(path);
     setPackState('loading');
@@ -1228,7 +1264,7 @@ export function StoreWorkspace({
       setPackPreview(await previewModpack(path));
       setPackState('ready');
     } catch (error) {
-      setPackError(errorText(error, '无法读取这个整合包。'));
+      setPackError(errorText(error, t('store.packReadFailed')));
       setPackState('error');
     }
   };
@@ -1238,7 +1274,7 @@ export function StoreWorkspace({
     setImporting(true);
     try {
       const record = await importModpack(packPath);
-      onNotice(`整合包已导入为实例「${record.name}」。`);
+      onNotice(t('store.packImported', { values: { name: record.name } }));
       // 导入会创建一个新实例并触发安装任务；刷新后跳到游戏库查看结果。
       onTasksChanged();
       onCreated({
@@ -1255,7 +1291,7 @@ export function StoreWorkspace({
       setPackPreview(null);
       setPackState('idle');
     } catch (error) {
-      onNotice(errorText(error, '导入整合包失败。'));
+      onNotice(errorText(error, t('store.packImportFailed')));
     } finally {
       setImporting(false);
     }
@@ -1385,7 +1421,7 @@ export function StoreWorkspace({
       setMrPackVersionsState('ready');
     } catch (error) {
       setMrPackVersionsState('error');
-      setPackSearchError(errorText(error, '无法读取该整合包的版本列表。'));
+      setPackSearchError(errorText(error, t('store.packVersionsFailed')));
     }
   };
 
@@ -1393,7 +1429,7 @@ export function StoreWorkspace({
   const installMrPack = async (version: CatalogVersion) => {    setInstallingPack(version.versionId);
     try {
       const record = await downloadAndImportModrinthPack(version, targetInstanceId || undefined);
-      onNotice(`整合包已导入为实例「${record.name}」。`);
+      onNotice(t('store.packImported', { values: { name: record.name } }));
       // 与 CurseForge 那条路径一致：导入会创建实例并触发安装任务，刷新后跳过去看。
       onTasksChanged();
       onCreated({
@@ -1407,7 +1443,7 @@ export function StoreWorkspace({
         status: 'ready',
       });
     } catch (error) {
-      onNotice(errorText(error, '下载并导入整合包失败。'));
+      onNotice(errorText(error, t('store.packDownloadImportFailed')));
     } finally {
       setInstallingPack('');
     }
@@ -1434,7 +1470,7 @@ export function StoreWorkspace({
    * 对应 PCL2 版本行上的保存按钮。与 `installPack` 共用后端的安全下载路径
    * （SHA-1 校验 + 不覆盖同名文件），区别只是不进入导入流程。
    */
-  const savePack = async (file: CurseForgeVersion) => {
+  const savePack = async (file: CurseForgeVersion, projectName?: string) => {
     if (!isDesktopShell()) {
       onNotice(t('store.directDownloadDesktopOnly'));
       return;
@@ -1453,7 +1489,7 @@ export function StoreWorkspace({
     if (!directory) return;
     setInstallingPack(file.versionId);
     try {
-      const path = await curseforgeDownload(targetInstanceId, file, 'modpack', directory);
+      const path = await curseforgeDownload(targetInstanceId, file, 'modpack', directory, projectName);
       onNotice(t('store.directDownloadDone', { values: { name: file.fileName, path } }));
       onTasksChanged();
     } catch (error) {
@@ -1505,7 +1541,7 @@ export function StoreWorkspace({
     setInstallingPack(file.versionId);
     try {
       const record = await downloadAndImportModpack(file, targetInstanceId || undefined);
-      onNotice(`整合包「${record.name}」已导入为实例。`);
+      onNotice(t('store.packImported', { values: { name: record.name } }));
       onTasksChanged();
       onCreated({
         id: record.id,
@@ -1518,7 +1554,7 @@ export function StoreWorkspace({
         status: 'ready',
       });
     } catch (error) {
-      onNotice(errorText(error, '下载或导入整合包失败。'));
+      onNotice(errorText(error, t('store.packDownloadImportFailed')));
     } finally {
       setInstallingPack('');
     }
@@ -1555,7 +1591,7 @@ export function StoreWorkspace({
                     ? t('cf.headerHint')
                     : t('store.hintModrinth')
                 : category === 'modpack'
-                  ? '从本地选择一个整合包文件并导入为新实例'
+                  ? t('store.hintModpack')
                   : category === 'resourcepack'
                     // 资源包与地图固定走 CurseForge，副标题必须说明来源，否则用户
                     // 会以为是本地导入（这句之前对所有非 mod/vanilla 分类都显示
@@ -2042,10 +2078,11 @@ export function StoreWorkspace({
                   <label className={styles.field}>
                     <span>{t('store.filterLoader')}</span>
                     <select
-                      value={modLoader}
+                      value={loaderSelectValue}
                       onChange={event => setModLoader(event.target.value)}
                     >
-                      <option value="">{t('store.loaderFollowInstance', { values: { loader: target?.loader ?? '—' } })}</option>
+                      {/* 只有装了加载器的实例才有「跟随实例」这一项；原版落到「任意」。 */}
+                      {loaderFollowLabel && <option value="">{loaderFollowLabel}</option>}
                       <option value="any">{t('store.loaderAny')}</option>
                       <option value="fabric">Fabric</option>
                       <option value="quilt">Quilt</option>
@@ -2343,7 +2380,7 @@ export function StoreWorkspace({
                                   size="sm"
                                   disabled={installing === version.versionId}
                                   icon={<Download size={13} />}
-                                  onClick={() => void installVersion(version)}
+                                  onClick={() => void installVersion(version, mod.title)}
                                 >
                                   {installing === version.versionId ? t('store.loading') : t('store.install')}
                                 </Button>
@@ -2354,7 +2391,7 @@ export function StoreWorkspace({
                                 disabled={installing === version.versionId}
                                 icon={<FolderDown size={13} />}
                                 title={t('store.directDownloadHint')}
-                                onClick={() => void downloadVersion(version)}
+                                onClick={() => void downloadVersion(version, mod.title)}
                               >
                                 {t('store.directDownload')}
                               </Button>
@@ -2453,7 +2490,7 @@ export function StoreWorkspace({
                                 size="sm"
                                 disabled={version.url === null || installing === version.versionId}
                                 icon={<Download size={13} />}
-                                onClick={() => void installCfVersion(version)}
+                                onClick={() => void installCfVersion(version, mod.title)}
                               >
                                 {version.url === null
                                   ? t('cf.manual')
@@ -2465,7 +2502,7 @@ export function StoreWorkspace({
                                 disabled={version.url === null || installing === version.versionId}
                                 icon={<FolderDown size={13} />}
                                 title={t('store.directDownloadHint')}
-                                onClick={() => void downloadCfVersion(version)}
+                                onClick={() => void downloadCfVersion(version, mod.title)}
                               >
                                 {t('store.directDownload')}
                               </Button>
@@ -2559,15 +2596,10 @@ export function StoreWorkspace({
               */}
               <div className={styles.filterCard}>
                 <div className={styles.filterTitle}>
-                  <h2>获取整合包</h2>
-                  <span>从 CurseForge 搜索，或导入本地文件</span>
+                  <h2>{t('store.packAcquireTitle')}</h2>
+                  <span>{t('store.packAcquireHint')}</span>
                 </div>
-                <p className={styles.mixedNote}>
-                  两种方式都会创建新实例。从站内下载会先校验 SHA-1 再导入。
-                  本地文件支持 Modrinth 的 .mrpack 与 CurseForge 的 .zip；后者会按清单里的
-                  文件引用联网查询下载地址（需要 CurseForge Key），查不到或被作者限制分发的
-                  文件会被跳过。
-                </p>
+                <p className={styles.mixedNote}>{t('store.packAcquireNote')}</p>
                 <div className={styles.filterGrid}>
                   <label className={`${styles.field} ${styles.fieldWide}`}>
                     <span>{t('store.name')}</span>
@@ -2577,7 +2609,7 @@ export function StoreWorkspace({
                         value={packQuery}
                         onChange={event => setPackQuery(event.target.value)}
                         onKeyDown={event => { if (event.key === 'Enter') void runPackSearch(); }}
-                        placeholder="例如 all the mods、better mc"
+                        placeholder={t('store.packNamePlaceholder')}
                       />
                     </div>
                   </label>
@@ -2587,7 +2619,7 @@ export function StoreWorkspace({
                     {t('store.search')}
                   </Button>
                   <Button variant="ghost" onClick={() => void pickPack()} icon={<Package size={15} />}>
-                    导入本地文件
+                    {t('store.packImportLocal')}
                   </Button>
                   {packPath && (
                     <Button
@@ -2640,7 +2672,7 @@ export function StoreWorkspace({
                             </div>
                             <p>{hit.description || t('store.noSummary')}</p>
                             <span className={styles.contentMeta}>
-                              {hit.downloads.toLocaleString(locale)} 次下载
+                              {t('store.packDownloads', { values: { value: hit.downloads.toLocaleString(locale) }, count: hit.downloads })}
                             </span>
                           </div>
                           <Button
@@ -2656,7 +2688,7 @@ export function StoreWorkspace({
                           <div className={styles.versionListInner}>
                             {packVersionsState === 'loading' && <div className={styles.versionMeta}>{t('store.loading')}</div>}
                             {packVersionsState === 'ready' && packVersions.length === 0 && (
-                              <div className={styles.versionMeta}>这个整合包没有可用文件。</div>
+                              <div className={styles.versionMeta}>{t('store.packNoFiles')}</div>
                             )}
                             {/*
                               按游戏版本分组展示（参考 PCL2 详情页的多卡片结构）。
@@ -2707,7 +2739,7 @@ export function StoreWorkspace({
                                         variant="secondary"
                                         disabled={file.url === null || installingPack !== ''}
                                         title={t('store.directDownloadHint')}
-                                        onClick={() => void savePack(file)}
+                                        onClick={() => void savePack(file, hit.title)}
                                       >
                                         {t('store.saveAs')}
                                       </Button>
@@ -2868,7 +2900,7 @@ export function StoreWorkspace({
 
               <div className={styles.resultsCard}>
                 <div className={styles.resultsHeader}>
-                  <h2>包内容</h2>
+                  <h2>{t('store.packContents')}</h2>
                 </div>
 
                 {packState === 'error' && (
@@ -2895,7 +2927,14 @@ export function StoreWorkspace({
                     </div>
                     <div className={styles.resultsMeta}>
                       <span>
-                        必须文件 {packPreview.requiredFiles} · 可选 {packPreview.optionalFiles} · 覆盖 {packPreview.overrideFiles} · 合计 {formatBytes(packPreview.totalBytes)}
+                        {t('store.packSummary', {
+                          values: {
+                            required: packPreview.requiredFiles,
+                            optional: packPreview.optionalFiles,
+                            override: packPreview.overrideFiles,
+                            total: formatBytes(packPreview.totalBytes),
+                          },
+                        })}
                       </span>
                     </div>
                     <div className={styles.filterActions}>
@@ -2904,14 +2943,14 @@ export function StoreWorkspace({
                         icon={<Download size={15} />}
                         onClick={() => void doImport()}
                       >
-                        {importing ? t('store.loading') : '确认并导入'}
+                        {importing ? t('store.loading') : t('store.packConfirmImport')}
                       </Button>
                     </div>
                   </>
                 )}
 
                 {packState === 'idle' && !packPreview && (
-                  <div className={styles.empty}>先选择一个整合包文件。</div>
+                  <div className={styles.empty}>{t('store.packSelectFirst')}</div>
                 )}
               </div>
             </>

@@ -499,7 +499,7 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
             value={prefs.maxConcurrentDownloads}
             onChange={v => update('maxConcurrentDownloads', v)}
             min={1}
-            max={16}
+            max={64}
             suffix={t('settings.tasksUnit')}
             label={t('settings.concurrentTasks')}
           />)}
@@ -508,7 +508,7 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
             value={prefs.connectionsPerFile}
             onChange={v => update('connectionsPerFile', v)}
             min={1}
-            max={16}
+            max={1024}
             suffix={t('settings.connectionsUnit')}
             label={t('settings.connections')}
           />)}
@@ -521,7 +521,16 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         {prefs.aria2Enabled && aria2 && !aria2.bundled && (
           <div className={styles.inlineNote} role="status">
             <strong>{t('settings.aria2Unavailable')}</strong>
-            <span>{aria2.problem ?? t('settings.aria2Fallback')}</span>
+            <span>
+              {/*
+                原因优先走原因代码再走原文。
+                预览模式的说明由我们自己提供，必须是当前语言；后端诊断是英文原文，
+                保持原样便于排查。
+              */}
+              {aria2.problemCode === 'preview'
+                ? t('settings.aria2PreviewOnly')
+                : (aria2.problem ?? t('settings.aria2Fallback'))}
+            </span>
           </div>
         )}
         {prefs.aria2Enabled && aria2?.bundled && (

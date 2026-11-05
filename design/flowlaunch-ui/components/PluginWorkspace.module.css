@@ -523,6 +523,46 @@
   color: var(--color-primary-text);
 }
 
+/*
+ * 只声明、当前不会触发的时机。
+ *
+ * 用虚线边框而不是换一种颜色：颜色在四套主题里的对比度各不相同，虚线在任何
+ * 主题下都是同一个意思——「这条还没连上」。文字保持次要色，读得清但明显比
+ * 生效的弱。
+ */
+.chipDeclared {
+  border-style: dashed;
+  color: var(--color-text-disabled);
+}
+
+/* 计划中的插件卡片：虚线外框 + 略微下沉的底色，表示「还不在这台机器上」。 */
+.cardPlanned {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--color-bg-elevated) 60%, var(--color-bg-secondary));
+}
+
+.cardPlanned:hover {
+  border-color: color-mix(in srgb, var(--color-primary-500) 22%, var(--color-border));
+}
+
+/* 「计划中」标签：与「第三方」区分开，但同样不抢注意力。 */
+.tagPlanned {
+  border-style: dashed;
+  color: var(--color-text-secondary);
+}
+
+/*
+ * 「尚未实现」说明块。
+ *
+ * 只用左侧一条虚线引导线区分，不铺彩色底：这段文字是要读的，不是警报。整块铺
+ * 橙色底会让人以为出了问题，而实际情况是「一切正常，只是还没到时候」。
+ */
+.blockPlanned {
+  border-left: 2px dashed color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+  padding-left: 10px;
+  margin-left: 2px;
+}
+
 .permissionRow {
   display: flex;
   align-items: flex-start;

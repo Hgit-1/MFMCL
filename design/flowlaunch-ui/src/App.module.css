@@ -883,10 +883,120 @@
 .taskInfo h3 { margin-bottom: var(--space-sm); color: var(--color-text-primary); font-size: var(--text-base); }
 .taskProgress { display: flex; align-items: center; gap: var(--space-md); }
 .progressBar { flex: 1; height: 6px; overflow: hidden; border-radius: 3px; background: var(--color-bg-secondary); }
-.progressFill { height: 100%; background: var(--color-primary-500); }
+.progressFill { height: 100%; background: var(--color-primary-500); transition: width var(--duration-fast) var(--ease); }
+/* 暂停：降饱和。颜色是「不动了」最省字的表达，比再加一行说明有效。 */
+.progressPaused { background: var(--color-text-tertiary); }
+/* 失败：进度条本身说不了「失败了」，用危险色让这一行在列表里可辨。 */
+.progressFailed { background: var(--color-danger-solid); }
 .taskProgress span { min-width: 40px; color: var(--color-text-secondary); font-size: var(--text-sm); text-align: right; }
+
+/*
+ * 总量未知时的扫光条。
+ *
+ * 不用「0% 的实心条 + 转圈」：那看起来像卡住。也不假装一个来回填满的假进度：
+ * 那会让人以为快好了。这里让轨道本身常亮（低不透明度的强调色），再叠一条来回
+ * 平移的高光——任何时刻都能看出「在动，但不知道还剩多少」。
+ *
+ * 之前写成「一个 35% 宽的亮块整条扫过」，截图时经常正好停在屏幕外，看起来像
+ * 进度条消失了。轨道常亮就不会出现这个问题。
+ */
+.progressIndeterminate {
+  position: relative;
+  background: color-mix(in srgb, var(--color-primary-500) 22%, var(--color-bg-secondary));
+}
+
+.progressIndeterminate .progressFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: 3px;
+  background: var(--color-primary-500);
+  animation: progressSweep 1.5s var(--ease, ease-in-out) infinite;
+}
+
+@keyframes progressSweep {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(150%); }
+  100% { transform: translateX(calc(250% / 0.4)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progressIndeterminate .progressFill {
+    animation: none;
+    width: 100%;
+    opacity: 0.45;
+  }
+}
+
+/* 状态 / 文件数 / 字节数同一行：它们都是这条任务的次要计量，逐条换行会把卡片撑高。 */
+.taskMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-sm) var(--space-base);
+  margin-top: var(--space-xs);
+}
+
 /* 状态文字：与侧栏徽章的数字对应，让用户知道那个数字代表哪些任务。 */
 .taskStatus { display: inline-block; margin-top: var(--space-xs); color: var(--color-text-secondary); font-size: var(--text-xs); }
+.taskMeta .taskStatus { margin-top: 0; }
+
+/* 右侧控制区：图标按钮，不换行、不抢标题宽度。 */
+.taskActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+/*
+ * 图标按钮。
+ *
+ * 尺寸固定 32×32（与 `Button size="sm"` 同高），四个角不圆到像圆形按钮——那是
+ * 移动端的浮动操作钮语汇。悬停给一层背景而不是加边框：边框会让相邻按钮在悬停
+ * 时互相推挤。
+ */
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease);
+}
+
+.iconButton:hover:not(:disabled) {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+.iconButton:active:not(:disabled) {
+  background: var(--color-bg-primary);
+}
+
+.iconButton:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.iconButton:focus-visible {
+  outline: 2px solid var(--color-primary-500);
+  outline-offset: 2px;
+}
+
+/* 取消是破坏性动作：悬停时用危险色，避免和暂停看起来同等分量。 */
+.iconButtonDanger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger-solid) 12%, transparent);
+  color: var(--color-danger-solid);
+}
 
 /* --- 文件级下载进度 ---------------------------------------------------- */
 /*
@@ -899,6 +1009,35 @@
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-md);
+}
+
+/* 右半边：并行数 + 展开/收起。两者都是这一段的次要动作，排在同一行右端。 */
+.fileProgressHeaderMeta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.fileProgressToggle {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-primary-500);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.fileProgressToggle:hover {
+  color: var(--color-primary-600, var(--color-primary-500));
+}
+
+.fileProgressToggle:focus-visible {
+  outline: 2px solid var(--color-primary-500);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .fileProgressTitle { color: var(--color-text-secondary); font-size: var(--text-xs); font-weight: 600; }
@@ -1156,7 +1295,8 @@
 
   .taskCard { align-items: flex-start; flex-wrap: wrap; }
   .taskInfo { flex-basis: 100%; }
-  .taskCard > button { width: 100%; }
+  /* 图标按钮组在窄屏保持右对齐的一排，不拉伸成整行宽。 */
+  .taskActions { margin-left: auto; }
 
   .settingItem { align-items: flex-start; flex-direction: column; }
   .settingItem .select { width: 100%; }
