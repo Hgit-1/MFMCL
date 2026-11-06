@@ -511,31 +511,27 @@ export function StoreWorkspace({
    * 或用户自己配过 key 时，下面那个 effect 会把 CurseForge 一并勾上——那种情况下
    * 两个来源都真的能用，没有理由让用户先手动勾一次。
    */
-  const [sources, setSources] = useState<Array<'modrinth' | 'curseforge'>>(['modrinth']);
-
-  /** CurseForge 是否已配置 key，决定勾选它时是直接搜还是先给设置入口。 */
-  const [cfKeyReady, setCfKeyReady] = useState<boolean | null>(null);
+  /*
+   * 默认勾上两个来源。
+   *
+   * 之前的做法是「先只勾 Modrinth，等 key 状态查回来再补上 CurseForge」——那是
+   * 因为当时没有 key 就搜不了。现在无 key 会走 MCIM 镜像，CurseForge 从第一次
+   * 打开就是可用的，没有理由让用户先看到一个缺一半的商店再等它自己补齐。
+   */
+  const [sources, setSources] = useState<Array<'modrinth' | 'curseforge'>>([
+    'modrinth',
+    'curseforge',
+  ]);
 
   /**
-   * 用户是否手动改过来源勾选。
+   * CurseForge 的凭据状态。
    *
-   * 用来判断「自动勾上 CurseForge」还能不能执行：用户一旦自己取消过，就说明他
-   * 明确不想要这个来源，之后 key 状态怎么变化都不该再替他勾回去。
+   * `configured: false` 不再是阻断条件——它只表示「走镜像」。这个状态现在的用途
+   * 是决定要不要给出「填入自己的 key」的建议入口，而不是决定能不能搜。
    */
-  const sourcesTouched = useRef(false);
-
-  /*
-   * key 状态查回来后，若 CurseForge 可用且用户没手动改过，自动勾上它。
-   *
-   * 内置 key 或用户已配 key 时两个来源都真的能用，没有理由让人先手动勾一次。
-   */
-  useEffect(() => {
-    if (cfKeyReady !== true || sourcesTouched.current) return;
-    setSources(current => (current.includes('curseforge') ? current : [...current, 'curseforge']));
-  }, [cfKeyReady]);
+  const [cfKeyReady, setCfKeyReady] = useState<boolean | null>(null);
 
   const toggleSource = (source: 'modrinth' | 'curseforge') => {
-    sourcesTouched.current = true;
     setSources(current =>
       current.includes(source)
         ? current.filter(item => item !== source)
@@ -2109,8 +2105,16 @@ export function StoreWorkspace({
                 </label>
               </div>
 
+              {/*
+                没有用户 key 时给一条中性说明，而不是把整张设置卡片顶出来。
+
+                CurseForge 现在无 key 也能用（走 MCIM 镜像），所以在筛选区展开一个
+                「请填写 API Key」的表单会传达错误前提：用户会以为不填就用不了。
+                这里只在状态查回来确实「没有 key」时给一行可选入口。
+              */}
               {sources.includes('curseforge') && cfKeyReady === false && (
                 <div className={styles.cfKeySlot}>
+                  <p className={styles.mirrorNote}>{t('cf.mirrorNotice')}</p>
                   <CurseForgeKeyCard
                     compact
                     onStatusChange={handleCfKeyStatus}
@@ -2405,15 +2409,15 @@ export function StoreWorkspace({
                         {/*
                           失败时把原因写在这里。
                           之前只有一条 toast，列表区留空——用户会以为这个模组没有
-                          可下载文件，而实际原因是缺少 CurseForge API Key。
+                          可下载文件，而实际原因是网络或镜像不可用。
                         */}
                         {cfVersionsState === 'error' && (
                           <div className={styles.versionError} role="alert">
                             <span>{cfVersionsError}</span>
                             {/*
-                              缺少 key 时给一个直达入口：滚动到页面顶部那张 Key 卡片。
-                              只在「确实没有 key」时显示——其它失败（网络、限流）
-                              跳过去也没有可操作的东西。
+                              没有 key 时给一个直达入口：滚动到页面顶部那张 Key 卡片。
+                              这不是「必须修复」的提示——没有 key 平时也能用，只有
+                              镜像不可用时才值得换成自己的 key。
                             */}
                             {cfKeyReady === false && (
                               <Button
