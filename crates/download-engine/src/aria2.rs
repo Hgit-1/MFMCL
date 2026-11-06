@@ -27,15 +27,15 @@ pub enum Aria2Error {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Aria2Options {
-    pub max_concurrent_downloads: u8,
-    pub connections_per_file: u8,
+    pub max_concurrent_downloads: u16,
+    pub connections_per_file: u16,
 }
 
 impl Default for Aria2Options {
     fn default() -> Self {
         Self {
-            max_concurrent_downloads: 4,
-            connections_per_file: 4,
+            max_concurrent_downloads: 16,
+            connections_per_file: 256,
         }
     }
 }
@@ -110,8 +110,23 @@ impl Aria2Session {
         let port = listener.local_addr()?.port();
         drop(listener);
         let secret = Uuid::new_v4().simple().to_string();
-        let max_downloads = options.max_concurrent_downloads.clamp(1, 16);
+        /*
+         * 这里有两套上限，不能混为一谈：
+         *
+         *   - `max-concurrent-downloads`：aria2 同时处理几个**文件**。这个键没有
+         *     文档上的硬上限，用我们自己的可配置上限（64）夹住。
+         *   - `split` / `max-connection-per-server`：每个文件拆几条连接。aria2 的
+         *     实现把超过 16 的值压回 16，所以用户设 256 时这条路径实际只能拿到 16。
+         *     这是 aria2 的限制，不是我们的：原生下载器没有这个天花板。
+         *
+         * 两个数字相乘是 socket 用量，所以再按全局连接预算夹一次。
+         */
+        let max_downloads = options
+            .max_concurrent_downloads
+            .clamp(1, crate::MAX_CONCURRENT_DOWNLOADS_LIMIT);
         let connections = options.connections_per_file.clamp(1, 16);
+        let budget = crate::GLOBAL_CONNECTION_BUDGET as u32;
+        let max_downloads = ((max_downloads as u32).min(budget / connections as u32)).max(1) as u16;
         let config_path =
             working_dir.join(format!(".aria2-session-{}.conf", Uuid::new_v4().simple()));
         let config = format!(
@@ -210,7 +225,7 @@ impl Aria2Session {
         directory: &Path,
         file_name: &str,
         checksum: Option<&str>,
-        connections: u8,
+        connections: u16,
     ) -> Result<String, Aria2Error> {
         if urls.is_empty()
             || urls.iter().any(|s| {
@@ -227,6 +242,7 @@ impl Aria2Session {
             ));
         }
         let mut options = BTreeMap::<String, Value>::new();
+        // aria2 把超过 16 的 `split` 压回 16，这里显式夹到它的真实上限。
         let connections = connections.clamp(1, 16).to_string();
         options.insert("split".to_owned(), json!(connections));
         options.insert("max-connection-per-server".to_owned(), json!(connections));

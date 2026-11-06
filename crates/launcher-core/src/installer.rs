@@ -554,7 +554,37 @@ async fn download_artifacts(
     artifacts: Vec<ArtifactSpec>,
     progress: Option<mpsc::UnboundedSender<DownloadProgress>>,
 ) -> Result<(), InstallError> {
-    let concurrency = engine.settings().max_concurrent_downloads.clamp(1, 16) as usize;
+    if artifacts.is_empty() {
+        return Ok(());
+    }
+    /*
+     * 先登记这一批文件的数量与总量。
+     *
+     * 一次原版安装会分两批下载（版本清单里的库/客户端，然后是资源索引里的对象），
+     * 所以这里是**累加**而不是覆盖：只有两批都登记完，分母才是完整的。
+     *
+     * 总量只要有一个文件大小未知，就是 `None`——资源索引里确实存在缺 size 的条目。
+     * 宁可让界面显示不确定态，也不要给一个偏小的分母，那会让进度条冲到 100% 之后
+     * 又开始前进。
+     */
+    let known_total = artifacts
+        .iter()
+        .map(|artifact| artifact.size)
+        .collect::<Option<Vec<u64>>>()
+        .map(|sizes| sizes.iter().sum::<u64>());
+    engine
+        .task_progress()
+        .register(artifacts.len() as u32, known_total);
+    /*
+     * 并发度由引擎的信号量控制，这里不需要再切一层。
+     *
+     * 上限用 `MAX_CONCURRENT_DOWNLOADS_LIMIT` 而不是写死一个数：界面允许把同时
+     * 下载数调到 64，这里若还夹在 16，用户改了设置却看不到任何变化。
+     */
+    let concurrency = engine
+        .settings()
+        .max_concurrent_downloads
+        .clamp(1, download_engine::MAX_CONCURRENT_DOWNLOADS_LIMIT) as usize;
     futures_util::stream::iter(artifacts)
         .map(|artifact| {
             let engine = engine.clone();

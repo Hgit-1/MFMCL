@@ -33,10 +33,24 @@ pub fn validate_settings(
     settings: &LauncherSettings,
     maximum_game_mb: Option<u32>,
 ) -> Result<(), String> {
-    if !(1..=16).contains(&settings.download.max_concurrent_downloads)
-        || !(1..=16).contains(&settings.download.connections_per_file)
+    /*
+     * 下载并发的两个上限。
+     *
+     * 上限从 16/16 提到 64/1024 是因为原来那组数字在千兆以上的链路上成了瓶颈：
+     * 一次原版安装有几百个文件，4 个并发文件各 4 条连接，跑满带宽要靠运气。
+     *
+     * 但两者不能同时取上限。真正的资源是 socket：`并发文件 × 单文件连接`。64 ×
+     * 1024 = 65536，远超 Windows 默认的临时端口范围与家用路由器的 NAT 表容量，
+     * 结果不是更快而是连接直接失败。所以下载引擎另有一个全局连接预算
+     * （`GLOBAL_CONNECTION_BUDGET`，2048）兜底，超出的分片排队而不是报错。
+     *
+     * 换句话说：这两个数字都可以调到上限，同时调满时由引擎的全局预算决定实际
+     * 并发，而不是让操作系统拒绝连接。
+     */
+    if !(1..=64).contains(&settings.download.max_concurrent_downloads)
+        || !(1..=1024).contains(&settings.download.connections_per_file)
     {
-        return Err("下载并发数必须在 1 到 16 之间。".to_owned());
+        return Err("下载并发数必须在 1–64（同时任务）与 1–1024（单文件连接）之间。".to_owned());
     }
     if !(512..=u32::MAX).contains(&settings.memory_mb) {
         return Err("游戏内存必须至少为 512 MB。".to_owned());

@@ -105,11 +105,18 @@ export interface DownloadTask {
   status: 'queued' | 'downloading' | 'verifying' | 'installing' | 'completed' | 'failed' | 'paused' | 'cancelled';
   progress: number;
   total?: number;
+  /** 已完成字节。与 `total` 一起构成任务卡上的「已完成 / 总量」。 */
+  completedBytes?: number;
+  /** 计划中的文件数与已完成的文件数，来自后端任务级累计。 */
+  files?: number;
+  completedFiles?: number;
   speed?: number;
   error?: string;
   targetInstance?: string;
   /** 任务归属的实例。后端按实例组织任务，取消/暂停都要用它定位。 */
   instanceId?: string;
+  /** 卡住不动的旧记录：进度只来自已持久化的字节数，没有在途事件。 */
+  stale?: boolean;
 }
 
 // 应用状态

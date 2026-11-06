@@ -85,6 +85,26 @@ export interface LauncherPlugin {
   enabledByDefault: boolean;
   /** 内置插件不能被移除；手动安装的可以。 */
   builtin: boolean;
+  /**
+   * 计划中的插件：清单已公布，但启动器还没有实现对应能力。
+   *
+   * ## 为什么要有这个状态
+   *
+   * 插件页的一条硬规矩是「开关必须真的改变行为」（见 `BUILTIN_PLUGINS` 的注释）。
+   * 但有些插件值得提前让用户知道存在——它们是路线图的一部分，用户会想知道
+   * 「以后会不会有」。把它们直接混进可启用列表，就等于让用户拨一个什么都不做
+   * 的开关，那正是这条规矩要防的事。
+   *
+   * 所以单独建模：卡片照常显示身份、用途、将来会碰到的扩展点与权限，但
+   *   - 开关恒为禁用且恒显示「未启用」；
+   *   - 不计入「已安装 / 已启用」数量；
+   *   - 不参与状态持久化与后端同步（`toPluginStatePayload` 不发送它）；
+   *   - 详情里用一段专门的说明交代「计划做什么、现在有什么」。
+   *
+   * 外部清单无法自行声明这个字段：它也像 `builtin` / `incompatible` 一样由启动器
+   * 判定，否则任何人都能装一个永远「只需等待」的假插件。
+   */
+  planned?: boolean;
   /** 需要重启启动器才真正加载/卸载。 */
   requiresRestart?: boolean;
   /** 需要注意的状态说明，例如实验性或版本不兼容。 */
@@ -160,6 +180,21 @@ const HOOK_HINT_KEYS: Record<PluginHookId, MessageKey> = {
   sidebar: 'plugin.hook.sidebarHint',
   background: 'plugin.hook.backgroundHint',
 };
+
+/**
+ * 哪些扩展点已经真的会触发。
+ *
+ * 与后端 `plugin_runtime_info().kinds` 是同一件事的两个表述：那边列的是**贡献**
+ * 类型（真正能做的事），这里列的是**时机**（什么时候被调用）。两者必须同时满足
+ * 才算「会执行」——声明了 `theme` 时机但没有任何主题贡献类型，仍然什么都不会发生。
+ *
+ * 目前只有 `launch` 会在启动时触发（见 PLUGIN.md 的贡献表）。其余四个接受声明、
+ * 在详情里如实标注为「只声明、未执行」，而不是让用户以为拨了开关就生效。
+ *
+ * 这个判断放在前端是因为它只影响**说明文字**：真正会不会执行由后端决定，界面
+ * 这里多说一句或少说一句不会改变行为，但说错了会误导用户。
+ */
+export const EXECUTING_HOOKS: PluginHookId[] = ['launch'];
 
 const PERMISSION_LABEL_KEYS: Record<PluginPermissionId, MessageKey> = {
   filesystem: 'plugin.perm.filesystem',
@@ -242,6 +277,80 @@ export const BUILTIN_PLUGINS: LauncherPlugin[] = [
     ],
     enabledByDefault: true,
     builtin: true,
+  },
+];
+
+/**
+ * 计划中的外置插件。
+ *
+ * ## 为什么它们不放进 `BUILTIN_PLUGINS`
+ *
+ * 上面那份清单的准入规则是「能指出一行会读这个开关的代码」。这里放的是相反的
+ * 东西：能力还没写，先把清单公布出来，让用户知道路线图上有什么。混进同一份数组
+ * 会让它们自动获得「可启用」的外观，而那正是准入规则要防的事。
+ *
+ * 它们的身份也确实是外置的：将来由第三方维护、以普通清单分发，用户选择安装，
+ * 而不是随启动器一起编译进去。所以卡片上标「第三方」，并明确说明**当前版本
+ * 尚未实现**——用户可以提前看到它会申请什么权限，但拨不动开关。
+ *
+ * ## 数据形状
+ *
+ * 与 `LauncherPlugin` 完全一致，只是多了 `planned: true`。用同一份类型而不是
+ * 另建一种「预告」结构，是为了让卡片渲染只有一条路径：将来实现之后，只需要把
+ * 条目挪进 `custom`（用户安装了它），`planned` 一去掉，其余代码不用改。
+ */
+export const PLANNED_PLUGINS: LauncherPlugin[] = [
+  /*
+   * Aria with You。
+   *
+   * 目标：按真实日期切换季节形象（春/夏/秋/冬），为启动器的各个区域——主页、
+   * 侧栏、实例卡片、启动进度——提供随时间变化的 Aria 立绘与配色。
+   *
+   * 为什么声明了三个扩展点和三个权限，现在却什么也不做：这份清单描述的是**实现
+   * 之后**的形态。提前列出来有两个用处——用户能判断自己愿不愿意给它这些权限；
+   * 实现时也不容易「顺手多要一点」。清单是契约，先写下来比事后追加更可信。
+   *
+   * 它需要的能力恰好是启动器目前没有的：`theme` / `sidebar` / `background` 三个
+   * 时机都只接受声明、不触发执行（见 `EXECUTING_HOOKS` 与 PLUGIN.md）。所以它
+   * 不能和内置插件一样只差一个开关，而是缺一整套 UI 覆盖能力。
+   */
+  {
+    id: 'aria-with-you',
+    name: loc('plugin.ariaWithYou.name'),
+    /*
+     * 版本号写 `0.0.0` 而不是 `1.0.0`。
+     *
+     * 语义是「还没有发布任何版本」。写 1.0.0 会让人以为有一个能用的发行版，
+     * 而 0.0.0 在语义版本里正是「尚未发布」的常用写法，也和卡片上「尚未实现」
+     * 的标签一致。
+     */
+    version: '0.0.0',
+    author: 'Aria Project',
+    description: loc('plugin.ariaWithYou.description'),
+    glyph: 'palette',
+    accent: '#E39BD4',
+    /*
+     * 三个时机：
+     *   - `theme`：按季节调整强调色与背景色；
+     *   - `background`：提供季节背景图与立绘；
+     *   - `sidebar`：在侧栏挂一个随季节变化的小形象。
+     */
+    hooks: ['theme', 'background', 'sidebar'],
+    /*
+     * 三个权限：
+     *   - `theme`：需要覆盖界面视觉变量（配色、圆角）；
+     *   - `uiSlot`：需要在侧栏等处插入自己的界面；
+     *   - `storage`：需要记住用户选的季节模式与本季是否已切换过。
+     *
+     * 不要 `network`：形象随插件分发包自带，不该在运行时联网拉图。也不要
+     * `filesystem`：它不需要碰游戏文件。
+     */
+    permissions: ['theme', 'uiSlot', 'storage'],
+    planned: true,
+    builtin: false,
+    enabledByDefault: false,
+    status: loc('plugin.ariaWithYou.status'),
+    statusTone: 'info',
   },
 ];
 
@@ -420,17 +529,40 @@ export function allPlugins(store: PluginStore): LauncherPlugin[] {
     if (!accepted || !plugin.updateAvailable) return plugin;
     return { ...plugin, version: accepted, updateAvailable: undefined };
   });
-  return [...builtin, ...store.custom];
+  /*
+   * 计划中的条目排在最后。
+   *
+   * 排序即优先级：列表顶部是用户现在能用的东西，底部才是「以后会有」。把预告混在
+   * 前面会让人第一眼看到一张拨不动的卡片。
+   */
+  return [...builtin, ...store.custom, ...PLANNED_PLUGINS];
 }
 
 /** 插件当前是否启用。不兼容的插件永远视为未启用。 */
 export function isPluginEnabled(plugin: LauncherPlugin, store: PluginStore): boolean {
-  if (plugin.incompatible) return false;
+  // 计划中的插件恒为未启用：开关置灰，也不该被计入任何「已启用」统计。
+  if (plugin.incompatible || plugin.planned) return false;
   return store.enabled[plugin.id] ?? plugin.enabledByDefault;
 }
 
+/**
+ * 已启用的插件数。
+ *
+ * 计划中的插件不计入：它会出现在列表里，但既没安装也没启用，「已启用 3 个」里
+ * 混进一个永远孵化不出来的条目，会让这个数字失去意义。
+ */
 export function enabledPluginCount(store: PluginStore): number {
   return allPlugins(store).filter(plugin => isPluginEnabled(plugin, store)).length;
+}
+
+/**
+ * 已经装好的插件数（含内置，不含计划中的）。
+ *
+ * 页头用它而不是 `plugins.length`：列表里现在可能有一个「以后会有」的条目，
+ * 把它算进「已安装」会让用户以为它已经在机器上了。
+ */
+export function installedPluginCount(store: PluginStore): number {
+  return allPlugins(store).filter(plugin => !plugin.planned).length;
 }
 
 /**
@@ -522,6 +654,15 @@ export function optionValue(plugin: LauncherPlugin, optionId: string, store: Plu
 export function toPluginStatePayload(store: PluginStore): PluginStatePayload {
   const custom: PluginDefinition[] = [];
   for (const plugin of store.custom) {
+    /*
+     * 计划中的插件不发给后端。
+     *
+     * 后端没有 `planned` 这个概念，收到它就会当成一个正常启用的自定义插件，参与
+     * 启动链路——于是「已经公布但还没实现」的插件会真的按默认启用去执行它声明的
+     * 贡献，而那些贡献恰恰是我们还没验证过的。前端的置灰只是显示，真正的边界在
+     * 这里：压根不发出去。
+     */
+    if (plugin.planned) continue;
     custom.push({
       id: plugin.id,
       version: plugin.version,
@@ -537,6 +678,9 @@ export function toPluginStatePayload(store: PluginStore): PluginStatePayload {
    * 后端对未出现的 id 回退「默认启用」，与 `isPluginEnabled` 的规则一致。不能只
    * 写差异：前端不知道后端内置清单的默认值，省掉任何一项都可能让一个本应启用的
    * 插件变成启用（或反之）。整份写入最直白，也不会有一致性缺口。
+   *
+   * 计划中的插件不在 `store.enabled` 里（开关是禁用的，永远写不进去），所以这里
+   * 不需要额外过滤；上面的 `custom` 那一层才是真正的边界。
    */
   return { custom, enabled: { ...store.enabled } };
 }

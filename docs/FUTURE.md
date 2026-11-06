@@ -35,3 +35,38 @@ Initially consider only a native HarmonyOS companion client and HAP packaging ex
 ## Shared mobile product direction
 
 If a mobile client becomes viable before local game execution, prioritize safe instance browsing and optional, user-authorized desktop pairing. Pairing must be off by default, limited to a trusted local connection, use an explicit one-time pairing secret, and expose only documented launcher actions.
+
+## Aria with You: seasonal artwork plugin
+
+A planned third-party plugin, listed in the plugin workspace as `planned` (see
+[`PLUGIN.md`](../PLUGIN.md)). It would switch the Aria character artwork between spring,
+summer, autumn and winter based on the real date, and tint the launcher's surfaces to match
+the current season.
+
+### Why it cannot ship as a normal plugin
+
+The declared hooks are `theme`, `background` and `sidebar`. Only the `launch` hook is
+currently triggered; the other three are accepted in a manifest and reported honestly as
+"declared only, not triggered yet". The plugin therefore needs an entire capability the
+launcher does not have, not just a switch:
+
+1. A theme override channel that lets a plugin substitute visual variables (accent, surface
+   tint, radius) without breaking contrast in any of the four presets or in high-contrast
+   mode.
+2. A background source channel: plugin-supplied images, with decoding limits, size caps and
+   a documented cache location, so a plugin cannot exhaust memory or disk.
+3. A sidebar slot with a fixed footprint and a documented opt-out, so a plugin cannot push
+   navigation off-screen on small windows.
+4. A way to bundle and verify artwork assets inside a plugin package. The plugin asks for
+   `theme`, `uiSlot` and `storage` only - deliberately no `network` (artwork must ship with
+   the plugin, not be fetched at runtime) and no `filesystem` (it must not touch game files).
+
+### Gates before it is implemented
+
+1. Define the theme-override contract and prove it across all four presets, light/dark, and
+   reduced-motion mode without regressing text contrast.
+2. Set hard limits for plugin-supplied images (dimensions, bytes, decode memory) and test
+   them with a deliberately oversized asset.
+3. Decide how artwork assets are shipped and integrity-checked, and whether redistribution
+   rights for each seasonal artwork set are cleared.
+4. Only then move the manifest out of `PLANNED_PLUGINS` and let users install it normally.

@@ -280,6 +280,13 @@ export const zhCN = {
   'cf.keyCleared': '已清除 CurseForge Key。',
   'cf.keyClearFailed': '无法清除 CurseForge Key。',
   'cf.keyClear': '清除 Key',
+  /*
+   * 浏览器预览的说明。
+   *
+   * 以前这句话写死在 `native.ts` 里，于是英文界面会冒出一整段中文。文案属于界面，
+   * 数据层只给原因代码。
+   */
+  'cf.keyPreviewOnly': '浏览器预览无法访问系统凭据库；请使用桌面版设置 CurseForge Key。',
   'cf.kindMod': '模组',
   'cf.kindResourcePack': '资源包',
   'cf.kindWorld': '地图',
@@ -289,6 +296,7 @@ export const zhCN = {
   'cf.hintForKind': '结果按当前实例的游戏版本筛选；资源包与地图不受加载器限制。',
   'cf.placeholderKind': '输入{kind}名称，例如 {example}',
   'cf.installedKind': '已安装{kind} {name}',
+  'cf.installFailed': '安装{kind}失败。',
   'cf.headerHint': '从 CurseForge 搜索与当前实例版本、加载器匹配的模组',
   'cf.idle': '输入关键词后按搜索。',
   'cf.needInstance': '请先在左侧选择一个实例：搜索会按它的游戏版本与加载器收窄。',
@@ -553,6 +561,18 @@ export const zhCN = {
   'app.fileProgressTitle': '正在下载的文件',
   'app.fileProgressParallel': '{count} 个并行',
   'app.fileProgressUnknownTotal': '总量未知',
+  /* 任务卡上的文件数/字节数摘要：进度条本身就是整体进度，这里给它一个可读的数字支撑。 */
+  'app.taskFilesSummary': '{done}/{total} 个文件',
+  'app.taskBytesSummary': '{done} / {total}',
+  'app.taskPausedHint': '已暂停；点继续恢复下载（已下载的部分会保留）。',
+  /* 暂停/继续/取消的图标按钮：只给读屏与悬停用，界面上不显示文字。 */
+  'app.pauseTask': '暂停',
+  'app.resumeTask': '继续',
+  'app.cancelTask': '取消任务',
+  'app.pauseFailed': '无法暂停此任务。',
+  'app.resumeFailed': '无法继续此任务。',
+  'app.fileProgressShowAll': '展开全部 {count} 条',
+  'app.fileProgressShowLess': '收起',
   'app.launchStagePreparing': '正在准备启动…',
   'app.launchStageAuthenticating': '正在验证账户…',
   'app.launchStageBuilding': '正在构建启动参数…',
@@ -707,6 +727,33 @@ export const zhCN = {
   'store.saveAs': '另存为',
   'store.downloadAndImport': '下载并导入',
   'store.packVersionUnknown': '未声明游戏版本',
+  /*
+   * 整合包页面的文案。
+   *
+   * 这几处在组件里长期是写死的中文：主界面切成英文时它们仍然是中文，与周围
+   * 已经本地化的文字混在一起。整合包页是用户最常开的一页之一，必须一起走词典。
+   */
+  'store.packAcquireTitle': '获取整合包',
+  'store.packAcquireHint': '从 CurseForge 搜索，或导入本地文件',
+  'store.packAcquireNote': '两种方式都会创建新实例。从站内下载会先校验 SHA-1 再导入。本地文件支持 Modrinth 的 .mrpack 与 CurseForge 的 .zip；后者会按清单里的文件引用联网查询下载地址（需要 CurseForge Key），查不到或被作者限制分发的文件会被跳过。',
+  'store.packNamePlaceholder': '例如 all the mods、better mc',
+  'store.packImportLocal': '导入本地文件',
+  'store.packNoFiles': '这个整合包没有可用文件。',
+  'store.packContents': '包内容',
+  'store.packSelectFirst': '先选择一个整合包文件。',
+  'store.packSummary': '必须文件 {required} · 可选 {optional} · 覆盖 {override} · 合计 {total}',
+  'store.packConfirmImport': '确认并导入',
+  'store.packDownloads': '{value} 次下载',
+  'store.hintModpack': '从站内搜索整合包，或选择本地文件导入为新实例',
+  'store.packPickTitle': '选择整合包',
+  'store.packFileFilter': 'Minecraft 整合包',
+  'store.packReadFailed': '无法读取这个整合包。',
+  'store.packImported': '整合包已导入为实例「{name}」。',
+  'store.packImportFailed': '导入整合包失败。',
+  'store.packVersionsFailed': '无法读取该整合包的版本列表。',
+  'store.packDownloadImportFailed': '下载或导入整合包失败。',
+  'store.modInstalled': '已安装 {name} → {path}',
+  'store.modInstallFailed': '安装失败。',
   'store.saveAsNeedsInstance': '另存为需要一个目标实例来登记下载任务，请先在左侧选择一个实例。',
   'store.installed': '已加入',
   'store.latest': '最新',
@@ -1249,15 +1296,16 @@ export const zhCN = {
   'settings.targetFolderHint': '下载缓存和资源文件的保存目录。',
   'settings.useDefaultDir': '使用默认目录',
   'settings.concurrentTasks': '同时下载任务',
-  'settings.concurrentTasksHint': '同时进行的文件下载数量。',
+  'settings.concurrentTasksHint': '同时进行的文件下载数量，范围 1–64。',
   'settings.tasksUnit': '个任务',
   'settings.connections': '单文件连接数',
-  'settings.connectionsHint': '分段下载连接数，过高可能增加服务器负载。',
+  'settings.connectionsHint': '单个文件的分段连接数，范围 1–1024。两者相乘才是真实连接数，引擎有全局上限兜底。',
   'settings.connectionsUnit': '个连接',
   'settings.aria2': '使用 aria2 加速',
   'settings.aria2Hint': '可用时使用 aria2，失败时自动回退到校验型 HTTP 下载。',
   'settings.aria2Unavailable': 'aria2 当前不可用',
   'settings.aria2Fallback': '已自动改用内置下载器，下载仍会进行，只是没有多线程加速。',
+  'settings.aria2PreviewOnly': '浏览器预览没有后端进程，无法加载 aria2；桌面版会校验随包附带的二进制。',
   'settings.aria2Ready': 'aria2 {version} 已就绪，将用于游戏与模组的下载',
   'settings.community': '社区资源',
   'settings.communitySource': '资源来源',
@@ -1469,6 +1517,23 @@ export const zhCN = {
   'plugin.launchLogger.description': '记录每次启动的时间与实例，生成启动历史。',
   'plugin.mirrorHelper.name': '下载镜像助手',
   'plugin.mirrorHelper.description': '官方源缓慢时自动切换到镜像，下载完成后再校验。',
+
+  // --- 计划中的外置插件 ---------------------------------------------------
+  /*
+   * 「Aria with You」。
+   *
+   * 文案刻意分成两段：名称与一句话用途（卡片），以及 `status`（详情里的说明）。
+   * 后者必须把「现在有什么、还没有什么」讲清楚——卡片上标题写着插件名，如果不
+   * 说明它是预告，用户会以为装个插件就能看到季节立绘。
+   */
+  'plugin.ariaWithYou.name': 'Aria with You',
+  'plugin.ariaWithYou.description': '按真实日期切换春夏秋冬的 Aria 形象，为启动器的各区域换季。',
+  'plugin.ariaWithYou.status': '计划中的外置插件，当前版本尚未实现：启动器还不支持按季节覆盖主题、背景与侧栏。卡片列出的扩展点与权限是实现之后会申请的范围。',
+  'plugin.planned': '计划中',
+  'plugin.plannedHint': '这个插件还没有实现，开关暂时不可用。',
+  'plugin.plannedDetails': '尚未实现',
+  'plugin.plannedDetailsHint': '下面是它实现之后会做的事情，供你现在评估是否愿意授予这些权限。',
+  'plugin.hookDeclaredOnly': '只声明、当前不会触发',
 
   // --- 示例插件（不在主界面渲染，仅保持完整） ----------------------------
 } as const;

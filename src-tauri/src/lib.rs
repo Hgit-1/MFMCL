@@ -593,7 +593,7 @@ async fn install_instance(
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())?;
-    let control = downloads.start(
+    let handle = downloads.start(
         &instance_id,
         // 已是 ready 的实例走这条命令就是「补全」；任务标题如实反映，
         // 否则用户会以为自己在重装整个游戏。
@@ -605,7 +605,9 @@ async fn install_instance(
         &store,
         &app,
     )?;
-    engine = engine.with_control(control);
+    engine = engine
+        .with_control(handle.control)
+        .with_task_progress(handle.progress);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DownloadProgress>();
     let event_app = app.clone();
     let event_id = instance_id.clone();

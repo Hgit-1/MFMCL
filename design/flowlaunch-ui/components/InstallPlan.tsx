@@ -31,6 +31,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Boxes, Check, Cpu, Package } from 'lucide-react';
 import { Button } from './Button';
 import { useI18n } from '../utils/i18n';
+import { prefersReducedMotion } from '../utils/motion';
 import {
   createInstance,
   errorText,
@@ -74,6 +75,28 @@ interface InstallPlanProps {
 
 type Phase = 'idle' | 'creating' | 'installing' | 'loader' | 'done' | 'failed';
 
+/**
+ * 找到最近的、真的能纵向滚动的祖先。
+ *
+ * 商店页的滚动发生在 `StoreWorkspace` 的 `.panel`（`overflow-y: auto`）里，而不是
+ * 整个窗口。按 `window.innerHeight` 判断可见性会得出错误结论：元素可能远在窗口
+ * 之内、却已经滚出那个容器的可视区。
+ *
+ * 判定要同时看 `overflow-y` 与「内容确实溢出」：`overflow: hidden` 的祖先（外层
+ * 布局容器）也满足「不滚动」，但它是裁切而非滚动，把它当成目标会算出错误的位移。
+ */
+function scrollParentOf(node: HTMLElement | null): HTMLElement | null {
+  let current = node?.parentElement ?? null;
+  while (current) {
+    const style = window.getComputedStyle(current);
+    if (/(auto|scroll|overlay)/.test(style.overflowY) && current.scrollHeight > current.clientHeight) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
 export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanProps) {
   const { t } = useI18n();
 
@@ -93,6 +116,10 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
    * 没改过（默认名）时随加载器与版本自动更新，省掉一次输入。
    */
   const nameEdited = useRef(false);
+
+  /** 面板自身与名称输入框，用于「点安装后把面板滚进视野」。见下面的 effect。 */
+  const panelRef = useRef<HTMLDivElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   /**
    * 默认实例名：`<游戏版本> <加载器> <加载器版本>`，原版只有版本号。
@@ -124,6 +151,67 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
     setPhase('idle');
     setError('');
   }, [target, defaultName]);
+
+  /**
+   * 面板出现时把它滚进视野，并把焦点放到实例名输入框。
+   *
+   * ## 为什么必须有这一步
+   *
+   * 这个面板是**内联**的，渲染在版本列表上方。版本列表很长时，用户点的那一行
+   * 「安装」按钮往往在屏幕下半部分，面板展开在列表顶部、完全在视野之外——点完
+   * 看起来什么都没发生。用户会再点一次，或者以为按钮坏了。
+   *
+   * 之前把面板放在列表上方是为了「仍能看到自己点的是哪个版本」（见文件头注释），
+   * 那个理由依然成立，但它只在面板可见时才成立。滚动过去正好补上这一环。
+   *
+   * ## 为什么不是无条件 `scrollIntoView`
+   *
+   * 面板已经完整可见时不该动：用户在列表中部点安装，界面突然跳一下，会以为
+   * 自己点错了行。`block: 'nearest'` 又不够——面板在视野上方时它只把底部对齐到
+   * 视口下沿，标题和「目标版本」会被推到屏幕外，用户看不到自己装的是哪个版本。
+   * 所以这里先判断「是否已完整可见」，不可见时才按 `block: 'start'` 顶对齐滚动。
+   *
+   * 动效跟随用户的档位设置：关掉动效时用 `auto` 瞬移，不要忽略那个偏好。
+   */
+  useEffect(() => {
+    if (!target) return;
+    /*
+     * 等一帧再算。
+     *
+     * 面板是在这次渲染中才挂载的，位置与高度要等布局完成才准确；立即调用会按
+     * 「面板还不存在时」的尺寸判断，得出错误的结论。
+     */
+    const frame = requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (panel) {
+        /*
+         * 用**滚动容器**的可视区判断，不是窗口。
+         * 商店页的滚动发生在内部 `.panel` 上（见 `scrollParentOf` 的说明），用窗口
+         * 高度判断会把「已经滚出容器」的元素当成可见，于是该滚的时候不滚。
+         */
+        const scroller = scrollParentOf(panel);
+        const rect = panel.getBoundingClientRect();
+        const top = scroller ? scroller.getBoundingClientRect().top : 0;
+        const bottom = scroller
+          ? top + scroller.clientHeight
+          : (window.innerHeight || document.documentElement.clientHeight);
+        // 留 8px 余量：正好贴着边缘时也滚一下，否则面板看起来像被切掉一块。
+        const fullyVisible = rect.top >= top - 8 && rect.bottom <= bottom + 8;
+        if (!fullyVisible) {
+          panel.scrollIntoView({
+            block: 'start',
+            behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+          });
+        }
+      }
+      /*
+       * 焦点落在名称输入框：多数人打开这个面板就是要改名字。
+       * `preventScroll` 防止焦点自身的滚动与上面那次滚动互相覆盖。
+       */
+      nameInputRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [target]);
 
   /**
    * 选中加载器后拉取可用版本。
@@ -235,7 +323,7 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
           : '';
 
   return (
-    <div className={styles.panel} role="group" aria-label={t('install.title')}>
+    <div className={styles.panel} role="group" aria-label={t('install.title')} ref={panelRef}>
       <div className={styles.head}>
         <div>
           <h2>{t('install.title')}</h2>
@@ -249,6 +337,7 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
       <label className={styles.field}>
         <span>{t('install.name')}</span>
         <input
+          ref={nameInputRef}
           value={name}
           onChange={event => {
             nameEdited.current = true;

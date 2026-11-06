@@ -1,6 +1,8 @@
 pub mod aria2;
 mod control;
+mod progress;
 pub use control::DownloadControl;
+pub use progress::{TaskProgress, TaskProgressSnapshot};
 
 use futures_util::StreamExt;
 use mc_metadata::SourcePreference;
@@ -27,6 +29,14 @@ use uuid::Uuid;
 /// 单个分片的最小字节数。低于这个大小的文件再切分只会增加连接开销。
 const MIN_SEGMENT_BYTES: u64 = 256 * 1024;
 
+/// 整个引擎同时在用的下载连接总数上限。
+///
+/// 为什么需要它：`并发文件数 × 单文件连接数` 才是真实的 socket 用量。用户把两个
+/// 都调到上限（64 × 1024）就是 65536 条连接，远超 Windows 默认的临时端口范围，
+/// 结果不是更快，而是新连接直接失败。这里给一个全局预算，超出的分片排队等 permit，
+/// 而不是让操作系统拒绝连接。
+pub const GLOBAL_CONNECTION_BUDGET: usize = 2048;
+
 /// 单个分片的下载结果。
 enum SegmentOutcome {
     Written,
@@ -39,7 +49,9 @@ fn segment_ranges(size: u64, segments: usize) -> Vec<(u64, u64)> {
         return Vec::new();
     }
     let max_by_size = (size / MIN_SEGMENT_BYTES).max(1) as usize;
-    let count = segments.clamp(1, 16).min(max_by_size);
+    let count = segments
+        .clamp(1, MAX_CONNECTIONS_PER_FILE_LIMIT as usize)
+        .min(max_by_size);
     let chunk = size.div_ceil(count as u64);
     let mut ranges = Vec::with_capacity(count);
     let mut start = 0u64;
@@ -73,20 +85,33 @@ pub enum DownloadError {
     InvalidRange,
 }
 
+/// 同时进行的**文件**下载数上限。
+///
+/// 每个并发文件都会占住一个 TCP 连接池槽位，并叠加各自的单文件连接数，所以这个
+/// 值不是越大越好：`并发文件数 × 单文件连接数` 才是真正的 socket 用量。上限取 64
+/// 是因为再往上，瓶颈已经不在本地调度，而在服务器的限流和对端 NAT 表。
+pub const MAX_CONCURRENT_DOWNLOADS_LIMIT: u16 = 64;
+
+/// 单个文件的分段/连接数上限。
+///
+/// 最终可用段数还会被「文件大小 ÷ [MIN_SEGMENT_BYTES]」压住：小于 256 KiB 的段
+/// 只是把同一条连接拆成更多握手，没有吞吐收益。
+pub const MAX_CONNECTIONS_PER_FILE_LIMIT: u16 = 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadSettings {
     pub source: SourcePreference,
-    pub max_concurrent_downloads: u8,
-    pub connections_per_file: u8,
+    pub max_concurrent_downloads: u16,
+    pub connections_per_file: u16,
     pub aria2_enabled: bool,
 }
 impl Default for DownloadSettings {
     fn default() -> Self {
         Self {
             source: SourcePreference::Official,
-            max_concurrent_downloads: 4,
-            connections_per_file: 4,
+            max_concurrent_downloads: 16,
+            connections_per_file: 256,
             aria2_enabled: true,
         }
     }
@@ -116,6 +141,16 @@ pub struct DownloadProgress {
     pub total: Option<u64>,
     pub source: String,
     pub stage: DownloadStage,
+    /*
+     * 任务整体进度。任务卡画的是这一组数字，而不是 `received / total`。
+     *
+     * 单文件事件与整体进度必须同一条消息发出：拆成两条事件的话，界面会在两次
+     * 事件之间看到「文件进度已经更新、整体进度还是旧的」这种自相矛盾的中间态。
+     *
+     * `#[serde(default)]` 让旧前端（以及只关心单文件的调用点）继续能反序列化。
+     */
+    #[serde(default)]
+    pub task: Option<TaskProgressSnapshot>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -136,7 +171,12 @@ pub struct DownloadEngine {
     control: DownloadControl,
     max_file_size: Option<u64>,
     permits: Arc<Semaphore>,
+    /// 全局连接预算。见 [`GLOBAL_CONNECTION_BUDGET`]。
+    connections: Arc<Semaphore>,
     destinations: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>>,
+    /// 任务级累计器。默认是独立的（单文件调用），`with_task_progress` 让一次
+    /// 安装任务的所有引擎克隆共享同一个。
+    task_progress: Arc<TaskProgress>,
 }
 
 impl DownloadEngine {
@@ -163,18 +203,33 @@ impl DownloadEngine {
         Ok(Self {
             client,
             permits: Arc::new(Semaphore::new(
-                settings.max_concurrent_downloads.clamp(1, 16) as usize,
+                settings
+                    .max_concurrent_downloads
+                    .clamp(1, MAX_CONCURRENT_DOWNLOADS_LIMIT) as usize,
             )),
+            connections: Arc::new(Semaphore::new(GLOBAL_CONNECTION_BUDGET)),
             settings,
             aria2: None,
             control: DownloadControl::default(),
             max_file_size: None,
             destinations: Arc::default(),
+            task_progress: Arc::new(TaskProgress::new()),
         })
     }
     pub fn with_aria2(mut self, session: aria2::Aria2Session) -> Self {
         self.aria2 = Some(session);
         self
+    }
+    /// 与同一任务的其他引擎克隆共享整体进度累计器。
+    ///
+    /// 必须在不带 `&mut self` 的克隆之间共享（每次 `clone()` 都保持同一个 `Arc`），
+    /// 否则并发下载的每个文件会各自累计，界面上看到的是「最后一个文件的进度」。
+    pub fn with_task_progress(mut self, progress: Arc<TaskProgress>) -> Self {
+        self.task_progress = progress;
+        self
+    }
+    pub fn task_progress(&self) -> Arc<TaskProgress> {
+        self.task_progress.clone()
     }
     /// Attach an installation-scoped control. Clones retain the shared engine limit.
     pub fn with_max_file_size(mut self, limit: u64) -> Self {
@@ -201,6 +256,7 @@ impl DownloadEngine {
         if result.is_err() {
             emit(
                 &progress,
+                &self.task_progress,
                 artifact,
                 None,
                 0,
@@ -272,6 +328,7 @@ impl DownloadEngine {
         {
             emit(
                 progress,
+                &self.task_progress,
                 artifact,
                 None,
                 fs::metadata(&artifact.destination).await?.len(),
@@ -302,11 +359,26 @@ impl DownloadEngine {
         {
             1
         } else {
-            self.settings.connections_per_file.clamp(1, 16) as usize
+            /*
+             * 段数受两件事夹逼：
+             *   - 用户设置的单文件连接数（上限 1024）；
+             *   - 全局连接预算剩下多少（还要给别的并发文件留份）。
+             *
+             * 只按用户设置分片的话，多个并发文件各自开 1024 条连接，合计会超过
+             * 操作系统的临时端口上限，表现为「连接直接失败」而不是变慢——用户只
+             * 会看到下载莫名其妙报错。`max(1)` 保证预算耗尽时仍能前进。
+             */
+            let requested = self
+                .settings
+                .connections_per_file
+                .clamp(1, MAX_CONNECTIONS_PER_FILE_LIMIT) as usize;
+            let available = self.connections.available_permits().max(1);
+            requested.min(available)
         };
         for source in candidates {
             emit(
                 progress,
+                &self.task_progress,
                 artifact,
                 Some(&source),
                 0,
@@ -330,6 +402,7 @@ impl DownloadEngine {
                         cleanup_partial(&temporary).await;
                         emit(
                             progress,
+                            &self.task_progress,
                             artifact,
                             Some(&source),
                             fs::metadata(&artifact.destination).await?.len(),
@@ -368,6 +441,7 @@ impl DownloadEngine {
                         let _ = fs::remove_file(metadata_path(&temporary)).await;
                         emit(
                             progress,
+                            &self.task_progress,
                             artifact,
                             Some(&source),
                             fs::metadata(&artifact.destination).await?.len(),
@@ -545,6 +619,7 @@ impl DownloadEngine {
             self.control.wait_for(file.write_all(&chunk)).await??;
             emit(
                 progress,
+                &self.task_progress,
                 artifact,
                 Some(source),
                 received,
@@ -560,6 +635,7 @@ impl DownloadEngine {
         }
         emit(
             progress,
+            &self.task_progress,
             artifact,
             Some(source),
             received,
@@ -666,6 +742,7 @@ impl DownloadEngine {
         }
         emit(
             progress,
+            &self.task_progress,
             artifact,
             Some(source),
             size,
@@ -695,6 +772,19 @@ impl DownloadEngine {
         received: &Arc<std::sync::atomic::AtomicU64>,
         abort: &Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<SegmentOutcome, DownloadError> {
+        /*
+         * 每个分片占一个全局连接预算。
+         *
+         * 多个文件并发时，各自的 `segments` 都是按「当时还剩多少」算的，加起来可能
+         * 超过预算。这里再收一次口：等 permit 而不是直接发请求，超出的分片会排队，
+         * 而不是把连接数推过操作系统上限（那会让 connect 直接失败）。
+         * `wait_for` 让排队期间仍然响应暂停与取消。
+         */
+        let _connection = self
+            .control
+            .wait_for(self.connections.acquire())
+            .await?
+            .map_err(|_| DownloadError::Cancelled)?;
         let response = self
             .control
             .wait_for(
@@ -762,6 +852,7 @@ impl DownloadEngine {
                 received.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
             emit(
                 progress,
+                &self.task_progress,
                 artifact,
                 Some(source),
                 total_written,
@@ -803,7 +894,15 @@ impl DownloadEngine {
                     .and_then(|n| n.to_str())
                     .ok_or(DownloadError::UnsafeUrl)?,
                 checksum.as_deref(),
-                self.settings.connections_per_file.clamp(1, 16),
+                /*
+                 * aria2 自己管连接池，我们没法给它套上本地 permit。给它一个不超过
+                 * 全局预算的连接数：aria2 的 `split` 是每个任务的上限，参数越界
+                 * 它自己会拒绝，所以这里先夹到我们的合法区间。
+                 */
+                self.settings
+                    .connections_per_file
+                    .clamp(1, MAX_CONNECTIONS_PER_FILE_LIMIT)
+                    .min(GLOBAL_CONNECTION_BUDGET as u16),
             )
             .await
             .map_err(|_| DownloadError::Aria2("RPC unavailable".into()))?;
@@ -837,6 +936,7 @@ impl DownloadEngine {
                 .map_err(|_| DownloadError::Aria2("RPC unavailable".into()))?;
             emit(
                 progress,
+                &self.task_progress,
                 artifact,
                 Some(source),
                 status.completed_length.parse().unwrap_or(0),
@@ -918,6 +1018,7 @@ fn retryable(error: &DownloadError) -> bool {
 }
 fn emit(
     progress: &Progress,
+    task: &TaskProgress,
     a: &ArtifactSpec,
     source: Option<&Url>,
     received: u64,
@@ -933,6 +1034,16 @@ fn emit(
                 url.to_string()
             })
             .unwrap_or_default();
+        /*
+         * 只有「已完成」与「失败」是终态，其余阶段都算在途。
+         *
+         * 用阶段而不是 `received == total` 判断：分段下载的最后一次推送可能正好
+         * 等于总量，但文件还没通过 SHA 校验；把它算成已完成，就会在校验失败时
+         * 留下一条「已完成」的假记录。
+         */
+        let finished = stage == DownloadStage::Completed;
+        let failed = stage == DownloadStage::Failed;
+        let task = task.observe(&a.id, received, total, finished, failed);
         let _ = tx.send(DownloadProgress {
             artifact_id: a.id.clone(),
             label: a.label.clone(),
@@ -940,6 +1051,7 @@ fn emit(
             total,
             source,
             stage,
+            task: Some(task),
         });
     }
 }

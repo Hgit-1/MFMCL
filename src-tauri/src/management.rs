@@ -106,12 +106,15 @@ pub async fn install_loader(
         return Err("每个实例仅允许安装一个加载器；请新建实例切换。".into());
     }
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let engine = engine(&store)?.with_control(downloads.start(
+    let task = downloads.start(
         &instance_id,
         &format!("安装 {} 加载器", kind.name()),
         &store,
         &app,
-    )?);
+    )?;
+    let engine = engine(&store)?
+        .with_control(task.control)
+        .with_task_progress(task.progress);
     let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
     let result =
         loaders::install_loader(&root, &target, &store, &engine, kind, &version, Some(tx)).await;
@@ -187,12 +190,10 @@ pub async fn install_fabric_api(
     if !launcher_core::fabric_api::instance_uses_fabric(&target) {
         return Err("只有 Fabric 或 Quilt 实例需要 Fabric API。".into());
     }
-    let engine = engine(&store)?.with_control(downloads.start(
-        &instance_id,
-        "安装 Fabric API",
-        &store,
-        &app,
-    )?);
+    let task = downloads.start(&instance_id, "安装 Fabric API", &store, &app)?;
+    let engine = engine(&store)?
+        .with_control(task.control)
+        .with_task_progress(task.progress);
     let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
     let result = launcher_core::fabric_api::install_fabric_api(&target, &engine, Some(tx)).await;
     let _ = progress_task.await;
@@ -249,13 +250,15 @@ pub async fn update_mod(
 ) -> Result<String, String> {
     let _guard = operations.acquire(&instance_id)?;
     let target = instance(&store, &instance_id)?;
-    let control = downloads.start(
+    let task = downloads.start(
         &instance_id,
         &format!("更新模组 {}", update.new_file_name),
         &store,
         &app,
     )?;
-    let engine = engine(&store)?.with_control(control);
+    let engine = engine(&store)?
+        .with_control(task.control)
+        .with_task_progress(task.progress);
     let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
     let result =
         mod_updates::apply_mod_update(&target, &update, &target.game_dir.join("mods"), &engine)
@@ -402,6 +405,16 @@ pub async fn install_mod_version(
     instance_id: String,
     version: launcher_core::CatalogVersion,
     project_type: Option<String>,
+    /*
+     * 项目名（例如「JEI物品管理器」）。
+     *
+     * 任务卡标题要回答「用户在装什么」，而不是「正在传哪个文件」。`version.file_name`
+     * 是 `jei-1.20.1-forge.jar` 这种文件名，作为任务标题既认不出是哪个模组，也会让
+     * 用户以为自己在手动下载一个 jar。
+     *
+     * 可选：旧前端、以及没有项目上下文的调用方不传，此时退回文件名。
+     */
+    project_name: Option<String>,
     app: AppHandle,
     store: State<'_, LauncherStore>,
     operations: State<'_, Operations>,
@@ -432,13 +445,28 @@ pub async fn install_mod_version(
         "datapacks" => "数据包",
         _ => "模组",
     };
-    let control = downloads.start(
-        &instance_id,
-        &format!("安装{label} {}", version.file_name),
-        &store,
-        &app,
-    )?;
-    let engine = engine(&store)?.with_control(control);
+    /*
+     * 标题优先用项目名，没有时退回文件名。
+     *
+     * 两种都带版本号：同一个整合里装两个不同版本的同一个模组并不罕见，只看项目名
+     * 会分不清任务卡上是哪一次安装。
+     */
+    let title = match project_name.as_deref().map(str::trim) {
+        Some(name) if !name.is_empty() => {
+            let name: String = name.chars().take(64).collect();
+            let version = version.version_number.trim();
+            if version.is_empty() {
+                format!("安装{label} {name}")
+            } else {
+                format!("安装{label} {name} {version}")
+            }
+        }
+        _ => format!("安装{label} {}", version.file_name),
+    };
+    let task = downloads.start(&instance_id, &title, &store, &app)?;
+    let engine = engine(&store)?
+        .with_control(task.control)
+        .with_task_progress(task.progress);
     let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
     let result = launcher_core::catalog::install_mod_version(
         &version,
@@ -457,6 +485,8 @@ pub async fn download_mod_version(
     instance_id: String,
     version: launcher_core::CatalogVersion,
     directory: String,
+    // 项目名，用于任务标题；见 `install_mod_version` 的同名参数。
+    project_name: Option<String>,
     app: AppHandle,
     store: State<'_, LauncherStore>,
     operations: State<'_, Operations>,
@@ -467,13 +497,17 @@ pub async fn download_mod_version(
     if target.as_os_str().is_empty() {
         return Err("请选择下载目录。".into());
     }
-    let control = downloads.start(
-        &instance_id,
-        &format!("下载模组 {}", version.file_name),
-        &store,
-        &app,
-    )?;
-    let engine = engine(&store)?.with_control(control);
+    let title = match project_name.as_deref().map(str::trim) {
+        Some(name) if !name.is_empty() => {
+            let name: String = name.chars().take(64).collect();
+            format!("下载模组 {name}（{}）", version.file_name)
+        }
+        _ => format!("下载模组 {}", version.file_name),
+    };
+    let task = downloads.start(&instance_id, &title, &store, &app)?;
+    let engine = engine(&store)?
+        .with_control(task.control)
+        .with_task_progress(task.progress);
     let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
     let result = launcher_core::catalog::download_mod_version_to(&version, &target, &engine).await;
     drop(tx);
@@ -570,15 +604,17 @@ async fn import_modpack_inner(
         )
         .map_err(|e| e.to_string())?;
     let _instance_guard = operations.acquire(&target.id)?;
-    let control = match downloads.start(&target.id, &format!("导入 {}", preview.name), store, app)
+    let handle = match downloads.start(&target.id, &format!("导入 {}", preview.name), store, app)
     {
-        Ok(control) => control,
+        Ok(handle) => handle,
         Err(error) => {
             let _ = store.discard_uninstalled_instance(&target.id);
             return Err(error);
         }
     };
-    let engine = engine.with_control(control);
+    let engine = engine
+        .with_control(handle.control)
+        .with_task_progress(handle.progress);
     let (tx, progress_task) = task_progress(&target.id, app, store, downloads);
     let result = async {
         modpacks::import_prepared_pack(prepared, &target, &engine, Some(tx)).await?;
@@ -650,13 +686,15 @@ pub async fn download_and_import_modpack(
         // engine 失败（设置读取失败、并发数非法），那条下载任务会永远停在 Running，
         // 之后同一个 instance 的下载都会被拒绝。
         let engine = engine(store.inner())?;
-        let control = downloads.start(
+        let handle = downloads.start(
             &task_owner,
             &format!("下载整合包 {}", version.file_name),
             store.inner(),
             &app,
         )?;
-        let engine = engine.with_control(control);
+        let engine = engine
+            .with_control(handle.control)
+            .with_task_progress(handle.progress);
         let (tx, progress_task) =
             task_progress(&task_owner, &app, store.inner(), downloads.inner());
 
@@ -723,13 +761,15 @@ pub async fn download_and_import_modrinth_pack(
 
     let result = async {
         let engine = engine(store.inner())?;
-        let control = downloads.start(
+        let handle = downloads.start(
             &task_owner,
             &format!("下载整合包 {}", version.file_name),
             store.inner(),
             &app,
         )?;
-        let engine = engine.with_control(control);
+        let engine = engine
+            .with_control(handle.control)
+            .with_task_progress(handle.progress);
         let (tx, progress_task) =
             task_progress(&task_owner, &app, store.inner(), downloads.inner());
 

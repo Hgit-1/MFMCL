@@ -180,13 +180,19 @@ export interface AccountProfile {
 }
 
 /** 对应 Rust `Aria2Availability`。 */
-export interface Aria2Availability {
-  /** 本构建是否为这个平台附带并校验通过了 aria2。 */
+export interface Aria2Availability {  /** 本构建是否为这个平台附带并校验通过了 aria2。 */
   bundled: boolean
   path: string | null
   version: string | null
   /** 不可用的原因；可用时为 null。 */
   problem: string | null
+  /**
+   * 无语言的具体原因代码。
+   *
+   * 有 `problemCode` 时界面用词典渲染，忽略 `problem`：后端返回的 `problem` 是
+   * 英文诊断信息，而预览模式下的原因是我们自己造的，两者都该本地化。
+   */
+  problemCode?: 'preview' | null
 }
 
 /**
@@ -198,11 +204,19 @@ export interface Aria2Availability {
  */
 export async function aria2Status(): Promise<Aria2Availability> {
   if (!isDesktopShell()) {
+    /*
+     * 预览模式没有后端，如实报告不可用。
+     *
+     * 这里刻意**不**写死一句中文说明，而是留一个原因代码（`problem`），由界面用
+     * i18n 词典翻成当前语言。原因很简单：界面支持中/英/日三语，而这一层没有语言
+     * 上下文——写死中文会让英文界面里冒出一段中文（CurseForge 卡片曾经就是这样）。
+     */
     return {
       bundled: false,
       path: null,
       version: null,
-      problem: '浏览器预览没有后端进程，无法加载 aria2；桌面版会校验随包附带的二进制。',
+      problem: null,
+      problemCode: 'preview',
     }
   }
   return invoke<Aria2Availability>('aria2_status')
@@ -240,6 +254,14 @@ export interface DownloadTask {
   state: DownloadTaskState
   completedBytes: number
   totalBytes: number | null
+  /**
+   * 任务级的文件计数：计划总数与已完成数。
+   *
+   * 后端只在拿到第一份进度快照后才填这两个值，所以可以是 `null`（旧记录、刚创建
+   * 还没开始下载的任务）。界面据此决定是否显示「3/12 个文件」。
+   */
+  files?: number | null
+  completedFiles?: number | null
   createdAt: string
   updatedAt: string
 }
@@ -252,6 +274,18 @@ export interface DownloadProgress {
   total: number | null
   source: string
   stage: 'connecting' | 'downloading' | 'verifying' | 'completed' | 'failed'
+  /**
+   * 整次任务的累计进度。
+   *
+   * 与 `received` / `total`（当前这一个文件）区分开：任务卡画的是它。旧后端不带
+   * 这个字段，所以是可选的。
+   */
+  task?: {
+    files: number
+    completedFiles: number
+    completedBytes: number
+    totalBytes: number | null
+  } | null
 }
 
 /** 对应 Rust `TaskEvent`（`installation-task` 事件载荷）。 */
@@ -570,7 +604,7 @@ export function fallbackSettings(): LauncherSettings {
     titleBar: 'default',
     homeSource: 'official',
     updatePolicy: 'notify',
-    download: { source: 'mixed', maxConcurrentDownloads: 4, connectionsPerFile: 4, aria2Enabled: true },
+    download: { source: 'mixed', maxConcurrentDownloads: 16, connectionsPerFile: 256, aria2Enabled: true },
   }
 }
 
@@ -1497,6 +1531,17 @@ export interface CurseForgeKeyStatus {
   /** 凭据库不可用时的原因（例如 Linux 没有 Secret Service）。 */
   problem: string | null
   /**
+   * 无语言的具体原因代码。
+   *
+   * 与 `problem` 的分工：`problem` 是后端给的原始诊断（英文、面向排查），
+   * `problemCode` 是我们自己能本地化的枚举。界面优先用代码查词典，只有拿不到
+   * 代码时才退回原文。
+   *
+   * 为什么需要它：浏览器预览以前直接把一句中文塞进 `problem`，于是英文界面上
+   * 冒出一整段中文。语言选择在界面层，数据层不碰文案。
+   */
+  problemCode?: 'preview' | null
+  /**
    * key 的来源：
    * - `user`：用户自己在设置里保存的；
    * - `builtin`：构建期注入的默认 key（用户没填过）；
@@ -1510,9 +1555,14 @@ export interface CurseForgeKeyStatus {
 
 export async function curseforgeKeyStatus(): Promise<CurseForgeKeyStatus> {
   if (!isDesktopShell()) {
+    /*
+     * 预览模式读不到系统凭据库。`configured: false` + 原因代码，由卡片用词典
+     * 翻成当前语言——不在这里写死任何一种语言的句子。
+     */
     return {
       configured: false,
-      problem: '浏览器预览无法访问系统凭据库；请使用桌面版设置 CurseForge Key。',
+      problem: null,
+      problemCode: 'preview',
       source: null,
     }
   }
@@ -1585,21 +1635,31 @@ export async function curseforgeInstall(
   instanceId: string,
   version: CurseForgeVersion,
   kind: CurseForgeKind,
+  /** 项目名，用于任务卡标题；不传时后端退回文件名。 */
+  projectName?: string,
 ): Promise<string> {
   requireDesktop('安装 CurseForge 文件')
-  return invoke<string>('curseforge_install', { instanceId, version, kind })
+  return invoke<string>('curseforge_install', {
+    instanceId,
+    version,
+    kind,
+    projectName: projectName ?? null,
+  })
 }
 
 export async function installModVersion(
   instanceId: string,
   version: CatalogVersion,
   projectType?: 'mod' | 'resourcepack' | 'shader' | 'datapack' | 'modpack',
+  /** 项目名，用于任务卡标题；不传时后端退回文件名。 */
+  projectName?: string,
 ): Promise<string> {
   requireDesktop('安装内容')
   return invoke<string>('install_mod_version', {
     instanceId,
     version,
     projectType: projectType ?? 'mod',
+    projectName: projectName ?? null,
   })
 }
 
@@ -1614,19 +1674,34 @@ export async function curseforgeDownload(
   version: CurseForgeVersion,
   kind: CurseForgeKind,
   directory: string,
+  /** 项目名，用于任务卡标题；不传时后端退回文件名。 */
+  projectName?: string,
 ): Promise<string> {
   requireDesktop('下载 CurseForge 文件')
-  return invoke<string>('curseforge_download', { instanceId, version, kind, directory })
+  return invoke<string>('curseforge_download', {
+    instanceId,
+    version,
+    kind,
+    directory,
+    projectName: projectName ?? null,
+  })
 }
 
-/** 把 Modrinth 模组直接下载到用户选择的目录，不装进实例。 */
+/** 直接下载一个 Modrinth 文件到指定目录（见 `download_mod_version`）。 */
 export async function downloadModVersion(
   instanceId: string,
   version: CatalogVersion,
   directory: string,
+  /** 项目名，用于任务卡标题；不传时后端退回文件名。 */
+  projectName?: string,
 ): Promise<string> {
-  requireDesktop('下载模组')
-  return invoke<string>('download_mod_version', { instanceId, version, directory })
+  requireDesktop('下载内容')
+  return invoke<string>('download_mod_version', {
+    instanceId,
+    version,
+    directory,
+    projectName: projectName ?? null,
+  })
 }
 
 export async function listMods(instanceId: string): Promise<ModFile[]> {
@@ -2026,6 +2101,22 @@ export async function exportModpack(instanceId: string, directory: string, right
  * 被一并移除。且它们只是**展示用的快照**，不会推进：点暂停/取消会如实报错，不会
  * 假装任务在跑。
  */
+/**
+ * 预览模式的示例下载任务。
+ *
+ * 三条记录覆盖任务卡上三种不同的状态外观，少任何一条就调不了对应那一档：
+ *   - running：不确定态扫光条（`totalBytes: null`）+ 暂停按钮；
+ *   - paused：降饱和进度条 + 继续按钮 + 「已下载的部分会保留」说明；
+ *   - completed：100% + 文件数与字节数齐全。
+ *
+ * 标题按真实格式写：优先「动作 + 项目名 + 版本」，没有项目名时才用文件名。
+ * 这样预览里能直接看出「安装模组 JEI物品管理器 15.2.0.27」与
+ * 「安装模组 jei-1.20.1-forge.jar」哪个是可读的。
+ *
+ * 只用于开发预览：`PREVIEW_DATA` 在生产构建里是编译期 false，这些数据与分支会
+ * 被一并移除。它们只是**展示用的快照**，不会推进：点暂停/取消会如实报错（浏览器
+ * 里没有后端），不会假装任务在跑。
+ */
 const PREVIEW_DOWNLOAD_TASKS: DownloadTask[] = [
   {
     id: 'preview-task-1',
@@ -2033,19 +2124,27 @@ const PREVIEW_DOWNLOAD_TASKS: DownloadTask[] = [
     label: '安装 Fabric 优化整合',
     source: 'official',
     state: 'running',
+    /*
+     * 故意不给总量：真实安装里资源索引可能缺 size，那时进度条就是不确定态。
+     * 预览里保留这一条，才能看到那种「在动但不知道还剩多少」的样子。
+     */
     completedBytes: 184_320_000,
-    totalBytes: 412_000_000,
+    totalBytes: null,
+    files: 412,
+    completedFiles: 187,
     createdAt: '2026-10-29T21:02:00Z',
     updatedAt: '2026-10-29T21:05:30Z',
   },
   {
     id: 'preview-task-2',
     instanceId: 'preview-neoforge',
-    label: '安装模组 jei-1.20.1-forge.jar',
+    label: '安装模组 JEI物品管理器 15.2.0.27',
     source: 'modrinth',
     state: 'paused',
     completedBytes: 1_200_000,
     totalBytes: 1_500_000,
+    files: 1,
+    completedFiles: 0,
     createdAt: '2026-10-29T20:58:00Z',
     updatedAt: '2026-10-29T21:01:00Z',
   },
@@ -2057,6 +2156,8 @@ const PREVIEW_DOWNLOAD_TASKS: DownloadTask[] = [
     state: 'completed',
     completedBytes: 268_000_000,
     totalBytes: 268_000_000,
+    files: 523,
+    completedFiles: 523,
     createdAt: '2026-10-29T20:40:00Z',
     updatedAt: '2026-10-29T20:52:00Z',
   },

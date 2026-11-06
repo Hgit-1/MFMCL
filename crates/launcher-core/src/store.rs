@@ -107,6 +107,8 @@ impl LauncherStore {
                 state TEXT NOT NULL,
                 completed_bytes INTEGER NOT NULL DEFAULT 0,
                 total_bytes INTEGER,
+                files INTEGER,
+                completed_files INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -180,6 +182,30 @@ impl LauncherStore {
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, datetime('now'))", [])?;
         }
         /*
+         * 任务级的文件计数（第 4 版）。
+         *
+         * 为什么要单独加列而不是从 `label` 或字节数推：进度条只给比例，而用户问的
+         * 「还剩几个文件」在字节数上看不出来——90% 可能只剩一个小库，也可能是
+         * 最后 10 个资源文件。这两列由下载引擎的任务累计器写入。
+         *
+         * 可空：老库里的历史记录确实没有这两个数字，填 0 会让人以为「0 个文件」。
+         */
+        let has_file_counts = {
+            let mut columns = connection.prepare("PRAGMA table_info(download_tasks)")?;
+            let names = columns
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            names.iter().any(|name| name == "files")
+        };
+        if !has_file_counts {
+            connection.execute("ALTER TABLE download_tasks ADD COLUMN files INTEGER", [])?;
+            connection.execute(
+                "ALTER TABLE download_tasks ADD COLUMN completed_files INTEGER",
+                [],
+            )?;
+            connection.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, datetime('now'))", [])?;
+        }
+        /*
          * 记录上次启动时间，供内容商店的「目标实例」默认为最近玩过的实例。
          *
          * 为什么加列而不是复用 `created_at`：创建时间和游玩时间无关，用创建顺序
@@ -214,20 +240,23 @@ impl LauncherStore {
         let state = serde_json::to_value(&task.state)?;
         let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         connection.execute(
-            "INSERT INTO download_tasks(id, instance_id, label, source, state, completed_bytes, total_bytes, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO download_tasks(id, instance_id, label, source, state, completed_bytes, total_bytes, files, completed_files, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET instance_id = excluded.instance_id, label = excluded.label, source = excluded.source,
              state = excluded.state, completed_bytes = excluded.completed_bytes,
-             total_bytes = excluded.total_bytes, updated_at = excluded.updated_at",
+             total_bytes = excluded.total_bytes, files = excluded.files,
+             completed_files = excluded.completed_files, updated_at = excluded.updated_at",
             params![task.id, task.instance_id, task.label, task.source, state.as_str(), task.completed_bytes.min(i64::MAX as u64) as i64,
-                task.total_bytes.map(|v| v.min(i64::MAX as u64) as i64), task.created_at, task.updated_at],
+                task.total_bytes.map(|v| v.min(i64::MAX as u64) as i64),
+                task.files.map(|v| v as i64), task.completed_files.map(|v| v as i64),
+                task.created_at, task.updated_at],
         )?;
         Ok(())
     }
 
     pub fn list_download_tasks(&self) -> Result<Vec<DownloadTask>, StoreError> {
         let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
-        let mut statement = connection.prepare("SELECT id, instance_id, label, source, state, completed_bytes, total_bytes, created_at, updated_at FROM download_tasks ORDER BY updated_at DESC LIMIT 100")?;
+        let mut statement = connection.prepare("SELECT id, instance_id, label, source, state, completed_bytes, total_bytes, files, completed_files, created_at, updated_at FROM download_tasks ORDER BY updated_at DESC LIMIT 100")?;
         let rows = statement.query_map([], |row| {
             let state: String = row.get(4)?;
             let state = match state.as_str() {
@@ -247,8 +276,10 @@ impl LauncherStore {
                 state,
                 completed_bytes: row.get::<_, i64>(5)?.max(0) as u64,
                 total_bytes: row.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u64),
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                files: row.get::<_, Option<i32>>(7)?.map(|v| v.max(0) as u32),
+                completed_files: row.get::<_, Option<i32>>(8)?.map(|v| v.max(0) as u32),
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -906,11 +937,20 @@ mod tests {
             state: DownloadTaskState::Running,
             completed_bytes: 128,
             total_bytes: Some(512),
+            files: Some(12),
+            completed_files: Some(3),
             created_at: now.clone(),
             updated_at: now,
         };
         store.save_download_task(&task).unwrap();
         assert_eq!(store.list_download_tasks().unwrap()[0].completed_bytes, 128);
+        /*
+         * 文件计数也要能往返：这两个数字是任务卡上「3/12 个文件」的唯一来源，
+         * 存丢一次界面就永远显示不出来，而且不会报错。
+         */
+        let stored = store.list_download_tasks().unwrap()[0].clone();
+        assert_eq!(stored.files, Some(12));
+        assert_eq!(stored.completed_files, Some(3));
         drop(store);
         let recovered = LauncherStore::open(&path).unwrap();
         assert_eq!(
@@ -937,6 +977,8 @@ mod tests {
             state,
             completed_bytes: 0,
             total_bytes: None,
+            files: None,
+            completed_files: None,
             created_at: now.clone(),
             updated_at: now.clone(),
         };

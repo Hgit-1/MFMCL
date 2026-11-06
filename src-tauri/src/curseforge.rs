@@ -288,6 +288,8 @@ pub async fn curseforge_install(
     instance_id: String,
     version: CurseForgeVersion,
     kind: ContentKind,
+    // 项目名，用于任务标题；见 `install_mod_version` 的同名参数。
+    project_name: Option<String>,
     app: AppHandle,
     store: State<'_, LauncherStore>,
     operations: State<'_, crate::management::Operations>,
@@ -295,13 +297,19 @@ pub async fn curseforge_install(
 ) -> Result<String, String> {
     let _guard = operations.acquire(&instance_id)?;
     let target = crate::management::instance(&store, &instance_id)?;
-    let control = downloads.start(
+    let task = downloads.start(
         &instance_id,
-        &format!("安装 {} {}", kind_label_cn(kind), version.file_name),
+        &task_title(
+            &format!("安装 {}", kind_label_cn(kind)),
+            project_name.as_deref(),
+            &version.file_name,
+        ),
         &store,
         &app,
     )?;
-    let engine = crate::management::engine(&store)?.with_control(control);
+    let engine = crate::management::engine(&store)?
+        .with_control(task.control)
+        .with_task_progress(task.progress);
     let (tx, progress_task) =
         crate::management::task_progress(&instance_id, &app, store.inner(), downloads.inner());
     let result = curseforge::install(&engine, &target, &version, kind).await;
@@ -321,6 +329,8 @@ pub async fn curseforge_download(
     version: CurseForgeVersion,
     kind: ContentKind,
     directory: String,
+    // 项目名，用于任务标题；见 `install_mod_version` 的同名参数。
+    project_name: Option<String>,
     app: AppHandle,
     store: State<'_, LauncherStore>,
     operations: State<'_, crate::management::Operations>,
@@ -331,13 +341,19 @@ pub async fn curseforge_download(
     if target.as_os_str().is_empty() {
         return Err("请选择下载目录。".into());
     }
-    let control = downloads.start(
+    let task = downloads.start(
         &instance_id,
-        &format!("下载 {} {}", kind_label_cn(kind), version.file_name),
+        &task_title(
+            &format!("下载 {}", kind_label_cn(kind)),
+            project_name.as_deref(),
+            &version.file_name,
+        ),
         &store,
         &app,
     )?;
-    let engine = crate::management::engine(&store)?.with_control(control);
+    let engine = crate::management::engine(&store)?
+        .with_control(task.control)
+        .with_task_progress(task.progress);
     let (tx, progress_task) =
         crate::management::task_progress(&instance_id, &app, store.inner(), downloads.inner());
     let result = curseforge::download_to(&engine, &version, kind, &target).await;
@@ -345,6 +361,23 @@ pub async fn curseforge_download(
     let _ = progress_task.await;
     downloads.finish(&instance_id, result.is_ok(), &store, &app)?;
     result
+}
+
+/// 拼一个任务标题：优先「动词 + 项目名 + 文件名」，没有项目名时只用文件名。
+///
+/// 为什么两种都带文件名：同名项目常有多个文件版本（`jei-1.20.1-forge.jar` 与
+/// `jei-1.20.1-fabric.jar`），只写项目名会让两个并行的任务看起来一模一样。
+///
+/// 项目名会被截断到 64 字符：任务卡是一行省略号，超长的项目名只会把真正有用的
+/// 文件名挤出可见区。
+fn task_title(prefix: &str, project_name: Option<&str>, file_name: &str) -> String {
+    match project_name.map(str::trim) {
+        Some(name) if !name.is_empty() => {
+            let name: String = name.chars().take(64).collect();
+            format!("{prefix} {name}（{file_name}）")
+        }
+        _ => format!("{prefix} {file_name}"),
+    }
 }
 
 /// 任务标题用的中文类型名。与 `launcher-core` 里的文案保持一致，避免下载页

@@ -148,15 +148,15 @@ export function CurseForgePanel({ kind, instance, language, onNotice, onChanged 
     }
   };
 
-  const install = async (version: CurseForgeVersion) => {
+  const install = async (version: CurseForgeVersion, projectName?: string) => {
     if (!instance) return;
     setInstalling(version.versionId);
     try {
-      const name = await curseforgeInstall(instance.id, version, kind);
+      const name = await curseforgeInstall(instance.id, version, kind, projectName);
       onNotice(t('cf.installedKind', { values: { kind: kindLabel, name } }));
       onChanged();
     } catch (error) {
-      onNotice(errorText(error, `安装${kindLabel}失败。`));
+      onNotice(errorText(error, t('cf.installFailed', { values: { kind: kindLabel } })));
     } finally {
       setInstalling('');
     }
@@ -340,7 +340,7 @@ export function CurseForgePanel({ kind, instance, language, onNotice, onChanged 
                         size="sm"
                         disabled={version.url === null || installing === version.versionId}
                         icon={<Download size={13} />}
-                        onClick={() => void install(version)}
+                        onClick={() => void install(version, mod.title)}
                       >
                         {version.url === null
                           ? t('cf.manual')

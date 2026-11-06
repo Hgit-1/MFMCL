@@ -726,7 +726,7 @@ async fn range_mock(body: Vec<u8>, honour_ranges: bool) -> Mock {
     }
 }
 
-fn segment_engine(connections: u8) -> DownloadEngine {
+fn segment_engine(connections: u16) -> DownloadEngine {
     DownloadEngine::new(DownloadSettings {
         aria2_enabled: false,
         connections_per_file: connections,
