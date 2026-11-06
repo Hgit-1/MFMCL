@@ -525,19 +525,21 @@ async fn import_modpack_inner(
             /*
              * CurseForge 格式：清单只给 fileID，下载地址与哈希必须联网查。
              *
-             * 这里就地补全，而不是把「待补全」状态抛给前端：补全需要 CurseForge key，
-             * 而 key 只存在于后端；让前端拿到 fileID 再去另一次 IPC 换地址，等于把
-             * 一个本该原子的步骤拆成两段，中间任何一步失败都会留下半完成状态。
+             * 这里就地补全，而不是把「待补全」状态抛给前端：补全需要联网，而
+             * 客户端入口的选择（有没有 key）属于后端；让前端拿到 fileID 再去
+             * 另一次 IPC 换地址，等于把一个本该原子的步骤拆成两段，中间任何
+             * 一步失败都会留下半完成状态。
+             *
+             * 没有 key 时走镜像：导入整合包是「打开一个文件」这种再普通不过的
+             * 操作，不该在此之前要求用户去注册开发者账号。
              */
-            let key = crate::curseforge::read_key_for_internal()
-                .await
-                .ok_or_else(|| {
-                    "这个整合包是 CurseForge 格式，导入需要查询文件下载地址；\
-                     请先在设置里配置 CurseForge API Key。"
-                        .to_owned()
-                })?;
+            let key = crate::curseforge::read_key_for_internal().await;
             let ids = manifest.file_ids();
-            let details = launcher_core::curseforge::files_by_ids(&key, &ids).await?;
+            let details = launcher_core::curseforge::files_by_ids(
+                launcher_core::curseforge::Source::from_key(key.as_deref()),
+                &ids,
+            )
+            .await?;
             let (files, skipped) = modpacks::curseforge_files_to_pack_files(&manifest, &details);
             if files.is_empty() {
                 return Err(
@@ -769,6 +771,22 @@ pub fn export_modpack(
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// 请求在下次安装原版文件时顺带装一个加载器。
+///
+/// 与整合包导入写的是同一个标记、同一个格式（`<kind>@<version>`），因此
+/// `install_instance` 无需区分「用户新建实例时选的加载器」和「整合包自带的
+/// 加载器」——两者都由 `install_pending_pack_loader` 消费。
+///
+/// 这里额外做一层格式校验：标记文件的格式错误会在**之后**的安装阶段才暴露，
+/// 那时实例已经建好了，用户看到的是一条莫名其妙的「加载器请求无效」。在写入前
+/// 就拒绝，错误能归因到正确的操作上。
+pub fn request_pack_loader(instance: &InstanceRecord, request: &str) -> Result<(), String> {
+    let (kind, version) = request.split_once('@').ok_or("加载器标识格式无效。")?;
+    let kind = launcher_core::loaders::LoaderKind::from_name(kind).ok_or("未识别的加载器。")?;
+    launcher_core::loaders::safe_version(version)?;
+    write_pending_loader(instance, &format!("{}@{version}", kind.name()))
+}
+
 fn write_pending_loader(instance: &InstanceRecord, loader: &str) -> Result<(), String> {
     let directory = &instance.instance_dir;
     let metadata = std::fs::symlink_metadata(directory).map_err(|e| e.to_string())?;
@@ -954,6 +972,63 @@ mod pack_tests {
             b"vanilla"
         );
         assert_eq!(std::fs::read_dir(&target.instance_dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 新建实例时选的加载器走的是整合包那条标记通路。
+    #[test]
+    fn create_instance_loader_request_is_written_for_the_installer() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let store = LauncherStore::open(":memory:").unwrap();
+        let target = store
+            .create_instance(
+                &CreateInstanceInput {
+                    name: "fabric".into(),
+                    game_version: "1.21.4".into(),
+                },
+                &root,
+            )
+            .unwrap();
+        std::fs::create_dir_all(&target.instance_dir).unwrap();
+        request_pack_loader(&target, "fabric@0.16.10").unwrap();
+        let written = std::fs::read_to_string(target.instance_dir.join("pack-loader.txt")).unwrap();
+        // 归一化后的标识：`from_name` 决定大小写，安装阶段按这个格式解析。
+        assert_eq!(written, "fabric@0.16.10");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 格式错误必须在写入前就拒绝。
+    ///
+    /// 若放过这里，错误要到用户点「安装」时才出现，那时实例已经建好，报错归因
+    /// 不到「你刚才选的加载器写错了」这件事上。
+    #[test]
+    fn malformed_loader_requests_are_rejected_before_writing() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let store = LauncherStore::open(":memory:").unwrap();
+        let target = store
+            .create_instance(
+                &CreateInstanceInput {
+                    name: "bad".into(),
+                    game_version: "1.21.4".into(),
+                },
+                &root,
+            )
+            .unwrap();
+        std::fs::create_dir_all(&target.instance_dir).unwrap();
+        for bad in [
+            "",               // 空
+            "fabric",         // 缺版本
+            "unknown@1.0",    // 未识别的加载器
+            "fabric@../evil", // 路径穿越
+            "fabric@",        // 空版本
+        ] {
+            assert!(
+                request_pack_loader(&target, bad).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+        // 被拒绝的请求不该留下标记文件，否则安装阶段会去解析一个坏值。
+        assert!(!target.instance_dir.join("pack-loader.txt").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

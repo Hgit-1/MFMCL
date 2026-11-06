@@ -65,18 +65,14 @@ async fn resolve_key() -> Option<String> {
         .filter(|key| !key.trim().is_empty())
 }
 
-/// 取一个必须存在的 key；没有时给出可操作的错误。
-async fn read_key() -> Result<String, String> {
-    resolve_key()
-        .await
-        .ok_or_else(|| "尚未设置 CurseForge API Key。".to_owned())
-}
-
 /// 供其他模块（整合包导入）读取 key。
 ///
 /// key 必须留在后端：CurseForge 格式的整合包在导入时需要按 fileID 批量查询下载
 /// 地址，这个动作发生在 `management::import_modpack_inner` 里。把 key 传给前端
 /// 再传回来既多一次 IPC，又让凭据暴露在 web view 能读到的地方。
+///
+/// 返回 `None` 是正常情况——此时所有查询走 MCIM 镜像。调用方应当把结果直接喂给
+/// `curseforge::Source::from_key`，而不是当成错误。
 pub(crate) async fn read_key_for_internal() -> Option<String> {
     resolve_key().await
 }
@@ -185,9 +181,15 @@ pub async fn curseforge_search(
     index: Option<u32>,
     page_size: Option<u32>,
 ) -> Result<Vec<CurseForgeMod>, String> {
-    let key = read_key().await?;
+    /*
+     * 没有 key 也能搜：`read_key_for_internal` 返回 None 时走镜像。
+     *
+     * 这与之前「无 key 直接报错」的差别是决定性的：用户点进「模组」分类不该先
+     * 被要求去注册开发者账号。key 只是「更快、不依赖第三方」的加速项。
+     */
+    let key = read_key_for_internal().await;
     curseforge::search(
-        &key,
+        curseforge::Source::from_key(key.as_deref()),
         kind,
         &query,
         game_version.as_deref(),
@@ -204,8 +206,77 @@ pub async fn curseforge_files(
     game_version: String,
     loader: Option<String>,
 ) -> Result<Vec<CurseForgeVersion>, String> {
-    let key = read_key().await?;
-    curseforge::files(&key, &project_id, &game_version, loader.as_deref()).await
+    let key = read_key_for_internal().await;
+    curseforge::files(
+        curseforge::Source::from_key(key.as_deref()),
+        &project_id,
+        &game_version,
+        loader.as_deref(),
+    )
+    .await
+}
+
+/// 扫描实例的 mods 目录，按指纹识别每个 jar 属于哪个 CurseForge 工程。
+///
+/// 返回识别成功的条目列表，每项带工程名与页面地址。识别不出的文件不在结果
+/// 里——那不是错误，只是「这个 jar 不在 CurseForge 上」（自编译、私发、或来自
+/// 别的平台）。
+///
+/// 没有配置 key 时走 MCIM 镜像，仍然能识别。这一点很关键：指纹反查恰恰是
+/// 「这个模组是谁的」这种纯查询，不该因为缺一个开发者凭据就整块消失。
+#[tauri::command]
+pub async fn curseforge_identify_mods(
+    instance_id: String,
+    store: State<'_, LauncherStore>,
+) -> Result<Vec<curseforge::IdentifiedMod>, String> {
+    let target = crate::management::instance(&store, &instance_id)?;
+    let mods = launcher_core::mods::list_mods(&target)?;
+    if mods.is_empty() {
+        return Ok(Vec::new());
+    }
+    let key = read_key_for_internal().await;
+
+    /*
+     * 计算指纹放在阻塞线程里：`list_mods` 只给文件名，而每个 jar 要读整份内容
+     * 才能算哈希。一个整合包实例可能有几百个 jar、合计上 GB，放在 async 上下文
+     * 里会长时间占住运行时的工作线程。
+     */
+    let directory = target.game_dir.join("mods");
+    let names: Vec<String> = mods.iter().map(|item| item.file_name.clone()).collect();
+    let hashed = tauri::async_runtime::spawn_blocking(move || {
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let path = directory.join(&name);
+                launcher_core::curseforge_fingerprint::file_fingerprint(&path)
+                    .map(|fingerprint| (name, fingerprint))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if hashed.is_empty() {
+        return Ok(Vec::new());
+    }
+    /*
+     * 带上实例的游戏版本与加载器：识别结果里的「有新版本」必须按这两个条件筛，
+     * 否则会把 1.21 的 Forge 版本推荐给 1.20.1 的 Fabric 实例。
+     *
+     * 加载器记录形如 `fabric@0.16.10`，这里取 `@` 前的那一段。
+     */
+    let loader = target
+        .loader
+        .split_once('@')
+        .map(|(kind, _)| kind)
+        .unwrap_or(target.loader.as_str());
+    curseforge::identify_files(
+        curseforge::Source::from_key(key.as_deref()),
+        &hashed,
+        Some(target.game_version.as_str()),
+        Some(loader),
+    )
+    .await
 }
 
 /// 安装一个 CurseForge 文件。
