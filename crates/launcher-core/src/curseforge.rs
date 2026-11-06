@@ -24,13 +24,83 @@ use std::path::Path;
 use std::time::Duration;
 
 const API: &str = "https://api.curseforge.com";
+/// MCIM 的 CurseForge 代理前缀。
+///
+/// ## 为什么需要它
+///
+/// CurseForge 的公开 API 要求每个客户端自带 `x-api-key`，而 key 要用户自己去
+/// 开发者控制台申请。对只想装个模组的玩家来说，这是一道纯行政门槛：他既不知道
+/// 什么是 API key，也不理解为什么「装模组」需要去注册一个开发者账号。
+///
+/// PCL2 / HMCL 等启动器的做法是提供一个公共中转，让客户端在**没有用户 key**
+/// 时也能查询元数据。这里沿用同一思路，指向 MCIM（`mod.mcimirror.top`）。
+///
+/// ## 边界（很重要）
+///
+/// - **只代理元数据**：搜索、版本列表、批量文件、指纹反查。文件下载仍走
+///   `edge.forgecdn.net` 官方 CDN，由 API 返回的 `downloadUrl` 决定，镜像不参与。
+/// - **绝不转发用户凭据**。实测给该代理附带一个无效 `x-api-key` 会返回 500
+///   （而不是忽略），所以有 key 时必须直连官方，不能「顺手也发一份」。
+/// - 用户自己配了 key 就优先走官方：那样配额算在他自己头上，也不依赖第三方可用性。
+const MCIM_API: &str = "https://mod.mcimirror.top/curseforge";
 /// Minecraft 在 CurseForge 的 gameId。
 const GAME_ID: u32 = 432;
 const MAX_QUERY: usize = 128;
 const MAX_RESULTS: u32 = 20;
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
+/// 指纹与工程接口的响应上限。
+///
+/// 比普通列表大得多：`exactMatches` 的每一项都内嵌完整的 `latestFiles`
+/// （几十个文件对象），100 个匹配就能到几 MB。用 `MAX_RESPONSE` 会让大批量
+/// 识别在没有明显原因的情况下失败。
+const MATCH_RESPONSE: usize = 16 * 1024 * 1024;
 /// 服务端硬上限：`index + pageSize <= 10000`。
 const MAX_PAGE_WINDOW: u32 = 10_000;
+
+/// 一次 CurseForge 请求要用哪个入口。
+///
+/// ## 为什么要有这个类型
+///
+/// 之前每个接口都写着 `key: &str` 并在开头 `validate_key`，于是「没有 key」只能
+/// 表达成错误。接入镜像后，没有 key 是**正常状态**——它只决定走哪个入口，
+/// 不决定能不能查。把这个区分放进类型里，调用方就无法再写出「无 key 即失败」
+/// 那种分支。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source<'a> {
+    /// 用户提供了 key：直连官方，带上 `x-api-key`。
+    Official(&'a str),
+    /// 没有 key：走 MCIM 代理，不带任何凭据。
+    ///
+    /// 用一个不含字符串的变体是刻意的——它让「把用户的 key 发给第三方」在类型
+    /// 层面就写不出来。
+    Mirror,
+}
+
+impl<'a> Source<'a> {
+    /// 由可选的 key 决定入口。空串与纯空格等同于「没有 key」。
+    pub fn from_key(key: Option<&'a str>) -> Self {
+        match key.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) => Source::Official(value),
+            None => Source::Mirror,
+        }
+    }
+
+    /// 目标地址前缀。
+    fn base(self) -> &'static str {
+        match self {
+            Source::Official(_) => API,
+            Source::Mirror => MCIM_API,
+        }
+    }
+
+    /// 只有直连官方时才返回凭据；镜像分支永远不带 key。
+    fn api_key(self) -> Option<&'a str> {
+        match self {
+            Source::Official(key) => Some(key),
+            Source::Mirror => None,
+        }
+    }
+}
 
 /// CurseForge 的 classId（分类）。
 fn class_id(kind: ContentKind) -> u32 {
@@ -93,6 +163,564 @@ pub struct CurseForgeVersion {
     pub loaders: Vec<String>,
 }
 
+/// 指纹匹配到的一个文件，连同它所属的工程 ID。
+///
+/// 必须把 `project_id` 带出来：指纹接口只给出「这个文件属于哪个工程」的数字 ID，
+/// 而界面上要显示的是工程名与页面地址，那需要再查一次工程信息。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurseForgeFileMatch {
+    pub project_id: String,
+    pub file: CurseForgeVersion,
+}
+
+/// CurseForge `latestFilesIndexes` 里的一条。
+///
+/// CurseForge 不会为每个「游戏版本 × 加载器」组合单独返回最新文件，而是给一个
+/// 平铺的索引表，调用方自己按目标版本与加载器挑。PCL2 的
+/// `LocalResourceLoaders.vb` 同样是先筛这张表、再按 fileId 批量取详情。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CurseForgeFileIndex {
+    pub game_version: String,
+    pub file_id: String,
+    pub file_name: String,
+    /// CurseForge 的 `ModLoaderType`：0 = 任意，1 = Forge，4 = Fabric，5 = Quilt，6 = NeoForge。
+    pub mod_loader: u32,
+}
+
+/// CurseForge 工程（模组主页）的展示信息。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CurseForgeProject {
+    pub project_id: String,
+    pub slug: String,
+    pub title: String,
+    pub summary: String,
+    /// 工程主页地址。由 slug 拼出，slug 不可用时退回旧式的 `/projects/{id}`。
+    pub url: String,
+    /// 每个「游戏版本 × 加载器」组合对应的最新文件。用于判断有没有新版本。
+    pub latest_files: Vec<CurseForgeFileIndex>,
+}
+
+/// 本地文件与 CurseForge 工程的对应关系，直接给界面用。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentifiedMod {
+    /// 本地文件名（含 `.jar.disabled` 后缀）。
+    pub file_name: String,
+    pub project_id: String,
+    pub project_title: String,
+    pub project_url: String,
+    /// 这个本地文件在 CurseForge 上对应的版本。
+    pub version: CurseForgeVersion,
+    /// 同一工程针对此实例的版本与加载器更新的文件；没有则 `None`。
+    ///
+    /// 只做展示，不在这里下载：更新要替换现有文件并保留回滚副本，那套流程
+    /// 属于 `mod_updates`，重复实现只会让两条路径的失败处理各自漂移。
+    pub latest: Option<CurseForgeVersion>,
+}
+
+/// CurseForge CDN 的备用主机名。
+///
+/// ## 为什么需要
+///
+/// CurseForge 把文件分布在多个 CDN 主机上（`edge` / `mediafilez` / `media`），
+/// 还有历史上的 `*-service.overwolf.wtf`。同一个文件的下载地址在 API 里只给一个，
+/// 而那个主机偶尔会失败——DNS、区域限制、或单纯的瞬时故障。此时把主机名换成
+/// 另一个通常就能成功，因为路径规则完全相同（`/files/<前4位>/<其余>/<文件名>`）。
+///
+/// PCL2 用同一套思路：`ParseCurseForgeDownloadUrls` 在几种主机名之间做替换，
+/// 去重后逐个尝试。
+///
+/// ## 只做主机替换
+///
+/// 不构造新路径、不猜文件名：那会越过「作者是否允许分发」的边界。这里只把
+/// **同一个已知地址**在等价主机之间切换。
+pub fn cdn_alternates(url: &str) -> Vec<String> {
+    const HOSTS: [&str; 3] = [
+        "edge.forgecdn.net",
+        "mediafilez.forgecdn.net",
+        "media.forgecdn.net",
+    ];
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return vec![url.to_owned()];
+    };
+    let Some(host) = parsed.host_str() else {
+        return vec![url.to_owned()];
+    };
+    /*
+     * 只处理已知的 CDN 主机。
+     * 其它域名原样返回：这些替换规则对它们没有意义，改主机名只会得到 404。
+     */
+    if !HOSTS.contains(&host) {
+        return vec![url.to_owned()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    // 原地址排第一：它能用的时候不必多试。
+    out.push(url.to_owned());
+    for candidate in HOSTS {
+        if candidate == host {
+            continue;
+        }
+        let mut next = parsed.clone();
+        if next.set_host(Some(candidate)).is_ok() {
+            let text = next.as_str().to_owned();
+            if !out.contains(&text) {
+                out.push(text);
+            }
+        }
+    }
+    out
+}
+
+/// 按指纹批量识别本地文件属于哪个 CurseForge 工程。
+///
+/// ## 为什么这条路径不可替代
+///
+/// 整合包里的 jar 常被改名（`jei-1.20.1-15.2.0.27.jar`、`JustEnoughItems.jar`、
+/// 作者自己起的名），按文件名匹配必然失败。指纹由内容决定，改名不影响。
+///
+/// CurseForge 提供 `POST /v1/fingerprints/432`（432 是 Minecraft 的 gameId）：
+/// 提交一批指纹，换回 `exactMatches`。一次最多 200 个指纹——与 `files_by_ids`
+/// 同一个量级，所以这里也分片。
+///
+/// 返回 `(指纹 → 匹配)`。服务端不认识的指纹直接不在结果里：那是「不是 CurseForge
+/// 上的文件」，调用方应当按普通本地模组处理，而不是报错。
+///
+/// 只取 `exactMatches`：`partialMatches` 是同一工程的**不同文件**（通常是小一号的
+/// 变体），把它当作「这个文件」会让更新检查下载到错误的内容。
+pub async fn files_by_fingerprints(
+    source: Source<'_>,
+    fingerprints: &[u32],
+) -> Result<std::collections::HashMap<u32, CurseForgeFileMatch>, String> {
+    if fingerprints.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    const BATCH: usize = 200;
+    let client = catalog_client()?;
+    let mut out = std::collections::HashMap::new();
+    for chunk in fingerprints.chunks(BATCH) {
+        let body = serde_json::json!({ "fingerprints": chunk });
+        let bytes = post_json(
+            &client,
+            source,
+            format!("{}/v1/fingerprints/{GAME_ID}", source.base()),
+            &body,
+            MATCH_RESPONSE,
+        )
+        .await?;
+        for (fingerprint, matched) in parse_fingerprint_matches(&bytes)? {
+            out.insert(fingerprint, matched);
+        }
+    }
+    Ok(out)
+}
+
+/// 解析指纹接口的响应。
+///
+/// 响应形状：`{ "data": { "exactMatches": [ { "id": <fileId>, "file": {...} } ] } }`。
+///
+/// 两个字段都要用：
+///   - `file.modId` 是工程 ID，界面要靠它查工程名与页面地址；
+///   - `file.fileFingerprint` 是我们提交的那个指纹，用来把结果映射回本地文件。
+///
+/// 不用 `parse_files` 复用：那个函数解析的是裸文件数组，而这里要额外取
+/// `modId`、且 `downloadUrl` 可能缺失（作者禁止分发），强行走同一条路径只会
+/// 增加绕行代码。
+fn parse_fingerprint_matches(bytes: &[u8]) -> Result<Vec<(u32, CurseForgeFileMatch)>, String> {
+    #[derive(Deserialize)]
+    struct Envelope {
+        data: Data,
+    }
+    #[derive(Deserialize)]
+    struct Data {
+        #[serde(default, rename = "exactMatches")]
+        exact_matches: Vec<Match>,
+    }
+    #[derive(Deserialize)]
+    struct Match {
+        file: File,
+    }
+    #[derive(Deserialize)]
+    struct File {
+        #[serde(default, rename = "modId")]
+        mod_id: u64,
+        #[serde(default)]
+        id: u64,
+        #[serde(default, rename = "displayName")]
+        display_name: String,
+        #[serde(default, rename = "fileName")]
+        file_name: String,
+        #[serde(default, rename = "fileDate")]
+        file_date: String,
+        #[serde(default, rename = "fileLength")]
+        file_length: u64,
+        #[serde(default, rename = "downloadUrl")]
+        download_url: Option<String>,
+        #[serde(default)]
+        hashes: Vec<Hash>,
+        #[serde(default, rename = "gameVersions")]
+        game_versions: Vec<String>,
+        #[serde(default, rename = "fileFingerprint")]
+        fingerprint: u64,
+    }
+    #[derive(Deserialize)]
+    struct Hash {
+        value: String,
+        algo: u32,
+    }
+
+    let parsed: Envelope =
+        serde_json::from_slice(bytes).map_err(|_| "CurseForge 指纹响应格式无效。")?;
+    if parsed.data.exact_matches.len() > MAX_RESULTS as usize * 10 {
+        return Err("CurseForge 指纹匹配数量异常。".into());
+    }
+
+    let mut out = Vec::new();
+    for item in parsed.data.exact_matches {
+        let file = item.file;
+        /*
+         * 没有工程 ID 的匹配直接跳过。
+         *
+         * 这种条目只能显示一个孤立文件名——点不到工程主页，也无法参与更新检查；
+         * 而 `match.id` 是**文件** ID 而不是工程 ID，拿它顶替会拼出 404 的页面
+         * 地址，比不显示更糟。
+         */
+        if file.mod_id == 0 || file.file_name.trim().is_empty() {
+            continue;
+        }
+        let project_id = file.mod_id;
+        let sha1 = file
+            .hashes
+            .iter()
+            .find(|hash| hash.algo == 1)
+            .filter(|hash| {
+                hash.value.len() == 40 && hash.value.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+            .map(|hash| hash.value.clone());
+        // 与 `parse_files` 相同的域名白名单：只接受 CurseForge 官方分发主机。
+        let url = file.download_url.filter(|url| {
+            reqwest::Url::parse(url).is_ok_and(|parsed| {
+                parsed.scheme() == "https"
+                    && matches!(
+                        parsed.host_str(),
+                        Some("edge.forgecdn.net") | Some("mediafilez.forgecdn.net")
+                    )
+            })
+        });
+        let (game_versions, loaders) = split_versions_and_loaders(&file.game_versions);
+        out.push((
+            file.fingerprint as u32,
+            CurseForgeFileMatch {
+                project_id: project_id.to_string(),
+                file: CurseForgeVersion {
+                    version_id: file.id.to_string(),
+                    display_name: truncate(&file.display_name, 256),
+                    date_created: file.file_date,
+                    file_name: truncate(&file.file_name, 256),
+                    url,
+                    sha1,
+                    size: file.file_length,
+                    game_versions,
+                    loaders,
+                },
+            },
+        ));
+    }
+    Ok(out)
+}
+
+/// 把「本地文件名 → 指纹」解析成带工程信息与可用更新提示的识别结果。
+///
+/// ## 为什么是三步，而不是一步
+///
+/// 指纹接口只回答「这个文件的工程 ID 是多少」，不返回工程名。界面上要显示的
+/// 是「JourneyMap」而不是「32274」，还要能点进主页——所以必须再查一次工程。
+/// PCL2 的 `LocalResourceLoaders.vb` 走的正是这条链路：
+///
+/// 1. `POST /v1/fingerprints/432` → `exactMatches[].file.modId`；
+/// 2. `POST /v1/mods` → 工程名、slug、`latestFilesIndexes`；
+/// 3. 按目标游戏版本与加载器从索引里挑出最新的那个文件。
+///
+/// 第 3 步只用来**提示**「有新版本」。真正替换文件走 `mod_updates`：那里有
+/// 校验、回滚与任务上报，重复实现只会让两条路径的失败处理各自漂移。
+///
+/// ## 失败时的取舍
+///
+/// 第 2 步失败不丢弃第 1 步的结果：此时仍能显示「来自 CurseForge 的工程 #12345」，
+/// 总比整片查不到、看起来「一个都没识别出来」要好。
+pub async fn identify_files(
+    source: Source<'_>,
+    hashed: &[(String, u32)],
+    game_version: Option<&str>,
+    loader: Option<&str>,
+) -> Result<Vec<IdentifiedMod>, String> {
+    if hashed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fingerprints: Vec<u32> = hashed.iter().map(|(_, fingerprint)| *fingerprint).collect();
+    let matched = files_by_fingerprints(source, &fingerprints).await?;
+    if matched.is_empty() {
+        return Ok(Vec::new());
+    }
+    /*
+     * 同一个工程可能对应多个本地文件（同一模组的副本，或整合包里的重复 jar）。
+     * 去重后再查，避免把同一个 ID 提交多遍。
+     */
+    let mut project_ids: Vec<String> = Vec::new();
+    for item in matched.values() {
+        if !project_ids.contains(&item.project_id) {
+            project_ids.push(item.project_id.clone());
+        }
+    }
+    // 工程信息查不到时退回空表，由下面按「无名称」处理，而不是让整批失败。
+    let projects = projects_by_ids(source, &project_ids)
+        .await
+        .unwrap_or_default();
+    /*
+     * 把「最新文件」的真实详情批量取回来。
+     *
+     * 索引里只有 fileId 与文件名，没有校验值——而没有 SHA-1 的文件不能安全下载，
+     * 界面也无法判断「这是不是比本地那个更新」。一次批量查，比每个工程各查一次快
+     * 一个数量级。
+     */
+    let mut latest_ids: Vec<u64> = Vec::new();
+    for item in matched.values() {
+        if let Some(index) = projects
+            .get(&item.project_id)
+            .and_then(|project| pick_latest(project, game_version, loader))
+            && let Ok(id) = index.file_id.parse::<u64>()
+            && !latest_ids.contains(&id)
+        {
+            latest_ids.push(id);
+        }
+    }
+    /*
+     * 更新提示是「锦上添花」：这里失败不该让整次识别失败。
+     * 识别出「装了哪些」已经是有用的结果，丢掉它会连来源都看不到。
+     */
+    let latest_files = files_by_ids(source, &latest_ids).await.unwrap_or_default();
+
+    let mut out = Vec::new();
+    for (file_name, fingerprint) in hashed {
+        let Some(item) = matched.get(fingerprint) else {
+            continue;
+        };
+        let project = projects.get(&item.project_id);
+        let latest = project
+            .and_then(|project| pick_latest(project, game_version, loader))
+            .and_then(|index| index.file_id.parse::<u64>().ok())
+            .and_then(|id| latest_files.get(&id).cloned())
+            /*
+             * 「最新文件」就是本地这个文件时不必显示更新：同一个版本显示成
+             * 「可更新到 15.74」会让用户以为点了会有变化。
+             */
+            .filter(|latest| latest.version_id != item.file.version_id);
+        out.push(IdentifiedMod {
+            file_name: file_name.clone(),
+            project_id: item.project_id.clone(),
+            project_title: project
+                .map(|project| project.title.clone())
+                // 名称缺失时给出可辨识的占位：只有 ID 也比空字符串强，
+                // 用户至少能据此搜索或判断是不是自己的私有模组。
+                .unwrap_or_else(|| format!("工程 #{}", item.project_id)),
+            project_url: project
+                .map(|project| project.url.clone())
+                .unwrap_or_else(|| {
+                    format!("https://www.curseforge.com/projects/{}", item.project_id)
+                }),
+            version: item.file.clone(),
+            latest,
+        });
+    }
+    Ok(out)
+}
+
+/// 按目标游戏版本与加载器，从工程的 `latestFilesIndexes` 里挑一个文件。
+///
+/// 规则与 PCL2 一致，只有两条：
+///   - 游戏版本必须精确相等。整合包之间的版本差异会让「1.20.1 的模组装进 1.21」
+///     直接崩溃，宽松匹配是有害的；
+///   - 加载器要么是 `Any`（0），要么与实例一致。`Any` 的文件通常是数据包式的
+///     资源，作者标成通用。
+///
+/// ## 为什么取「第一个匹配」，而不是按日期取最新
+///
+/// CurseForge 的索引本身就是「每个组合的最新文件」——同一个组合只会出现一次。
+/// 按日期再排一次没有意义，而且索引里根本没有日期字段。
+fn pick_latest<'a>(
+    project: &'a CurseForgeProject,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+) -> Option<&'a CurseForgeFileIndex> {
+    let wanted_loader = loader.and_then(mod_loader_id);
+    project.latest_files.iter().find(|index| {
+        let version_ok = game_version
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none_or(|value| index.game_version.trim() == value);
+        /*
+         * 没有加载器时不筛加载器（原版实例没有可比的类型）。
+         * 有加载器时，`Any` 的文件仍然接受——作者用它标记与加载器无关的内容。
+         */
+        let loader_ok =
+            wanted_loader.is_none_or(|wanted| index.mod_loader == 0 || index.mod_loader == wanted);
+        version_ok && loader_ok
+    })
+}
+
+/// 批量取工程信息（名称、slug、简介），用于把工程 ID 变成可展示的条目。
+///
+/// `POST /v1/mods` 一次接受一批 `modIds`（实测 200 个可用）。PCL2 也是这么做的：
+/// 指纹只给工程 ID，名称与页面地址必须再查一次；逐个 `GET /v1/mods/{id}` 会让
+/// 一个 300 模组的整合包发出 300 次请求。
+///
+/// 返回 `(工程 ID → 信息)`。服务端不返回的 ID 不在结果里（工程被删除或隐藏），
+/// 调用方应当退回到「只显示工程 ID」而不是当作错误。
+pub async fn projects_by_ids(
+    source: Source<'_>,
+    project_ids: &[String],
+) -> Result<std::collections::HashMap<String, CurseForgeProject>, String> {
+    if project_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    /*
+     * 只接受纯数字 ID。
+     *
+     * 这些 ID 会直接拼进 JSON 请求体，非数字值会让整个批次被服务端拒绝（400），
+     * 表现为「一个工程信息都取不到」。在本地过滤掉坏数据，好数据仍然能查。
+     */
+    let mut ids: Vec<u64> = Vec::new();
+    for id in project_ids {
+        let trimmed = id.trim();
+        if trimmed.is_empty() || trimmed.len() > 20 {
+            continue;
+        }
+        if let Ok(value) = trimmed.parse::<u64>()
+            && !ids.contains(&value)
+        {
+            ids.push(value);
+        }
+    }
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    const BATCH: usize = 200;
+    let client = catalog_client()?;
+    let mut out = std::collections::HashMap::new();
+    for chunk in ids.chunks(BATCH) {
+        let body = serde_json::json!({ "modIds": chunk });
+        let bytes = post_json(
+            &client,
+            source,
+            format!("{}/v1/mods", source.base()),
+            &body,
+            MATCH_RESPONSE,
+        )
+        .await?;
+        out.extend(parse_projects(&bytes)?);
+    }
+    Ok(out)
+}
+
+/// 解析 `POST /v1/mods` 的响应。
+fn parse_projects(
+    bytes: &[u8],
+) -> Result<std::collections::HashMap<String, CurseForgeProject>, String> {
+    #[derive(Deserialize)]
+    struct Response {
+        #[serde(default)]
+        data: Vec<Mod>,
+    }
+    #[derive(Deserialize)]
+    struct Mod {
+        id: u64,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        slug: String,
+        #[serde(default)]
+        summary: String,
+        #[serde(default, rename = "latestFilesIndexes")]
+        latest_files_indexes: Vec<FileIndex>,
+    }
+    #[derive(Deserialize)]
+    struct FileIndex {
+        #[serde(default, rename = "gameVersion")]
+        game_version: String,
+        #[serde(default, rename = "fileId")]
+        file_id: u64,
+        #[serde(default)]
+        filename: String,
+        #[serde(default, rename = "modLoader")]
+        mod_loader: u32,
+    }
+
+    let parsed: Response =
+        serde_json::from_slice(bytes).map_err(|_| "CurseForge 工程信息格式无效。")?;
+    if parsed.data.len() > MAX_RESULTS as usize * 10 {
+        return Err("CurseForge 工程数量异常。".into());
+    }
+
+    let mut out = std::collections::HashMap::new();
+    for item in parsed.data {
+        let title = item.name.trim();
+        if title.is_empty() || title.chars().count() > 256 {
+            continue;
+        }
+        /*
+         * slug 只接受安全字符。
+         *
+         * 它会被拼进展示给用户的页面地址。带 `/`、`?`、`#` 或空格的 slug 会
+         * 拼出另一个路径（甚至指向别的站点区域），所以只放行 CurseForge 实际
+         * 使用的字符集。
+         */
+        let slug = item.slug.trim();
+        let slug_ok = !slug.is_empty()
+            && slug.len() <= 128
+            && slug
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        let url = if slug_ok {
+            format!("https://www.curseforge.com/minecraft/mc-mods/{slug}")
+        } else {
+            // slug 不可用时退回旧式的工程地址：它只含数字，永远安全。
+            format!("https://www.curseforge.com/projects/{}", item.id)
+        };
+        let latest_files = item
+            .latest_files_indexes
+            .into_iter()
+            .filter(|index| {
+                index.file_id != 0
+                    && !index.filename.trim().is_empty()
+                    && index.filename.len() <= 256
+                    && !index.game_version.trim().is_empty()
+            })
+            // 上限防止畸形响应把内存撑爆：真实的模组文件索引最多几百条。
+            .take(2048)
+            .map(|index| CurseForgeFileIndex {
+                game_version: index.game_version,
+                file_id: index.file_id.to_string(),
+                file_name: index.filename,
+                mod_loader: index.mod_loader,
+            })
+            .collect();
+        out.insert(
+            item.id.to_string(),
+            CurseForgeProject {
+                project_id: item.id.to_string(),
+                slug: slug.to_owned(),
+                title: truncate(title, 256),
+                summary: truncate(item.summary.trim(), 512),
+                url,
+                latest_files,
+            },
+        );
+    }
+    Ok(out)
+}
+
 fn validate_key(key: &str) -> Result<(), String> {
     // key 是 bcrypt 形态的不透明字符串（60 字符）。只做长度与字符集检查，
     // 不尝试解析——格式一旦变化就会误判。真正的验证是发一次请求。
@@ -129,35 +757,80 @@ async fn bounded(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8
 
 /// 把 HTTP 状态翻成能指导用户下一步的错误。
 ///
-/// 403 是 CurseForge 唯一会用的认证失败码，且响应体为空——missing key 与 wrong key
-/// 无法区分，所以文案必须同时覆盖两种情况。
-fn status_error(status: reqwest::StatusCode) -> String {
+/// 403 是 CurseForge 官方唯一会用的认证失败码，且响应体为空——missing key 与
+/// wrong key 无法区分，所以文案必须同时覆盖两种情况。走镜像时同一个码更可能
+/// 是「代理侧的 key 配额用完了」，文案要指向不同的下一步。
+fn status_error(source: Source<'_>, status: reqwest::StatusCode) -> String {
     match status.as_u16() {
         400 => "CurseForge 拒绝了请求参数（分页或筛选超出允许范围）。".into(),
-        401 | 403 => "CurseForge API Key 缺失或无效，请在内容商店里重新填写。".into(),
+        401 | 403 => match source {
+            Source::Official(_) => "CurseForge API Key 缺失或无效，请在内容商店里重新填写。".into(),
+            // 镜像侧配额耗尽与「你的 key 有问题」是两件事，混成一句会让人去改
+            // 一个根本没问题的设置。
+            Source::Mirror => {
+                "CurseForge 镜像当前不可用（配额或限流）；稍后再试，或在设置里填入自己的 API Key。"
+                    .into()
+            }
+        },
         404 => "CurseForge 上找不到该项目。".into(),
         429 => "CurseForge 限流中，请稍后再试。".into(),
         _ => format!("CurseForge 请求失败（HTTP {}）。", status.as_u16()),
     }
 }
 
+/// 发一个 GET 并返回原始响应体。
+///
+/// 凭据只在这里附加：`Source` 决定要不要带 `x-api-key`，调用方无法绕过。
 async fn get_json(
     client: &reqwest::Client,
-    key: &str,
+    source: Source<'_>,
     url: reqwest::Url,
 ) -> Result<Vec<u8>, String> {
-    validate_key(key)?;
-    let response = client
-        .get(url)
-        .header("x-api-key", key.trim())
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|_| "无法连接 CurseForge。")?;
+    let mut request = client.get(url).header("Accept", "application/json");
+    if let Some(key) = source.api_key() {
+        validate_key(key)?;
+        request = request.header("x-api-key", key);
+    }
+    let response = request.send().await.map_err(|_| connect_error(source))?;
     if !response.status().is_success() {
-        return Err(status_error(response.status()));
+        return Err(status_error(source, response.status()));
     }
     bounded(response, MAX_RESPONSE).await
+}
+
+/// 发一个 POST（JSON 请求体）并返回原始响应体。
+///
+/// 与 `get_json` 共用凭据附加规则：镜像分支永远不带 key。
+async fn post_json(
+    client: &reqwest::Client,
+    source: Source<'_>,
+    url: String,
+    body: &serde_json::Value,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    let mut request = client
+        .post(url)
+        .header("Accept", "application/json")
+        .json(body);
+    if let Some(key) = source.api_key() {
+        validate_key(key)?;
+        request = request.header("x-api-key", key);
+    }
+    let response = request.send().await.map_err(|_| connect_error(source))?;
+    if !response.status().is_success() {
+        return Err(status_error(source, response.status()));
+    }
+    bounded(response, limit).await
+}
+
+/// 连不上时区分两种入口：镜像不通与官方不通，用户能做的事不一样。
+fn connect_error(source: Source<'_>) -> String {
+    match source {
+        Source::Official(_) => "无法连接 CurseForge。".into(),
+        Source::Mirror => {
+            "无法连接 CurseForge 镜像；可以在设置里填入自己的 API Key 直连官方。".into()
+        }
+    }
 }
 
 /// 批量按 fileID 查询文件详情，用于 CurseForge 格式整合包的导入。
@@ -169,10 +842,9 @@ async fn get_json(
 /// 返回 `(fileID → 详情)`。调用方按清单里的顺序取用，缺失的 ID 说明服务端不认识
 /// 或已被删除，由调用方决定是跳过还是报错。
 pub async fn files_by_ids(
-    key: &str,
+    source: Source<'_>,
     file_ids: &[u64],
 ) -> Result<std::collections::HashMap<u64, CurseForgeVersion>, String> {
-    validate_key(key)?;
     if file_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
@@ -182,18 +854,14 @@ pub async fn files_by_ids(
     let mut out = std::collections::HashMap::new();
     for chunk in file_ids.chunks(BATCH) {
         let body = serde_json::json!({ "fileIds": chunk });
-        let response = client
-            .post(format!("{API}/v1/mods/files"))
-            .header("x-api-key", key.trim())
-            .header("Accept", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|_| "无法连接 CurseForge。")?;
-        if !response.status().is_success() {
-            return Err(status_error(response.status()));
-        }
-        let bytes = bounded(response, MAX_RESPONSE).await?;
+        let bytes = post_json(
+            &client,
+            source,
+            format!("{}/v1/mods/files", source.base()),
+            &body,
+            MAX_RESPONSE,
+        )
+        .await?;
         for version in parse_files(&bytes)? {
             if let Ok(id) = version.version_id.parse::<u64>() {
                 out.insert(id, version);
@@ -208,7 +876,7 @@ pub async fn files_by_ids(
 /// `game_version` 与 `loader` 同时给出时按两者收窄；只给版本时按版本收窄。
 /// 这与官方文档的要求一致：`modLoaderType` 必须与 `gameVersion` 搭配使用。
 pub async fn search(
-    key: &str,
+    source: Source<'_>,
     kind: ContentKind,
     query: &str,
     game_version: Option<&str>,
@@ -248,10 +916,11 @@ pub async fn search(
     ];
     push_search_filters(&mut params, query, game_version, loader);
 
-    let url = reqwest::Url::parse_with_params(&format!("{API}/v1/mods/search"), &params)
-        .map_err(|_| "搜索地址无效。")?;
+    let url =
+        reqwest::Url::parse_with_params(&format!("{}/v1/mods/search", source.base()), &params)
+            .map_err(|_| "搜索地址无效。")?;
     let client = catalog_client()?;
-    let bytes = get_json(&client, key, url).await?;
+    let bytes = get_json(&client, source, url).await?;
     parse_search(&bytes)
 }
 
@@ -352,7 +1021,7 @@ fn truncate(value: &str, limit: usize) -> String {
 /// 与 Modrinth 一样按实例的游戏版本与加载器收窄；没有加载器时（原版实例）只按
 /// 游戏版本筛。返回顺序沿用服务端（通常是新的在前）。
 pub async fn files(
-    key: &str,
+    source: Source<'_>,
     project_id: &str,
     game_version: &str,
     loader: Option<&str>,
@@ -377,12 +1046,14 @@ pub async fn files(
     if let Some(loader_id) = loader.and_then(mod_loader_id) {
         params.push(("modLoaderType".into(), loader_id.to_string()));
     }
-    let url =
-        reqwest::Url::parse_with_params(&format!("{API}/v1/mods/{project_id}/files"), &params)
-            .map_err(|_| "版本地址无效。")?;
+    let url = reqwest::Url::parse_with_params(
+        &format!("{}/v1/mods/{project_id}/files", source.base()),
+        &params,
+    )
+    .map_err(|_| "版本地址无效。")?;
 
     let client = catalog_client()?;
-    let bytes = get_json(&client, key, url).await?;
+    let bytes = get_json(&client, source, url).await?;
     parse_files(&bytes)
 }
 
@@ -730,25 +1401,45 @@ pub(crate) async fn download_verified(
         ".install-{}.{extension}",
         uuid::Uuid::new_v4().simple()
     ));
-    engine
-        .download(
-            &ArtifactSpec {
-                id: match version_id {
-                    Some(id) => format!("curseforge-download:{id}"),
-                    None => format!("download:{}", uuid::Uuid::new_v4().simple()),
+    /*
+     * 按 CDN 备用主机逐个尝试。
+     *
+     * 只换主机名、不换路径：同一个文件的等价地址，作者是否允许分发与内容都不变。
+     * 每个候选都带同一个 SHA-1，所以即便某个主机返回了错误内容，也会被校验拦下，
+     * 不会写进游戏目录。第一个成功即止。
+     *
+     * 不在候选之间清理临时文件：下载引擎的续传状态以校验值为身份，几个镜像
+     * 提供的是同一份字节，续传是安全的；若某个主机返回了坏内容，引擎会在校验
+     * 失败时自己丢掉分片并重新开始。
+     */
+    let mut downloaded = false;
+    for candidate in cdn_alternates(url) {
+        let result = engine
+            .download(
+                &ArtifactSpec {
+                    id: match version_id {
+                        Some(id) => format!("curseforge-download:{id}"),
+                        None => format!("download:{}", uuid::Uuid::new_v4().simple()),
+                    },
+                    label: format!("下载{label} {file_name}"),
+                    url: candidate,
+                    mirror_url: None,
+                    destination: temporary.clone(),
+                    size: (size > 0).then_some(size),
+                    sha1: Some(sha1.to_owned()),
+                    sha256: None,
                 },
-                label: format!("下载{label} {file_name}"),
-                url: url.to_owned(),
-                mirror_url: None,
-                destination: temporary.clone(),
-                size: (size > 0).then_some(size),
-                sha1: Some(sha1.to_owned()),
-                sha256: None,
-            },
-            None,
-        )
-        .await
-        .map_err(|_| format!("{label}下载或校验失败；没有改动任何文件。"))?;
+                None,
+            )
+            .await;
+        if result.is_ok() {
+            downloaded = true;
+            break;
+        }
+    }
+    if !downloaded {
+        return Err(format!("{label}下载或校验失败；没有改动任何文件。"));
+    }
     // hard_link 会拒绝已存在的目标（含悬空符号链接），因此不会覆盖用户文件。
     if let Err(error) = std::fs::hard_link(&temporary, &destination) {
         let _ = std::fs::remove_file(&temporary);
@@ -762,6 +1453,12 @@ pub(crate) async fn download_verified(
 /// 探测一个 key 是否可用。用于「保存前先验证」，避免存进凭据库一个必然失败的 key。
 pub async fn verify_key(key: &str) -> Result<(), String> {
     validate_key(key)?;
+    /*
+     * 只直连官方。
+     *
+     * 镜像不转发 `/v1/games/{id}`（实测 404），而且「验证 key」这件事本身就不能
+     * 经过第三方——那等于把凭据交给它。这里固定用 `API` 而不是 `source.base()`。
+     */
     let url =
         reqwest::Url::parse(&format!("{API}/v1/games/{GAME_ID}")).map_err(|_| "验证地址无效。")?;
     let client = catalog_client()?;
@@ -776,13 +1473,46 @@ pub async fn verify_key(key: &str) -> Result<(), String> {
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(status_error(response.status()))
+        Err(status_error(
+            Source::Official(key.trim()),
+            response.status(),
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CDN 备用地址：原地址排第一，其余是同一路径的等价主机。
+    ///
+    /// 只换主机名、不动路径——这是「同一个已知地址的容错」与「构造新地址」之间的
+    /// 分界线，后者会越过作者的分布设置。
+    #[test]
+    fn cdn_alternates_keep_the_path_and_swap_hosts() {
+        let url = "https://edge.forgecdn.net/files/9323/500/jei.jar";
+        let alts = cdn_alternates(url);
+        assert_eq!(alts[0], url, "original must come first");
+        assert!(alts.len() >= 2, "expected at least one fallback host");
+        for candidate in &alts {
+            assert!(
+                candidate.ends_with("/files/9323/500/jei.jar"),
+                "path must be preserved: {candidate}"
+            );
+        }
+        // 去重：不该出现两个相同地址。
+        let mut unique = alts.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), alts.len());
+    }
+
+    #[test]
+    fn cdn_alternates_leave_unknown_hosts_alone() {
+        // 非 CDN 域名原样返回，不做任何替换。
+        let url = "https://example.com/files/a.jar";
+        assert_eq!(cdn_alternates(url), vec![url.to_owned()]);
+    }
 
     fn search_json() -> Vec<u8> {
         // 真实响应形状的裁剪版：两个有效条目 + 一个空名条目（应被丢弃）。
@@ -1041,7 +1771,7 @@ mod tests {
     fn paging_beyond_the_server_limit_is_refused_locally() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let result = runtime.block_on(search(
-            "$2a$10$abcdefghijklmnopqrstuv",
+            Source::from_key(Some("$2a$10$abcdefghijklmnopqrstuv")),
             ContentKind::Mod,
             "jei",
             None,
@@ -1050,5 +1780,229 @@ mod tests {
             50,
         ));
         assert!(result.is_err());
+    }
+
+    /// 没有 key 时必须走镜像，而不是「无法搜索」。
+    ///
+    /// 这条约束容易在重构里被破坏：只要有人在某个接口开头重新加一句
+    /// 「key 为空就返回错误」，CurseForge 面板就又变回需要开发者账号才能用。
+    #[test]
+    fn missing_key_selects_the_mirror() {
+        assert_eq!(Source::from_key(None), Source::Mirror);
+        assert_eq!(Source::from_key(Some("   ")), Source::Mirror);
+        assert_eq!(Source::from_key(Some("")), Source::Mirror);
+        assert_eq!(
+            Source::from_key(Some("$2a$10$abcdefghijklmnopqrstuv")),
+            Source::Official("$2a$10$abcdefghijklmnopqrstuv")
+        );
+    }
+
+    /// 凭据只能出现在官方入口上。
+    ///
+    /// 实测 MCIM 对附带无效 `x-api-key` 的请求返回 500 而不是忽略，所以这里不只
+    /// 是「会不会泄漏」，也是「发错了就直接坏掉」。
+    #[test]
+    fn only_the_official_source_carries_a_key() {
+        let key = "$2a$10$abcdefghijklmnopqrstuv";
+        assert_eq!(Source::Official(key).api_key(), Some(key));
+        assert_eq!(Source::Mirror.api_key(), None);
+    }
+
+    /// 两个入口指向不同主机，且镜像路径仍带 `/curseforge` 前缀。
+    #[test]
+    fn sources_point_at_their_own_hosts() {
+        let key = "$2a$10$abcdefghijklmnopqrstuv";
+        assert_eq!(Source::Official(key).base(), "https://api.curseforge.com");
+        assert_eq!(
+            Source::Mirror.base(),
+            "https://mod.mcimirror.top/curseforge"
+        );
+    }
+
+    fn fingerprint_json() -> Vec<u8> {
+        // 真实响应形状的裁剪版：两条命中 + 一条无 modId（应被丢弃）。
+        r#"{"data":{"exactMatches":[
+            {"id":9323500,"file":{
+                "id":9323500,"modId":238222,
+                "displayName":"JEI 15.74","fileName":"jei-1.20.1-fabric.jar",
+                "fileDate":"2024-08-01T00:00:00Z","fileLength":1234,
+                "downloadUrl":"https://edge.forgecdn.net/files/9323/500/jei.jar",
+                "hashes":[{"value":"e23ae7e4cbb5aa0d1a3b0e9df7c1a1b2c3d4e5f6","algo":1}],
+                "gameVersions":["1.20.1","Fabric"],
+                "fileFingerprint":1234567890}},
+            {"id":44,"file":{
+                "id":44,"modId":306612,
+                "displayName":"Sodium","fileName":"sodium.jar",
+                "fileDate":"2024-07-01T00:00:00Z","fileLength":99,
+                "downloadUrl":null,
+                "hashes":[],
+                "gameVersions":["1.20.1"],
+                "fileFingerprint":42}},
+            {"id":5,"file":{
+                "id":5,"modId":0,"fileName":"orphan.jar",
+                "fileFingerprint":7}}
+        ]}}"#
+            .as_bytes()
+            .to_vec()
+    }
+
+    #[test]
+    fn fingerprints_map_to_projects_and_keep_restricted_files() {
+        let parsed = parse_fingerprint_matches(&fingerprint_json()).unwrap();
+        assert_eq!(parsed.len(), 2, "没有 modId 的条目必须被丢弃");
+
+        let (fingerprint, first) = &parsed[0];
+        assert_eq!(*fingerprint, 1_234_567_890);
+        assert_eq!(first.project_id, "238222");
+        assert_eq!(first.file.file_name, "jei-1.20.1-fabric.jar");
+        assert!(first.file.url.is_some());
+        assert_eq!(first.file.loaders, vec!["Fabric"]);
+
+        // 作者禁止第三方分发：工程仍然识别出来了，但 URL 保持 None。
+        let (_, second) = &parsed[1];
+        assert_eq!(second.project_id, "306612");
+        assert_eq!(second.file.url, None);
+    }
+
+    #[test]
+    fn fingerprint_response_is_not_silently_empty_on_garbage() {
+        // 解析失败必须报错：返回空表会让界面显示「一个都没识别出来」。
+        assert!(parse_fingerprint_matches(b"not json").is_err());
+    }
+
+    fn projects_json() -> Vec<u8> {
+        r#"{"data":[
+            {"id":238222,"name":"Just Enough Items","slug":"jei","summary":"查看配方",
+             "latestFilesIndexes":[
+                {"gameVersion":"1.20.1","fileId":901,"filename":"jei-1.20.1-fabric.jar","modLoader":4},
+                {"gameVersion":"1.20.1","fileId":0,"filename":"broken.jar","modLoader":4},
+                {"gameVersion":"1.20.1","fileId":903,"filename":"","modLoader":4}
+             ]},
+            {"id":306612,"name":"Sodium","slug":"sodium","summary":"渲染优化"},
+            {"id":1,"name":"   ","slug":"blank","summary":""},
+            {"id":2,"name":"Bad Slug","slug":"../../etc/passwd","summary":""}
+        ]}"#
+        .as_bytes()
+        .to_vec()
+    }
+
+    #[test]
+    fn projects_become_titles_and_safe_urls() {
+        let parsed = parse_projects(&projects_json()).unwrap();
+        assert_eq!(parsed.len(), 3, "空名工程必须被丢弃");
+        assert_eq!(parsed["238222"].title, "Just Enough Items");
+        assert_eq!(
+            parsed["238222"].url,
+            "https://www.curseforge.com/minecraft/mc-mods/jei"
+        );
+        /*
+         * 带路径分隔符的 slug 会拼出另一个站点区域，必须退回只含数字的工程地址。
+         * 这条是安全边界，不是样式问题。
+         */
+        assert_eq!(parsed["2"].url, "https://www.curseforge.com/projects/2");
+    }
+
+    #[test]
+    fn latest_file_indexes_skip_malformed_entries() {
+        let parsed = parse_projects(&projects_json()).unwrap();
+        let latest = &parsed["238222"].latest_files;
+        // fileId 为 0、文件名为空的条目必须被丢掉：它们不能下载，也不能比较版本。
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].file_id, "901");
+        assert_eq!(latest[0].game_version, "1.20.1");
+        assert_eq!(latest[0].mod_loader, 4);
+        // 没有索引的工程给空表，而不是一个「存在但无效」的条目。
+        assert!(parsed["306612"].latest_files.is_empty());
+    }
+
+    #[test]
+    fn project_urls_never_contain_a_path_escape() {
+        // 把所有能想到的分隔符都过一遍：任何一个漏掉都会让链接指向别处。
+        for slug in ["a/b", "a\\b", "a?b", "a#b", "a b", "a:b", ""] {
+            let json =
+                format!(r#"{{"data":[{{"id":7,"name":"x","slug":{slug:?},"summary":""}}]}}"#);
+            let parsed = parse_projects(json.as_bytes()).unwrap();
+            let url = &parsed["7"].url;
+            assert!(
+                url == "https://www.curseforge.com/projects/7",
+                "slug {slug:?} must fall back, got {url}"
+            );
+        }
+    }
+
+    fn project_with_latest() -> CurseForgeProject {
+        CurseForgeProject {
+            project_id: "238222".into(),
+            slug: "jei".into(),
+            title: "Just Enough Items".into(),
+            summary: String::new(),
+            url: "https://www.curseforge.com/minecraft/mc-mods/jei".into(),
+            latest_files: vec![
+                CurseForgeFileIndex {
+                    game_version: "1.21.1".into(),
+                    file_id: "900".into(),
+                    file_name: "jei-1.21.1.jar".into(),
+                    mod_loader: 4,
+                },
+                CurseForgeFileIndex {
+                    game_version: "1.20.1".into(),
+                    file_id: "901".into(),
+                    file_name: "jei-1.20.1-fabric.jar".into(),
+                    mod_loader: 4,
+                },
+                CurseForgeFileIndex {
+                    game_version: "1.20.1".into(),
+                    file_id: "902".into(),
+                    file_name: "jei-1.20.1-forge.jar".into(),
+                    mod_loader: 1,
+                },
+                CurseForgeFileIndex {
+                    game_version: "1.20.1".into(),
+                    file_id: "903".into(),
+                    file_name: "jei-1.20.1-any.jar".into(),
+                    mod_loader: 0,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn latest_file_matches_game_version_and_loader_exactly() {
+        let project = project_with_latest();
+        // Fabric 实例：必须是 1.20.1 + Fabric，不能是 1.21.1，也不能是 Forge 那份。
+        let picked = pick_latest(&project, Some("1.20.1"), Some("fabric")).unwrap();
+        assert_eq!(picked.file_id, "901");
+        // Forge 实例拿到的是 Forge 的文件。
+        let picked = pick_latest(&project, Some("1.20.1"), Some("forge")).unwrap();
+        assert_eq!(picked.file_id, "902");
+    }
+
+    #[test]
+    fn loader_any_is_accepted_but_never_wrong_version() {
+        let mut project = project_with_latest();
+        // 只留一个标成 Any 的文件：它应当被接受（作者声明与加载器无关）。
+        project.latest_files = vec![CurseForgeFileIndex {
+            game_version: "1.20.1".into(),
+            file_id: "903".into(),
+            file_name: "jei-any.jar".into(),
+            mod_loader: 0,
+        }];
+        assert_eq!(
+            pick_latest(&project, Some("1.20.1"), Some("fabric"))
+                .unwrap()
+                .file_id,
+            "903"
+        );
+        // 版本不符时必须返回 None：跨版本安装会让游戏直接崩溃。
+        assert!(pick_latest(&project, Some("1.21.1"), Some("fabric")).is_none());
+    }
+
+    #[test]
+    fn latest_lookup_without_filters_takes_the_first_index() {
+        // 原版实例没有加载器可比：不筛加载器，也不因为缺少版本信息就报错。
+        let project = project_with_latest();
+        assert!(pick_latest(&project, None, None).is_some());
+        // 空字符串按「没给」处理，而不是按字面空版本去匹配。
+        assert!(pick_latest(&project, Some("  "), None).is_some());
     }
 }

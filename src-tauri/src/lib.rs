@@ -490,6 +490,7 @@ fn list_instances(
 fn create_instance(
     name: String,
     version: String,
+    loader: Option<String>,
     app: tauri::AppHandle,
     store: State<'_, LauncherStore>,
 ) -> Result<launcher_core::InstanceRecord, String> {
@@ -501,7 +502,7 @@ fn create_instance(
      * `create_instance`，把根目录的解析集中在那儿，漏传一处就不会出现
      * 「同一启动器建的实例分散在两个目录」。
      */
-    store
+    let record = store
         .create_instance(
             &CreateInstanceInput {
                 name,
@@ -509,7 +510,32 @@ fn create_instance(
             },
             &root,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    /*
+     * 加载器请求写进 `pack-loader.txt`，与整合包导入完全同一条通路。
+     *
+     * ## 为什么不在这一步直接装
+     *
+     * 装加载器要下载几十到几百 MB，Forge/NeoForge 还要跑几分钟的 Java processor。
+     * 把它塞进「创建实例」这个同步命令里，界面会卡在一个没有进度的等待上；而
+     * 失败时实例记录已经写进数据库，用户得到的是一句错误和一个状态不明的实例。
+     *
+     * 复用标记文件的好处是：`install_instance` 本来就会消费它（整合包导入正是
+     * 这样装加载器的），失败回滚、进度上报、状态流转全都是现成的。
+     *
+     * ## 为什么失败要删掉实例
+     *
+     * 标记写不进去说明实例目录不可写——那这个实例之后也装不了任何东西。留一条
+     * 永远无法安装的记录，用户只会以为启动器坏了。这里回滚到「什么都没发生」。
+     */
+    if let Some(request) = loader.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        if let Err(error) = management::request_pack_loader(&record, request) {
+            let _ = store.discard_uninstalled_instance(&record.id);
+            let _ = std::fs::remove_dir_all(&record.instance_dir);
+            return Err(error);
+        }
+    }
+    Ok(record)
 }
 
 #[tauri::command]
@@ -1387,6 +1413,7 @@ pub fn run() {
             curseforge::curseforge_clear_key,
             curseforge::curseforge_search,
             curseforge::curseforge_files,
+            curseforge::curseforge_identify_mods,
             curseforge::curseforge_install,
             curseforge::curseforge_download,
             management::search_mods,

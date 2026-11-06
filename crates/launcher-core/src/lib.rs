@@ -1,6 +1,7 @@
 pub mod backups;
 pub mod catalog;
 pub mod curseforge;
+pub mod curseforge_fingerprint;
 mod diagnostics;
 pub mod fabric_api;
 pub mod forge_install;

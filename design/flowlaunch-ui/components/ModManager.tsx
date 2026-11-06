@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Download,
+  Fingerprint,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
@@ -26,12 +27,14 @@ import { Button } from './Button';
 import { useI18n } from '../utils/i18n';
 import {
   checkModUpdates,
+  curseforgeIdentifyMods,
   errorText,
   formatBytes,
   inspectMods,
   listMods,
   setModEnabled,
   updateMod,
+  type IdentifiedMod,
   type ModFile,
   type ModIssue,
   type ModUpdateReport,
@@ -63,6 +66,15 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
   const [updating, setUpdating] = useState('');
   /** 用户是否已确认「把哈希发给 Modrinth」。点过之后本次页面内不再重复询问。 */
   const [hashConsent, setHashConsent] = useState(false);
+  /**
+   * 本地文件 → CurseForge 工程。`null` 表示还没查过。
+   *
+   * 与「检查更新」分开：识别只把哈希发给 CurseForge，且结果能直接改进列表的
+   * 可读性（文件名 → 工程名），所以由用户点一次「识别来源」触发，不自动跑——
+   * 一个几百模组的实例要读上 GB 的文件才算得出指纹。
+   */
+  const [sources, setSources] = useState<IdentifiedMod[] | null>(null);
+  const [identifying, setIdentifying] = useState(false);
 
   const refresh = useCallback(async () => {
     setState('loading');
@@ -83,6 +95,7 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
     setIssues(null);
     setUpdates(null);
     setHashConsent(false);
+    setSources(null);
   }, [instance.id]);
 
   const enabledCount = useMemo(() => files.filter(file => file.enabled).length, [files]);
@@ -106,6 +119,50 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
     });
     return map;
   }, [updates]);
+
+  /**
+   * 文件名 → CurseForge 来源。
+   *
+   * 用完整文件名做键（含 `.jar.disabled`）：后端扫描的也是 `list_mods` 的同一份
+   * 名字，两边口径一致。不能在这里自行去掉 `.disabled` 后缀去匹配——同一个模组
+   * 的启用版与停用版是两个不同的文件，混用会把停用版的信息挂到启用版上。
+   */
+  const sourceByFile = useMemo(() => {
+    const map = new Map<string, IdentifiedMod>();
+    (sources ?? []).forEach(item => map.set(item.fileName, item));
+    return map;
+  }, [sources]);
+
+  /**
+   * 识别本地模组的 CurseForge 来源。
+   *
+   * 这里不弹「会把哈希发出去吗」之类的二次确认：哈希是单向的、只用于反查，
+   * 而且真正需要披露的是「检查更新」那一步（它决定要不要下载）。识别只读不写，
+   * 多加一次确认只会让人放弃这个功能。
+   */
+  const runIdentify = async () => {
+    setIdentifying(true);
+    try {
+      /*
+       * 不再先查 key。
+       *
+       * 后端在没有 key 时会走 MCIM 镜像，仍然能识别来源。之前的「先查 key 再
+       * 决定是否继续」会让功能在有镜像的情况下也停在一个假的前提上：它假设
+       * 「没有 key 就识别不了」，而这条现在不成立了。
+       */
+      const found = await curseforgeIdentifyMods(instance.id);
+      setSources(found);
+      onNotice(
+        found.length === 0
+          ? t('mods.identifyNone')
+          : t('mods.identifyCount', { count: found.length }),
+      );
+    } catch (error) {
+      onNotice(errorText(error, '无法识别模组来源。'));
+    } finally {
+      setIdentifying(false);
+    }
+  };
 
   const toggle = async (file: ModFile) => {
     setToggling(file.fileName);
@@ -208,6 +265,15 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
           <Button
             size="sm"
             variant="ghost"
+            icon={<Fingerprint size={13} />}
+            loading={identifying}
+            onClick={() => void runIdentify()}
+          >
+            {t('mods.identify')}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
             icon={<ShieldCheck size={13} />}
             loading={inspecting}
             onClick={() => void runInspect()}
@@ -256,6 +322,7 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
         {files.map(file => {
           const fileIssues = issuesByFile.get(file.fileName) ?? [];
           const update = updateByFile.get(file.fileName);
+          const source = sourceByFile.get(file.fileName);
           return (
             <li key={file.fileName} className={`${styles.row} ${file.enabled ? '' : styles.rowDisabled}`}>
               <button
@@ -272,12 +339,46 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
                   : <ToggleLeft size={20} className={styles.toggleOff} />}
               </button>
 
-              <span className={styles.name} title={file.fileName}>{file.fileName}</span>
+              <span className={styles.name} title={file.fileName}>
+                {source ? (
+                  <>
+                    <a
+                      className={styles.sourceName}
+                      href={source.projectUrl}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      title={t('mods.openProject', { values: { name: source.projectTitle } })}
+                    >
+                      {source.projectTitle}
+                    </a>
+                    {/*
+                      文件名不隐藏：用户按文件名在文件管理器里找同一个 jar，
+                      只显示工程名会让这一步对不上。它作为次要信息跟在后面。
+                    */}
+                    <span className={styles.fileName}>{file.fileName}</span>
+                  </>
+                ) : (
+                  file.fileName
+                )}
+              </span>
 
               <span className={styles.size}>{formatBytes(file.size)}</span>
 
               <span className={styles.badges}>
                 {!file.enabled && <span className={styles.badgeMuted}>{t('mods.disabled')}</span>}
+                {source && <span className={styles.badgeSource}>{t('mods.sourceCurseForge')}</span>}
+                {source?.latest && (
+                  <span
+                    className={styles.badgeUpdate}
+                    title={t('mods.latestHint', {
+                      values: {
+                        version: source.latest.displayName || source.latest.fileName,
+                      },
+                    })}
+                  >
+                    {t('mods.latestShort')}
+                  </span>
+                )}
                 {fileIssues.length > 0 && (
                   <span className={styles.badgeWarn} title={fileIssues.map(i => i.message).join('\n')}>
                     {t('mods.issueFlag')}

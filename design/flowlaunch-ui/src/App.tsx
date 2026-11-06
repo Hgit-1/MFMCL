@@ -870,13 +870,28 @@ function App() {
    * `install_instance`。所以这里创建成功后就刷新列表并选中新实例，让用户立刻
    * 能在卡片上点「安装」，而不是被丢回一个看不出发生什么事的列表。
    */
-  const handleCreateInstance = useCallback(async (name: string, version: string) => {
-    const record = await createInstanceNative(name, version);
+  const handleCreateInstance = useCallback(async (
+    name: string,
+    version: string,
+    loader: string | null,
+  ) => {
+    const record = await createInstanceNative(name, version, loader);
     await refreshInstances();
     // 用后端返回的 id 精确定位，而不是按名字猜：同名实例是允许的。
     const mapped = toGameInstance(record);
     setSelectedInstance(mapped);
-    setToast(t('create.created', { values: { name: record.name } }));
+    /*
+     * 带加载器的实例建好后，加载器只是被「记下来」了——真正的下载发生在用户点
+     * 「安装」的时候（与整合包同一个流程）。这里如实说明，而不是给一个「已安装
+     * Fabric」的假象：那会让人以为可以立刻进游戏，而实际上连原版文件都还没有。
+     */
+    setToast(
+      loader
+        ? t('create.createdWithLoader', {
+            values: { name: record.name, loader: loader.split('@')[0] },
+          })
+        : t('create.created', { values: { name: record.name } }),
+    );
   }, [refreshInstances, t]);
 
   /**

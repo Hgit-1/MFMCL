@@ -130,9 +130,38 @@
 .toggleOff { color: var(--color-text-disabled); }
 
 .name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
   overflow: hidden;
   color: var(--color-text-primary);
   font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 识别出的工程名是主信息：用户认的是「JourneyMap」而不是 jar 名。 */
+.sourceName {
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sourceName:hover {
+  color: var(--color-primary-500);
+  text-decoration: underline;
+}
+
+/* 文件名降为次要信息，但仍然可见——用户要按它在文件管理器里找同一个 jar。 */
+.fileName {
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--color-text-disabled);
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -149,7 +178,9 @@
 }
 
 .badgeMuted,
-.badgeWarn {
+.badgeWarn,
+.badgeSource,
+.badgeUpdate {
   padding: 1px 7px;
   border-radius: 999px;
   font-size: 10px;
@@ -159,6 +190,25 @@
 .badgeMuted {
   background: color-mix(in srgb, var(--color-text-secondary) 16%, transparent);
   color: var(--color-text-secondary);
+}
+
+/*
+ * 来源标记用主色而不是灰：它表示「这条能被追踪、能点进主页」，
+ * 与「已停用」「有问题」这两类状态标记在语义上没有关系，混成同一种颜色
+ * 会让人误以为它也是警告。
+ */
+.badgeSource {
+  background: color-mix(in srgb, var(--color-primary-500) 14%, transparent);
+  color: color-mix(in srgb, var(--color-primary-500) 88%, var(--color-text-primary));
+}
+
+/*
+ * 「有新版本」用成功色（信息性），而不是警告色：更新是正常状态，
+ * 不是问题。用橙色会与「有问题」混淆，导致用户去检查一个并不存在的故障。
+ */
+.badgeUpdate {
+  background: color-mix(in srgb, var(--color-success-500) 15%, transparent);
+  color: color-mix(in srgb, var(--color-success-500) 85%, var(--color-text-primary));
 }
 
 .badgeWarn {

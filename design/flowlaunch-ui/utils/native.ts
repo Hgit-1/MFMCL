@@ -796,9 +796,13 @@ export async function listInstances(): Promise<InstanceRecord[]> {
   return invoke<InstanceRecord[]>('list_instances')
 }
 
-export async function createInstance(name: string, version: string): Promise<InstanceRecord> {
+export async function createInstance(
+  name: string,
+  version: string,
+  loader?: string | null,
+): Promise<InstanceRecord> {
   requireDesktop('创建实例')
-  return invoke<InstanceRecord>('create_instance', { name, version })
+  return invoke<InstanceRecord>('create_instance', { name, version, loader: loader ?? null })
 }
 export async function installInstance(instanceId: string): Promise<void> {
   requireDesktop('安装游戏文件')
@@ -1468,6 +1472,26 @@ export interface CurseForgeVersion {
   loaders: string[]
 }
 
+/**
+ * 本地文件与 CurseForge 工程的对应关系。
+ *
+ * 对应 Rust `IdentifiedMod`。「识别出来」不等于「能更新」：作者可能禁止第三方
+ * 分发（`version.url` 为 null），那种情况只能显示来源并提供页面地址。
+ */
+export interface IdentifiedMod {
+  /** 本地文件名（可能带 `.jar.disabled` 后缀）。 */
+  fileName: string
+  projectId: string
+  projectTitle: string
+  projectUrl: string
+  version: CurseForgeVersion
+  /**
+   * 同一工程针对此实例（游戏版本 + 加载器）的更新文件；`null` 表示已是最新
+   * 或无法判断。只用于提示，不带安装动作——替换文件走更新检查那条路径。
+   */
+  latest: CurseForgeVersion | null
+}
+
 export interface CurseForgeKeyStatus {
   configured: boolean
   /** 凭据库不可用时的原因（例如 Linux 没有 Secret Service）。 */
@@ -1525,6 +1549,17 @@ export async function curseforgeSearch(options: CurseForgeQuery): Promise<CurseF
     index: options.index ?? 0,
     pageSize: options.pageSize ?? 20,
   })
+}
+
+/**
+ * 按指纹识别实例里每个 mod jar 对应的 CurseForge 工程。
+ *
+ * 识别不出的文件不在结果里——那是「不在 CurseForge 上」，不是错误。没有配置
+ * key 时返回空数组，模组列表照常显示。
+ */
+export async function curseforgeIdentifyMods(instanceId: string): Promise<IdentifiedMod[]> {
+  if (!isDesktopShell()) return []
+  return invoke<IdentifiedMod[]>('curseforge_identify_mods', { instanceId })
 }
 
 export async function curseforgeFiles(

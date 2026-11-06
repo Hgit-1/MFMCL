@@ -19,16 +19,41 @@ import { Input } from './Input';
 import { Modal } from './Modal';
 import { useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
-import { errorText, listVersions, type VersionListItem } from '../utils/native';
+import {
+  errorText,
+  listVersions,
+  loaderVersions,
+  type LoaderKind,
+  type LoaderVersion,
+  type VersionListItem,
+} from '../utils/native';
 import { kindOfVersion, VERSION_KINDS, VERSION_KIND_KEYS } from '../utils/store/format';
 import type { VersionKind } from '../utils/store/types';
 import styles from './CreateInstanceDialog.module.css';
 
+/**
+ * 可选加载器，按「装机代价」排序：先给快的两个。
+ *
+ * 顺序不是随意的。Fabric / Quilt 发布的是 profile json，十几秒；Forge / NeoForge
+ * 要跑 installer 的 Java processor，几分钟。把便宜的先放，默认选择就是低成本的。
+ */
+const LOADER_KINDS: { id: LoaderKind; label: string; heavy: boolean }[] = [
+  { id: 'fabric', label: 'Fabric', heavy: false },
+  { id: 'quilt', label: 'Quilt', heavy: false },
+  { id: 'forge', label: 'Forge', heavy: true },
+  { id: 'neoforge', label: 'NeoForge', heavy: true },
+];
+
 interface CreateInstanceDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  /** 创建成功：父组件刷新实例列表并选中新实例。 */
-  onCreated: (name: string, version: string) => Promise<void> | void;
+  /**
+   * 创建成功。
+   *
+   * `loader` 形如 `fabric@0.16.10`；为 `null` 表示原版实例。父组件负责把它交给
+   * 后端（写进实例的加载器请求标记），装加载器本身发生在随后的安装流程里。
+   */
+  onCreated: (name: string, version: string, loader: string | null) => Promise<void> | void;
 }
 
 export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInstanceDialogProps) {
@@ -43,6 +68,18 @@ export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInsta
   const [submitting, setSubmitting] = useState(false);
   /** 用户是否手动改过名称。改过之后就不再自动跟随版本号覆盖。 */
   const nameTouched = useRef(false);
+
+  /*
+   * 加载器选择。
+   *
+   * `loaderKind === ''` 就是原版——把它做成「一个都不选」而不是额外的「原版」
+   * 卡片，是因为原版是默认结果：用户不需要为「不装加载器」专门点一下。
+   */
+  const [loaderKind, setLoaderKind] = useState<LoaderKind | ''>('');
+  const [loaderState, setLoaderState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [loaderList, setLoaderList] = useState<LoaderVersion[]>([]);
+  const [loaderVersion, setLoaderVersion] = useState('');
+  const [loaderError, setLoaderError] = useState('');
 
   // 每次打开都重新拉一次清单：Mojang 会发布新版本，缓存超过一次会话就没有意义。
   useEffect(() => {
@@ -71,9 +108,45 @@ export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInsta
     setQuery('');
     setSelected('');
     setKinds(['release']);
+    setLoaderKind('');
+    setLoaderList([]);
+    setLoaderVersion('');
+    setLoaderState('idle');
+    setLoaderError('');
     nameTouched.current = false;
     setSubmitting(false);
   }, [isOpen]);
+
+  /*
+   * 选定加载器后按「加载器 + 游戏版本」拉一次版本列表。
+   *
+   * 两个依赖缺一不可：加载器版本与 MC 版本强绑定（Forge 的 1.20.1 与 1.21.1 是
+   * 两套完全不同的版本号），换了任何一个旧列表都失效。
+   *
+   * 取消勾选加载器时不发请求，只清空——原版实例没有加载器版本可谈。
+   */
+  useEffect(() => {
+    if (!isOpen || !loaderKind || !selected) return;
+    let cancelled = false;
+    setLoaderState('loading');
+    setLoaderError('');
+    setLoaderList([]);
+    setLoaderVersion('');
+    void loaderVersions(loaderKind, selected)
+      .then(list => {
+        if (cancelled) return;
+        setLoaderList(list);
+        // 默认选第一个稳定版；没有稳定版时退回首项，而不是留空让用户多点一次。
+        setLoaderVersion((list.find(item => item.stable) ?? list[0])?.version ?? '');
+        setLoaderState('ready');
+      })
+      .catch(cause => {
+        if (cancelled) return;
+        setLoaderError(errorText(cause, '无法读取加载器版本。'));
+        setLoaderState('error');
+      });
+    return () => { cancelled = true; };
+  }, [isOpen, loaderKind, selected]);
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -101,10 +174,20 @@ export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInsta
     const trimmed = name.trim();
     if (!selected) { setError('请先选择一个游戏版本。'); return; }
     if (!trimmed) { setError('请填写实例名称。'); return; }
+    /*
+     * 选了加载器但版本还没读出来（或读取失败）时不允许提交。
+     *
+     * 否则会建出一个「用户以为带加载器、实际是原版」的实例——那比直接报错更糟，
+     * 因为界面上一切都显示正常，直到他装模组时才发现游戏里没有加载器。
+     */
+    if (loaderKind && !loaderVersion) {
+      setError(loaderState === 'loading' ? t('create.loaderPending') : t('create.loaderNoVersion'));
+      return;
+    }
     setSubmitting(true);
     setError('');
     try {
-      await onCreated(trimmed, selected);
+      await onCreated(trimmed, selected, loaderKind ? `${loaderKind}@${loaderVersion}` : null);
       onClose();
     } catch (cause) {
       setError(errorText(cause, '创建实例失败。'));
@@ -190,6 +273,95 @@ export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInsta
             );
           })}
         </div>
+
+        {/*
+          加载器选择。
+
+          ## 为什么放在这里，而不是等实例建好再去设置页
+
+          之前「新建实例」只问版本，建出来永远是原版。用户想装模组，得先发现实例
+          设置里有一张加载器卡片——而他建实例时完全没被提示过这件事。等他看到模组
+          列表是空的，才知道还要回去做一件从没提过的事。
+
+          ## 为什么不是「必须先选」
+
+          原版实例是合法且常见的：只玩原版、临时试一个新快照、给整合包当模板。
+          所以默认不选，加载器是一个可选的第二问，不是流程上的第二道门。
+
+          ## 为什么选完不在这里装
+
+          装加载器要下载几十到几百 MB，Forge/NeoForge 还要跑几分钟的 Java
+          processor。这个对话框只负责把选择记下来（写进实例的加载器请求标记），
+          真正的下载发生在随后的安装流程里——那里有进度条、可取消、失败有回滚。
+        */}
+        <fieldset className={styles.loaderBlock}>
+          <legend className={styles.loaderLegend}>{t('create.loader')}</legend>
+          <p className={styles.loaderHint}>{t('create.loaderHint')}</p>
+
+          <div className={styles.loaderKinds} role="radiogroup" aria-label={t('create.loader')}>
+            {/* 「不安装」本身是一个选项，而不是「什么都不点」：用户需要能明确改回原版。 */}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={loaderKind === ''}
+              className={`${styles.loaderChip} ${loaderKind === '' ? styles.loaderChipActive : ''}`}
+              onClick={() => setLoaderKind('')}
+              disabled={!selected}
+            >
+              <strong>{t('create.loaderNone')}</strong>
+              <small>{t('create.loaderNoneHint')}</small>
+            </button>
+            {LOADER_KINDS.map(item => {
+              const active = loaderKind === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  className={`${styles.loaderChip} ${active ? styles.loaderChipActive : ''}`}
+                  onClick={() => setLoaderKind(item.id)}
+                  disabled={!selected}
+                >
+                  <strong>{item.label}</strong>
+                  <small>
+                    {item.heavy ? t('create.loaderHeavy') : t('create.loaderLight')}
+                  </small>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* 没选游戏版本时加载器无从谈起：版本列表要按 MC 版本查。 */}
+          {!selected && <p className={styles.loaderNote}>{t('create.loaderPickVersion')}</p>}
+
+          {selected && loaderKind && (
+            <label className={styles.loaderSelect}>
+              <span>{t('loader.version')}</span>
+              {loaderState === 'loading' && <em className={styles.loaderNote}>{t('loader.detecting')}</em>}
+              {loaderState === 'error' && (
+                <em className={styles.loaderError} role="alert">{loaderError}</em>
+              )}
+              {loaderState === 'ready' && loaderList.length === 0 && (
+                <em className={styles.loaderNote}>
+                  {t('loader.noVersions', { values: { version: selected } })}
+                </em>
+              )}
+              {loaderState === 'ready' && loaderList.length > 0 && (
+                <select
+                  value={loaderVersion}
+                  onChange={event => setLoaderVersion(event.target.value)}
+                >
+                  {loaderList.map(item => (
+                    <option key={item.version} value={item.version}>
+                      {item.version}{item.stable ? '' : t('loader.beta')}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </label>
+          )}
+        </fieldset>
 
         {error && state !== 'error' && <p className={styles.error} role="alert">{error}</p>}
       </div>
