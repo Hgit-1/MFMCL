@@ -562,6 +562,8 @@ export const en: Record<MessageKey, string> = {
   'app.resumeFailed': 'Could not resume this task.',
   'app.fileProgressShowAll': 'Show all {count}',
   'app.fileProgressShowLess': 'Show less',
+  'app.showTaskFiles': 'Show file details',
+  'app.hideTaskFiles': 'Hide file details',
   'app.launchStagePreparing': 'Preparing to launch…',
   'app.launchStageAuthenticating': 'Verifying account…',
   'app.launchStageBuilding': 'Building launch arguments…',

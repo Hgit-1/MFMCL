@@ -573,6 +573,9 @@ export const zhCN = {
   'app.resumeFailed': '无法继续此任务。',
   'app.fileProgressShowAll': '展开全部 {count} 条',
   'app.fileProgressShowLess': '收起',
+  /* 任务卡上的文件明细展开按钮（图标按钮的读屏名）。 */
+  'app.showTaskFiles': '展开文件明细',
+  'app.hideTaskFiles': '收起文件明细',
   'app.launchStagePreparing': '正在准备启动…',
   'app.launchStageAuthenticating': '正在验证账户…',
   'app.launchStageBuilding': '正在构建启动参数…',

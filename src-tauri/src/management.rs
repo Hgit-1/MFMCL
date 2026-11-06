@@ -30,8 +30,18 @@ pub(crate) fn task_progress(
     let downloads = downloads.clone();
     let task = tauri::async_runtime::spawn(async move {
         while let Some(progress) = rx.recv().await {
-            downloads.progress(&id, &progress, &store, &app);
-            let _ = app.emit("download-progress", progress);
+            let task_id = downloads.progress(&id, &progress, &store, &app);
+            /*
+             * 事件带上任务归属。`progress` 在上一行已被借用，这里克隆一份后
+             * 连同 `task_id` 一起发出——两者必须成对，否则界面无法把文件行
+             * 挂到正确的任务卡片下。
+             */
+            let event = crate::downloads::ProgressEvent {
+                task_id: task_id.unwrap_or_default(),
+                instance_id: id.clone(),
+                progress,
+            };
+            let _ = app.emit("download-progress", event);
         }
     });
     (tx, task)

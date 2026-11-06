@@ -286,6 +286,17 @@ export interface DownloadProgress {
     completedBytes: number
     totalBytes: number | null
   } | null
+  /**
+   * 这条进度属于哪个任务记录。
+   *
+   * 引擎不知道自己在为哪个任务服务，那层映射在 Rust 的 `Downloads` 里；包装后
+   * 随事件发出。界面按它把文件行挂到对应任务卡片下，否则并发安装时两个任务的
+   * 文件会混成一份。
+   *
+   * 可选：旧后端不发这个字段，此时前端退回「全部归到当前任务」的旧行为。
+   */
+  taskId?: string
+  instanceId?: string
 }
 
 /** 对应 Rust `TaskEvent`（`installation-task` 事件载荷）。 */
@@ -2169,13 +2180,29 @@ const PREVIEW_DOWNLOAD_TASKS: DownloadTask[] = [
  * 4 个处于 downloading、1 个 verifying、1 个 completed：这样侧栏气泡应显示 4，
  * 下载页也能同时展示「正在传输」与「已校验完成」两种行，两者都能调外观。
  */
+/**
+ * 预览模式的文件级进度快照。
+ *
+ * ## 为什么每条都带 `taskId`
+ *
+ * 下载页现在把文件明细挂到对应任务卡片的展开区里，按 `taskId` 分组。预览数据如果
+ * 不带这个字段，就会走到「旧后端」的兼容分支——所有文件归到每一个任务，三个卡片
+ * 展开后显示完全相同的一批文件。那样既看不出分组效果，也和真实行为不符。
+ *
+ * 这里按预览任务的三个 id 分配：第一个任务（正在跑）拿到大部分在传的文件，第二个
+ * （已暂停）有一个自己的文件，第三个（已完成）全是已完成状态。
+ */
 const PREVIEW_FILE_PROGRESS: DownloadProgress[] = [
-  { artifactId: 'p-a1', label: 'assets/objects/1a/1a2b3c', received: 1_048_576, total: 2_097_152, source: 'bmclapi', stage: 'downloading' },
-  { artifactId: 'p-a2', label: 'libraries/com/mojang/brigadier.jar', received: 512_000, total: 890_000, source: 'official', stage: 'downloading' },
-  { artifactId: 'p-a3', label: 'assets/objects/7f/7f8e9d', received: 262_144, total: 1_048_576, source: 'bmclapi', stage: 'downloading' },
-  { artifactId: 'p-a4', label: 'natives/lwjgl-3.3.3-linux.jar', received: 786_432, total: 921_600, source: 'official', stage: 'downloading' },
-  { artifactId: 'p-a5', label: 'versions/1.21.1/client.jar', received: 24_000_000, total: 24_000_000, source: 'bmclapi', stage: 'verifying' },
-  { artifactId: 'p-a6', label: 'libraries/com/google/gson.jar', received: 286_000, total: 286_000, source: 'official', stage: 'completed' },
+  { taskId: 'preview-task-1', artifactId: 'p-a1', label: 'assets/objects/1a/1a2b3c', received: 1_048_576, total: 2_097_152, source: 'bmclapi', stage: 'downloading' },
+  { taskId: 'preview-task-1', artifactId: 'p-a2', label: 'libraries/com/mojang/brigadier.jar', received: 512_000, total: 890_000, source: 'official', stage: 'downloading' },
+  { taskId: 'preview-task-1', artifactId: 'p-a3', label: 'assets/objects/7f/7f8e9d', received: 262_144, total: 1_048_576, source: 'bmclapi', stage: 'downloading' },
+  { taskId: 'preview-task-1', artifactId: 'p-a4', label: 'natives/lwjgl-3.3.3-linux.jar', received: 786_432, total: 921_600, source: 'official', stage: 'downloading' },
+  { taskId: 'preview-task-1', artifactId: 'p-a5', label: 'versions/1.21.1/client.jar', received: 24_000_000, total: 24_000_000, source: 'bmclapi', stage: 'verifying' },
+  { taskId: 'preview-task-1', artifactId: 'p-a6', label: 'libraries/com/google/gson.jar', received: 286_000, total: 286_000, source: 'official', stage: 'completed' },
+  { taskId: 'preview-task-2', artifactId: 'p-b1', label: 'jei-1.20.1-forge.jar', received: 1_200_000, total: 1_500_000, source: 'modrinth', stage: 'connecting' },
+  { taskId: 'preview-task-3', artifactId: 'p-c1', label: 'versions/1.21.1/1.21.1.jar', received: 24_900_000, total: 24_900_000, source: 'bmclapi', stage: 'completed' },
+  { taskId: 'preview-task-3', artifactId: 'p-c2', label: 'libraries/net/minecraft/client.jar', received: 12_400_000, total: 12_400_000, source: 'official', stage: 'completed' },
+  { taskId: 'preview-task-3', artifactId: 'p-c3', label: 'assets/indexes/17.json', received: 512_000, total: 512_000, source: 'bmclapi', stage: 'completed' },
 ];
 
 export async function listDownloadTasks(): Promise<DownloadTask[]> {
