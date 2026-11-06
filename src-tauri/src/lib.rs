@@ -615,8 +615,13 @@ async fn install_instance(
     let event_downloads = downloads.inner().clone();
     let progress_task = tauri::async_runtime::spawn(async move {
         while let Some(progress) = rx.recv().await {
-            event_downloads.progress(&event_id, &progress, &event_store, &event_app);
-            let _ = event_app.emit("download-progress", progress);
+            let task_id = event_downloads.progress(&event_id, &progress, &event_store, &event_app);
+            let event = crate::downloads::ProgressEvent {
+                task_id: task_id.unwrap_or_default(),
+                instance_id: event_id.clone(),
+                progress,
+            };
+            let _ = event_app.emit("download-progress", event);
         }
     });
     let result = install_vanilla(

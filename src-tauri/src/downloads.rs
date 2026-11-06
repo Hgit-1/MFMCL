@@ -17,6 +17,28 @@ struct ActiveJob {
 #[derive(Default)]
 pub struct Downloads(Mutex<HashMap<String, ActiveJob>>);
 
+/// `download-progress` 事件载荷。
+///
+/// ## 为什么要在单文件进度上附带任务标识
+///
+/// 引擎只知道「哪个文件下到多少」，不知道自己在为哪个任务服务——那层映射在
+/// `Downloads` 里（按实例 id 索引）。界面要把文件行归到对应的任务卡片下，就必须
+/// 知道这条进度属于谁。
+///
+/// 加两个字段而不是改引擎：`DownloadProgress` 是下载引擎的通用类型，让它携带
+/// 界面概念（任务 id、任务标题）会把两层耦合起来。这里包装一层即可。
+///
+/// `task_id` 是**任务记录 id**（`DownloadTask::id`），不是实例 id：同一个实例
+/// 可以先后有不同的任务，按实例分组会把它们的文件混成一份。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressEvent {
+    pub task_id: String,
+    pub instance_id: String,
+    #[serde(flatten)]
+    pub progress: DownloadProgress,
+}
+
 /// 一次任务需要交给下载引擎的两样东西。
 ///
 /// 为什么合成一个返回值：控制句柄和进度累计器必须属于**同一个任务**。以前只返回
@@ -98,12 +120,12 @@ impl Downloads {
         progress: &DownloadProgress,
         store: &LauncherStore,
         app: &AppHandle,
-    ) {
+    ) -> Option<String> {
         let Ok(mut jobs) = self.0.lock() else {
-            return;
+            return None;
         };
         let Some(job) = jobs.get_mut(id) else {
-            return;
+            return None;
         };
         /*
          * 写进任务行的必须是**整体**进度，不是这一条事件里那个文件的进度。
@@ -135,6 +157,13 @@ impl Downloads {
             );
             job.last_saved = Instant::now();
         }
+        /*
+         * 把任务记录 id 交回调用方，供 `ProgressEvent` 标注归属。
+         *
+         * 界面按它把文件行挂到对应的任务卡片下；没有它就只能全局混排，而一次
+         * 并发安装里两个任务的文件会互相穿插，看起来像同一个任务在下别人的文件。
+         */
+        Some(job.task.id.clone())
     }
     pub fn finish(
         &self,

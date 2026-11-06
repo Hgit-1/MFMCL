@@ -950,6 +950,43 @@
 }
 
 /*
+ * 任务卡片内的文件明细区。
+ *
+ * 与任务主体之间用一条分隔线断开：明细是「这次安装的下钻细节」，不是任务状态的
+ * 一部分。没有这条线时，展开后文件行看起来像是任务的另一段元信息。
+ *
+ * 顶部内边距略大，让展开动作有一处呼吸；文件行之间用 6px 间距，与页面里其它
+ * 列表（`.taskList`）的密度对齐。
+ */
+.taskFiles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: var(--space-base);
+  padding-top: var(--space-base);
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.taskFilesHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.taskFilesTitle {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+/* 展开态：图标按钮给一层浅底，表示「这一块现在开着」。 */
+.iconButtonActive {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+/*
  * 图标按钮。
  *
  * 尺寸固定 32×32（与 `Button size="sm"` 同高），四个角不圆到像圆形按钮——那是

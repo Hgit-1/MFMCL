@@ -560,6 +560,8 @@ export const ja: Record<MessageKey, string> = {
   'app.resumeFailed': 'このタスクを再開できませんでした。',
   'app.fileProgressShowAll': '全 {count} 件を表示',
   'app.fileProgressShowLess': '折りたたむ',
+  'app.showTaskFiles': 'ファイル詳細を表示',
+  'app.hideTaskFiles': 'ファイル詳細を閉じる',
   'app.launchStagePreparing': '起動を準備しています…',
   'app.launchStageAuthenticating': 'アカウントを確認しています…',
   'app.launchStageBuilding': '起動引数を組み立てています…',

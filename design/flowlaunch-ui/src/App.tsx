@@ -269,16 +269,42 @@ const CancelIcon = () => (
   </svg>
 );
 
+/**
+ * 展开/收起箭头。
+ *
+ * 旋转 90° 而不是换成另一个图标（上箭头）：同一个图标的旋转变换让「状态」连续
+ * 可见，用户能看出这是同一个开关的两个位置，而不是两个不同的按钮。
+ *
+ * 用 CSS transition 走 `--motion-scale`，关闭动效时跟着变瞬时。
+ */
+const ChevronDownIcon = ({ open }: { open: boolean }) => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    focusable="false"
+    style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform var(--duration-fast) var(--ease)' }}
+  >
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+);
+
 /** 仍在进行中的任务状态。已完成/失败/取消的任务不再计入侧栏徽章。 */
 const ACTIVE_TASK_STATUSES: DownloadTask['status'][] = ['queued', 'downloading', 'verifying', 'installing'];
 
 /**
- * 「正在下载的文件」默认展开的行数。
+ * 单个任务的文件明细默认显示几行。
  *
  * 与保留上限（100 条）分开：保留是为了能回看「刚才下完了哪些」，默认只展开几条
- * 是为了不让这个区域把任务列表挤出视野。用户可以点「展开全部」看完整历史。
+ * 是为了不让明细区把任务列表挤出视野。用户可以点「展开全部」看完整历史。
  */
-const FILE_PROGRESS_VISIBLE = 4;
+const TASK_FILES_VISIBLE = 5;
 
 /**
  * 启动阶段 → 文案键。
@@ -601,9 +627,19 @@ function App() {
    * 内存信息不在这里缓存：`MemorySection` 自己会调 `get_system_memory`，再存一份
    * 就会出现两个来源，一个是刷新过的、一个是打开应用时的快照，反而容易不一致。
    */
-  const [progress, setProgress] = useState<Array<{ artifactId: string; label: string; received: number; total: number | null; source: string; stage: string }>>([]);
-  /** 「正在下载的文件」是否展开全部历史。默认收起，避免几百行把任务列表挤走。 */
-  const [showAllFileProgress, setShowAllFileProgress] = useState(false);
+  const [progress, setProgress] = useState<Array<{ artifactId: string; label: string; received: number; total: number | null; source: string; stage: string; taskId?: string }>>([]);
+  /**
+   * 哪些任务卡片的「文件明细」是展开的。
+   *
+   * 用任务 id 的集合而不是单个 id：并发安装两个实例时，用户可能想同时看两边的
+   * 文件在传什么。单个 id 只能展开一个，切过去就把另一个收起来。
+   *
+   * 默认全部收起。一次安装会经过几百个文件，全部铺开会把任务列表挤成一片文件
+   * 流水账——用户来这一页主要是看「装到哪了」，文件明细是追问时才要的细节。
+   */
+  const [expandedTaskDetails, setExpandedTaskDetails] = useState<Set<string>>(() => new Set());
+  /** 某个任务的文件明细是否展开全部历史（否则只显示最近几条）。 */
+  const [expandedTaskShowAll, setExpandedTaskShowAll] = useState<Set<string>>(() => new Set());
   /**
    * 当前正在传输的文件数（并行下载数）。
    *
@@ -840,10 +876,13 @@ function App() {
            * 保留 100 条而不是 60：真实安装里同时在跑的连接数默认就有 16 个，每个
            * 文件在排队前后都会出现一次，60 条只能覆盖几秒的历史，用户回看时中间
            * 全是断档。100 条足够看清「刚才下完了哪些」。
+           *
+           * `taskId` 一并保存：文件行要挂到对应任务卡片的展开区里。没有它就只能
+           * 全局混排，并发安装时两个任务的文件会互相穿插。
            */
           setProgress(current => {
             const next = current.filter(item => item.artifactId !== payload.artifactId);
-            return [...next, payload].slice(-100);
+            return [...next, { ...payload, taskId: payload.taskId }].slice(-100);
           });
         }),
         onGameProcess(payload => {
@@ -1226,14 +1265,38 @@ function App() {
   }, [context, loadInstanceSettings, selectedInstance]);
 
   /**
+   * 切换某个任务的文件明细展开状态。
+   *
+   * 用 `Set` 而不是单个 id，是为了让并发的多个任务可以同时展开——用户可能想看
+   * 两个实例各自在传什么。返回新 Set 而不是原地修改：React 靠引用变化判断重渲染。
+   */
+  const toggleTaskDetails = (taskId: string) => {
+    setExpandedTaskDetails(current => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  };
+
+  /** 切换某个任务明细的「显示全部 / 只看最近几条」。 */
+  const toggleTaskShowAll = (taskId: string) => {
+    setExpandedTaskShowAll(current => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  };
+
+  /**
    * 暂停或继续一个下载任务。
    *
    * 必须调用后端的 `control_download`：只把界面上那一行改成「已暂停」并不会真的
    * 停止传输，文件还在往下写。后端的状态会通过 `installation-task` 事件推回来，
    * 所以这里不本地改状态，避免界面领先于真实情况。
    */
-  const setTaskPaused = (taskId: string, paused: boolean) => {
-    const task = downloadTasks.find(item => item.id === taskId);
+  const setTaskPaused = (taskId: string, paused: boolean) => {    const task = downloadTasks.find(item => item.id === taskId);
     if (!task) return;
     if (!task.instanceId) {
       setToast(t(paused ? 'app.pauseFailed' : 'app.resumeFailed'));
@@ -2192,6 +2255,18 @@ function App() {
                   const percent = known ? Math.min(100, Math.round(((task.completedBytes ?? 0) / task.total!) * 100)) : task.progress;
                   const paused = task.status === 'paused';
                   const active = ACTIVE_TASK_STATUSES.includes(task.status);
+                  /*
+                   * 这个任务的文件行。
+                   *
+                   * 按 `taskId` 过滤，而不是拿全部进度：并发安装两个实例时，全局
+                   * 混排会让用户看到一个任务里出现别的实例的文件。
+                   *
+                   * 旧后端不发 `taskId` 时退回「全部归到当前任务」——那是加这个字段
+                   * 之前的行为，比什么都不显示更接近真相。
+                   */
+                  const taskFiles = progress.filter(item => item.taskId === undefined || item.taskId === task.id);
+                  const detailsOpen = expandedTaskDetails.has(task.id);
+                  const showAllFiles = expandedTaskShowAll.has(task.id);
                   return (
                     <Card key={task.id} padding="md">
                       <div className={styles.taskCard}>
@@ -2264,6 +2339,24 @@ function App() {
                             </button>
                           )}
                           {/*
+                            「文件明细」展开/收起。
+                            放在控制区最右：它和暂停/取消不是同一类动作——那两个改变
+                            任务状态，这个只改变这一页显示什么。用 chevron 而不是文字，
+                            与其它控制保持一致的图标语言。
+                          */}
+                          {taskFiles.length > 0 && (
+                            <button
+                              type="button"
+                              className={`${styles.iconButton} ${detailsOpen ? styles.iconButtonActive : ''}`}
+                              onClick={() => toggleTaskDetails(task.id)}
+                              aria-expanded={detailsOpen}
+                              aria-label={t(detailsOpen ? 'app.hideTaskFiles' : 'app.showTaskFiles')}
+                              title={t(detailsOpen ? 'app.hideTaskFiles' : 'app.showTaskFiles')}
+                            >
+                              <ChevronDownIcon open={detailsOpen} />
+                            </button>
+                          )}
+                          {/*
                             只对仍在进行中的任务显示「取消」。
                             已完成/失败/已取消的任务放一个灰掉的按钮，视觉上仍占位，
                             用户会反复去点它；这些状态下本来就没有可取消的动作，直接
@@ -2282,92 +2375,89 @@ function App() {
                           )}
                         </div>
                       </div>
+
+                      {/*
+                        文件明细：每个任务各自的展开区。
+
+                        ## 为什么挂在任务卡片里，而不是页面底部
+
+                        之前是一个全局的「正在下载的文件」列表。它答不上用户最关心的
+                        问题——「这些文件属于哪次安装」。并发安装两个实例时，两个任务
+                        的文件会混在同一个列表里，谁先谁后完全看事件到达顺序。
+
+                        现在每个任务有自己的展开区，文件归属明确；同时默认收起，所以
+                        任务列表的密度不变。
+
+                        ## 为什么是「单独点击展开」而不是默认展开
+
+                        一次安装经过几百个文件。默认铺开等于把这一页变成文件流水账，
+                        而用户来这里是看「装到哪了」。明细是追问时才要的细节。
+                      */}
+                      {detailsOpen && taskFiles.length > 0 && (
+                        <div className={styles.taskFiles}>
+                          {taskFiles.length > TASK_FILES_VISIBLE && (
+                            <div className={styles.taskFilesHeader}>
+                              <span className={styles.taskFilesTitle}>
+                                {t('app.fileProgressTitle')}
+                              </span>
+                              <button
+                                type="button"
+                                className={styles.fileProgressToggle}
+                                onClick={() => toggleTaskShowAll(task.id)}
+                                aria-expanded={showAllFiles}
+                              >
+                                {showAllFiles
+                                  ? t('app.fileProgressShowLess')
+                                  : t('app.fileProgressShowAll', { values: { count: taskFiles.length } })}
+                              </button>
+                            </div>
+                          )}
+                          {(showAllFiles ? taskFiles : taskFiles.slice(-TASK_FILES_VISIBLE)).reverse().map(item => {
+                            const fileKnown = item.total != null && item.total > 0;
+                            const pct = fileKnown ? Math.min(100, Math.round((item.received / item.total!) * 100)) : null;
+                            const stage = FILE_STAGE_META[item.stage] ?? FILE_STAGE_META.downloading;
+                            return (
+                              <div key={item.artifactId} className={styles.fileProgressRow}>
+                                <div className={styles.fileProgressTop}>
+                                  <span className={styles.fileProgressName} title={item.label}>
+                                    {item.label}
+                                  </span>
+                                  <span className={`${styles.fileStageTag} ${styles[stage.tagClass]}`}>
+                                    {t(stage.labelKey)}
+                                  </span>
+                                </div>
+                                <div className={styles.fileProgressBarRow}>
+                                  <div
+                                    className={`${styles.fileProgressBar} ${pct === null && item.stage !== 'completed' ? styles.fileProgressIndeterminate : ''}`}
+                                  >
+                                    <div
+                                      className={`${styles.fileProgressFill} ${styles[stage.fillClass]}`}
+                                      style={pct === null && item.stage !== 'completed' ? undefined : { width: `${pct ?? 0}%` }}
+                                    />
+                                  </div>
+                                  <span className={styles.fileProgressPct}>
+                                    {item.stage === 'completed' ? '100%' : pct === null ? '—' : `${pct}%`}
+                                  </span>
+                                </div>
+                                <div className={styles.fileProgressMeta}>
+                                  {item.source && <span>{item.source}</span>}
+                                  <span>
+                                    {fileKnown
+                                      ? `${formatBytes(item.received)} / ${formatBytes(item.total!)}`
+                                      : `${formatBytes(item.received)} / ${t('app.fileProgressUnknownTotal')}`}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </Card>
                   );
                 })}
               </div>
             )}
 
-            {/*
-              文件级进度。它不是任务列表的一部分：一个安装任务包含上百个文件，
-              放在任务行里会把列表冲垮。单独一段、保留最近 100 条，回答的是
-              「现在具体在下什么 / 刚才下完了哪些」这个问题。
-
-              每行按 PCL2 的 NetState 思路给出三件事：
-                - 阶段（连接中 / 下载中 / 校验中 / 已完成 / 失败）；
-                - 进度条（总量未知时给不确定态，而不是假装 0 或 100）；
-                - 已传/总量，让进度条有可读的数字支撑。
-              只写一行「official · 100%」看不出它在干什么，也看不出还剩多少。
-            */}
-            {progress.length > 0 && (
-              <div className={styles.taskList} aria-live="polite">
-                <div className={styles.fileProgressHeader}>
-                  <span className={styles.fileProgressTitle}>{t('app.fileProgressTitle')}</span>
-                  <span className={styles.fileProgressHeaderMeta}>
-                    <span className={styles.fileProgressCount}>
-                      {t('app.fileProgressParallel', { values: { count: parallelDownloads } })}
-                    </span>
-                    {/*
-                      保留 100 条历史，但默认只展开最近几条。
-                      一次安装会经过几百个文件，全铺开会把任务列表挤出视野；100 条
-                      只是「回看的上限」，不是默认要看的量。
-                    */}
-                    {progress.length > FILE_PROGRESS_VISIBLE && (
-                      <button
-                        type="button"
-                        className={styles.fileProgressToggle}
-                        onClick={() => setShowAllFileProgress(current => !current)}
-                        aria-expanded={showAllFileProgress}
-                      >
-                        {showAllFileProgress
-                          ? t('app.fileProgressShowLess')
-                          : t('app.fileProgressShowAll', { values: { count: progress.length } })}
-                      </button>
-                    )}
-                  </span>
-                </div>
-                {(showAllFileProgress ? progress.slice(-100) : progress.slice(-FILE_PROGRESS_VISIBLE)).reverse().map(item => {
-                  const known = item.total != null && item.total > 0;
-                  const pct = known ? Math.min(100, Math.round((item.received / item.total!) * 100)) : null;
-                  const stage = FILE_STAGE_META[item.stage] ?? FILE_STAGE_META.downloading;
-                  return (
-                    <div key={item.artifactId} className={styles.fileProgressRow}>
-                      <div className={styles.fileProgressTop}>
-                        <span className={styles.fileProgressName} title={item.label}>
-                          {item.label}
-                        </span>
-                        <span className={`${styles.fileStageTag} ${styles[stage.tagClass]}`}>
-                          {t(stage.labelKey)}
-                        </span>
-                      </div>
-                      <div className={styles.fileProgressBarRow}>
-                        <div
-                          className={`${styles.fileProgressBar} ${pct === null && item.stage !== 'completed' ? styles.fileProgressIndeterminate : ''}`}
-                        >
-                          <div
-                            className={`${styles.fileProgressFill} ${styles[stage.fillClass]}`}
-                            style={pct === null && item.stage !== 'completed' ? undefined : { width: `${pct ?? 0}%` }}
-                          />
-                        </div>
-                        <span className={styles.fileProgressPct}>
-                          {item.stage === 'completed'
-                            ? '100%'
-                            : pct === null ? '—' : `${pct}%`}
-                        </span>
-                      </div>
-                      <div className={styles.fileProgressMeta}>
-                        {item.source && <span>{item.source}</span>}
-                        <span>
-                          {known
-                            ? `${formatBytes(item.received)} / ${formatBytes(item.total!)}`
-                            : `${formatBytes(item.received)} / ${t('app.fileProgressUnknownTotal')}`}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </div>
         )}
         {/*
