@@ -79,11 +79,87 @@ struct State {
     drawn_width: usize,
     /// When the current line was last written (throttles redraws).
     last_draw: Instant,
-    last_label: String,
-    /// Whether a task-scoped summary has already been printed.
+    /// Whether a task line has been printed for the current task.
     task_running: bool,
-    /// The last whole-task numbers we printed, for change detection.
+    /// The last whole-task file counter, so a completed file is announced once.
     last_task_files: Option<(u32, u32)>,
+    /// Phase currently being announced, so a phase change prints one line.
+    phase: Option<Phase>,
+    /// The artifact label last printed as a permanent line.
+    last_artifact: String,
+    /// Bytes and time at the start of the task, for the closing summary.
+    task_started: Option<(Instant, u64)>,
+    /// Previous sample, for a smoothed transfer rate.
+    rate_sample: Option<(Instant, u64)>,
+    /// Exponentially smoothed rate in bytes per second.
+    smoothed_rate: f64,
+}
+
+impl State {
+    fn reset_task(&mut self) {
+        self.task_running = false;
+        self.last_task_files = None;
+        self.phase = None;
+        self.last_artifact.clear();
+        self.task_started = None;
+        self.rate_sample = None;
+        self.smoothed_rate = 0.0;
+    }
+}
+
+/// Which part of an install is running.
+///
+/// Derived from the artifact label because the installer emits one stream for
+/// three conceptually different jobs: the version's own files, the loader
+/// overlay, and (for packs) the imported contents. Splitting them is what lets
+/// the output say "获取 mod 依赖" instead of listing raw Maven coordinates
+/// under one undifferentiated heading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Client,
+    Assets,
+    Loader,
+    Mods,
+    Other,
+}
+
+impl Phase {
+    /// Classify by the label the installer already emits.
+    ///
+    /// The prefixes are the contract established in `launcher-core`: "依赖 " for
+    /// library coordinates, "Minecraft …" for the client jar, "日志配置" for the
+    /// log4j config, "资源索引"/"资源 " for asset files, and "加载器依赖 " for
+    /// the loader overlay.
+    fn of(label: &str) -> Self {
+        if label.starts_with("加载器") {
+            Self::Loader
+        } else if label.starts_with("资源 ") {
+            Self::Assets
+        } else if label.starts_with("依赖 ")
+            || label.starts_with("日志配置")
+            || label.starts_with("Minecraft ")
+            // The asset *index* is part of the client's own file set, not one of
+            // the thousands of asset objects. Grouping it with the assets made the
+            // phase flip back and forth at the start of an install.
+            || label.starts_with("资源索引")
+        {
+            Self::Client
+        } else if label.starts_with("模组") {
+            Self::Mods
+        } else {
+            Self::Other
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Client => "获取游戏文件",
+            Self::Assets => "获取资源文件",
+            Self::Loader => "获取加载器文件",
+            Self::Mods => "获取模组",
+            Self::Other => "获取文件",
+        }
+    }
 }
 
 pub struct TerminalSink {
@@ -99,9 +175,13 @@ impl TerminalSink {
                 drawn_width: 0,
                 // Start in the past so the first event draws immediately.
                 last_draw: Instant::now() - Duration::from_secs(1),
-                last_label: String::new(),
                 task_running: false,
                 last_task_files: None,
+                phase: None,
+                last_artifact: String::new(),
+                task_started: None,
+                rate_sample: None,
+                smoothed_rate: 0.0,
             }),
         }
     }
@@ -180,7 +260,68 @@ impl TerminalSink {
     }
 }
 
+/// One line of live progress, in the shape a package manager uses.
+///
+/// Kept as a pure function so the format can be asserted without a terminal:
+///
+/// ```text
+/// 已下载  47% [==========>          ] 412.3 MiB / 877.7 MiB  18.4 MiB/s  剩余 25s  71/3984
+/// ```
+///
+/// The percentage is right-aligned in three columns so the bar does not shift as
+/// digits are added, and an unknown total prints no percentage at all rather than
+/// a fabricated one.
+fn progress_line(
+    completed: u64,
+    total: Option<u64>,
+    per_second: f64,
+    eta: &str,
+    counter: Option<(u32, u32)>,
+    palette: &Palette,
+) -> String {
+    let percent = match total.filter(|total| *total > 0) {
+        Some(total) => format!(
+            "{:>3.0}%",
+            (completed as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+        ),
+        None => "  ?%".to_owned(),
+    };
+    let totals = match total.filter(|total| *total > 0) {
+        Some(total) => format!("{} / {}", output::bytes(completed), output::bytes(total)),
+        None => output::bytes(completed),
+    };
+    let speed = output::rate(per_second);
+    let mut line = format!(
+        "{} {percent} {} {totals}",
+        palette.dim("已下载"),
+        bar(completed, total, 24),
+    );
+    /*
+     * "剩余" is only meaningful while there is something left. It disappears when
+     * the byte count is complete *and* every file has been accounted for; checking
+     * only the bytes left "剩余 —" on the last file, which reads like an error next
+     * to a full bar.
+     */
+    let bytes_done = total.is_some_and(|total| total > 0 && completed >= total);
+    let files_done = counter.is_none_or(|(done, planned)| done >= planned);
+    if !(bytes_done && files_done) {
+        line.push_str(&format!(
+            "  {}  剩余 {}",
+            palette.dim(&speed),
+            palette.dim(eta)
+        ));
+    }
+    if let Some((done, planned)) = counter {
+        line.push_str(&palette.dim(&format!("  {done}/{planned} 个文件")));
+    }
+    line
+}
+
 /// Build a progress bar of `width` cells.
+///
+/// The `====>` shape is the one apt and dnf use: a filled run with a leading
+/// `>` while work remains, so a bar that is 99% done still looks different from a
+/// finished one.
 ///
 /// `None` renders an indeterminate bar rather than a fake percentage: a download
 /// whose total size is unknown must not pretend to be 60% done.
@@ -188,9 +329,22 @@ fn bar(completed: u64, total: Option<u64>, width: usize) -> String {
     let Some(total) = total.filter(|total| *total > 0) else {
         return format!("[{}]", "·".repeat(width));
     };
+    if width == 0 {
+        return "[]".to_owned();
+    }
     let filled = ((completed as f64 / total as f64) * width as f64).round() as usize;
     let filled = filled.min(width);
-    format!("[{}{}]", "#".repeat(filled), "-".repeat(width - filled))
+    if filled >= width {
+        format!("[{}]", "=".repeat(width))
+    } else if filled == 0 {
+        format!("[{}>{}]", "", " ".repeat(width.saturating_sub(1)))
+    } else {
+        format!(
+            "[{}>{}]",
+            "=".repeat(filled.saturating_sub(1)),
+            " ".repeat(width.saturating_sub(filled))
+        )
+    }
 }
 
 impl EventSink for TerminalSink {
@@ -213,51 +367,111 @@ impl EventSink for TerminalSink {
             Ok(state) => state,
             Err(_) => return,
         };
+        if state.task_started.is_none() {
+            state.task_started = Some((Instant::now(), completed));
+            state.rate_sample = Some((Instant::now(), completed));
+        }
 
         /*
-         * Redraw throttle. 10 fps is well past the point where the eye can follow
-         * a bar, and it keeps a 5 MB/s download from producing thousands of
-         * writes per second.
+         * Announce a new kind of file with a permanent line, like apt names the
+         * package being fetched. Only the *kind* is announced — printing one line
+         * per artifact would mean several thousand lines on a full install, which
+         * is exactly the noise this replaces.
          */
-        if state.last_draw.elapsed() < Duration::from_millis(100)
-            && progress.stage != download_engine::DownloadStage::Completed
-        {
+        let phase = Phase::of(&progress.label);
+        let phase_changed = state.phase != Some(phase);
+        let is_new_artifact = state.last_artifact != progress.label;
+        state.phase = Some(phase);
+
+        /*
+         * The rate is smoothed so the line does not flicker between "40 MiB/s" and
+         * "0 B/s" as individual files connect and finish. Weighting the new sample
+         * lightly keeps it responsive without chasing every gap.
+         */
+        let (smoothed, eta) = {
+            let now = Instant::now();
+            let mut rate = state.smoothed_rate;
+            if let Some((then, bytes_then)) = state.rate_sample {
+                let elapsed = now.duration_since(then).as_secs_f64();
+                // Sample every 500 ms: finer than that measures jitter, not speed.
+                if elapsed >= 0.5 && completed >= bytes_then {
+                    let instant = (completed - bytes_then) as f64 / elapsed;
+                    rate = if rate <= 0.0 {
+                        instant
+                    } else {
+                        rate * 0.7 + instant * 0.3
+                    };
+                    state.smoothed_rate = rate;
+                    state.rate_sample = Some((now, completed));
+                }
+            }
+            /*
+             * With the byte count complete but files still finishing (verification,
+             * atomic rename), there is no meaningful time estimate — but "—" next
+             * to a full bar reads like a failure. "收尾" says what is actually
+             * happening.
+             */
+            let eta = match total.filter(|total| *total > 0) {
+                Some(total) if completed < total => output::eta(total - completed, rate),
+                Some(_) => "收尾".to_owned(),
+                None => "—".to_owned(),
+            };
+            (rate, eta)
+        };
+
+        /*
+         * Throttle the in-place line to ~8 fps. Anything faster is invisible and
+         * costs a syscall per refresh.
+         */
+        let finished = progress.stage == download_engine::DownloadStage::Completed;
+        if !finished && state.last_draw.elapsed() < Duration::from_millis(120) {
             return;
         }
         state.last_draw = Instant::now();
 
-        let label = output::truncate(&progress.label, 40);
-        let detail = output::progress_text(completed, total);
-        let text = if self.options.interactive {
-            let bar = bar(completed, total, 20);
-            format!(
-                "{} {bar} {detail}  {}",
-                self.options.palette.cyan("↓"),
-                self.options.palette.dim(&label)
-            )
-        } else {
-            format!("↓ {label}  {detail}")
+        let palette = self.options.palette;
+        let counter = match progress.task {
+            Some(task) if task.files > 0 => Some((task.completed_files, task.files)),
+            _ => None,
         };
+        let line = progress_line(completed, total, smoothed, &eta, counter, &palette);
 
         if self.options.interactive {
-            let width = output::display_width(&text);
-            let mut stderr = std::io::stderr();
-            /*
-             * Pad with spaces when the new line is shorter than the old one, or
-             * the tail of the previous label stays visible.
-             */
+            let width = output::display_width(&line);
             let padding = state.drawn_width.saturating_sub(width);
-            let _ = write!(stderr, "\r{text}{}", " ".repeat(padding));
+            let mut stderr = std::io::stderr();
+            let _ = write!(stderr, "\r{line}{}", " ".repeat(padding));
             let _ = stderr.flush();
             state.drawn_width = width;
-        } else if state.last_label != label {
-            // Non-interactive output cannot rewrite, so it prints a new line only
-            // when the file changes. Otherwise a 300-file install emits 300 lines
-            // that differ only in digits.
+        } else if phase_changed {
+            /*
+             * A redirected stream cannot rewrite a line, so the apt shape is
+             * impossible. Printing one line per file would put several thousand
+             * lines in a log; printing one line per *phase*, with the running
+             * total and the file count, keeps the log readable and still says
+             * where the install is.
+             */
             let mut stderr = std::io::stderr();
-            let _ = writeln!(stderr, "{text}");
+            let counter = match progress.task {
+                Some(task) if task.files > 0 => {
+                    format!("（{}/{} 个文件）", task.completed_files, task.files)
+                }
+                _ => String::new(),
+            };
+            let totals = match total.filter(|total| *total > 0) {
+                Some(total) => format!("{} / {}", output::bytes(completed), output::bytes(total)),
+                None => output::bytes(completed),
+            };
+            let _ = writeln!(
+                stderr,
+                "{} {}{counter}  {totals}",
+                palette.cyan("↓"),
+                phase.title()
+            );
             let _ = stderr.flush();
-            state.last_label = label;
+        }
+        if is_new_artifact {
+            state.last_artifact = progress.label.clone();
         }
     }
 
@@ -266,10 +480,6 @@ impl EventSink for TerminalSink {
             return;
         }
         let task = &event.task;
-        let files = task
-            .completed_files
-            .zip(task.files)
-            .filter(|(_, planned)| *planned > 0);
         let mut state = match self.state.lock() {
             Ok(state) => state,
             Err(_) => return,
@@ -278,26 +488,20 @@ impl EventSink for TerminalSink {
         match task.state {
             launcher_core::DownloadTaskState::Running => {
                 /*
-                 * Announce the task once, then only print a line when the file
-                 * counter advances. Without this the task card and the per-file
-                 * line would both update and the output would be redundant.
+                 * One heading per task, printed once. Per-file lines are the
+                 * download stream's job; printing a file counter here as well
+                 * would put two changing lines on the same screen.
                  */
                 if !state.task_running {
                     state.task_running = true;
-                    state.last_task_files = files;
-                    let palette = &self.options.palette;
+                    state.task_started = Some((Instant::now(), task.completed_bytes));
+                    let palette = self.options.palette;
                     drop(state);
-                    self.line(&format!("{} {}", palette.cyan("任务"), task.label));
-                } else if files != state.last_task_files {
-                    state.last_task_files = files;
-                    if let Some((done, planned)) = files {
-                        let palette = &self.options.palette;
-                        drop(state);
-                        self.line(&format!(
-                            "  {} {done}/{planned} 个文件",
-                            palette.dim("已下载")
-                        ));
-                    }
+                    /*
+                     * The label already carries the verb ("安装 1.21.1", "补全 fab"),
+                     * so it is printed as-is. Prefixing it printed "安装 安装 1.21.1".
+                     */
+                    self.line(&palette.bold(&task.label));
                 }
             }
             launcher_core::DownloadTaskState::Paused => {
@@ -305,14 +509,47 @@ impl EventSink for TerminalSink {
                 drop(state);
                 self.line(&format!("{} 任务已暂停", self.options.palette.yellow("‖")));
             }
-            launcher_core::DownloadTaskState::Completed
-            | launcher_core::DownloadTaskState::Failed
+            launcher_core::DownloadTaskState::Completed => {
+                /*
+                 * The closing summary, in the shape a package manager prints after
+                 * a successful operation: what was transferred and how fast. The
+                 * command still prints its own result table afterwards; this answers
+                 * "how much did that cost me".
+                 */
+                let elapsed = state
+                    .task_started
+                    .map(|(start, _)| start.elapsed().as_secs_f64())
+                    .unwrap_or(0.0);
+                let bytes = task.completed_bytes;
+                let rate = if elapsed > 0.0 {
+                    bytes as f64 / elapsed
+                } else {
+                    0.0
+                };
+                state.reset_task();
+                let palette = self.options.palette;
+                drop(state);
+                let mut summary =
+                    format!("{} 已获取 {}", palette.green("完成"), output::bytes(bytes));
+                if let (Some(done), Some(planned)) = (task.completed_files, task.files) {
+                    summary.push_str(&format!("，{done}/{planned} 个文件"));
+                }
+                summary.push_str(&format!(
+                    "，用时 {}（平均 {}）",
+                    output::duration(elapsed),
+                    output::rate(rate)
+                ));
+                self.line(&summary);
+            }
+            launcher_core::DownloadTaskState::Failed
             | launcher_core::DownloadTaskState::Cancelled
             | launcher_core::DownloadTaskState::Interrupted => {
-                // The final verdict is printed by the command itself, with the
-                // instance name and next steps. Printing it here would duplicate
-                // it and, in `--quiet`, contradict the silence.
-                state.task_running = false;
+                /*
+                 * The final verdict belongs to the command, which knows the
+                 * instance name and the next step. Only the state is cleared so a
+                 * retry starts from a clean slate.
+                 */
+                state.reset_task();
             }
         }
     }
@@ -407,12 +644,101 @@ mod tests {
     }
 
     #[test]
-    fn a_known_total_fills_proportionally() {
-        assert_eq!(bar(0, Some(100), 4), "[----]");
-        assert_eq!(bar(50, Some(100), 4), "[##--]");
-        assert_eq!(bar(100, Some(100), 4), "[####]");
+    fn a_known_total_fills_with_an_apt_style_head() {
+        // The `>` moves left to right and disappears only when the bar is full, so
+        // "almost done" never looks identical to "done".
+        assert_eq!(bar(0, Some(100), 4), "[>   ]");
+        assert_eq!(bar(50, Some(100), 4), "[=>  ]");
+        assert_eq!(bar(75, Some(100), 4), "[==> ]");
+        assert_eq!(bar(100, Some(100), 4), "[====]");
         // Rounding must never overflow the bar.
-        assert_eq!(bar(101, Some(100), 4), "[####]");
+        assert_eq!(bar(101, Some(100), 4), "[====]");
+    }
+
+    #[test]
+    fn a_zero_width_bar_does_not_panic() {
+        assert_eq!(bar(50, Some(100), 0), "[]");
+    }
+
+    #[test]
+    fn the_progress_line_keeps_a_fixed_shape() {
+        let palette = Palette::new(false);
+        let line = progress_line(
+            412 * 1024 * 1024,
+            Some(878 * 1024 * 1024),
+            19_400_000.0,
+            "25s",
+            Some((71, 3984)),
+            &palette,
+        );
+        // Fixed columns: the bar must not move as the percentage gains a digit.
+        assert!(line.starts_with("已下载  47% [==========>"), "got {line}");
+        assert!(line.contains("412.0 MiB / 878.0 MiB"), "got {line}");
+        assert!(line.contains("18.5 MiB/s"), "got {line}");
+        assert!(line.ends_with("剩余 25s  71/3984 个文件"), "got {line}");
+    }
+
+    #[test]
+    fn a_finished_line_drops_the_meaningless_remaining_estimate() {
+        let palette = Palette::new(false);
+        let line = progress_line(524288, Some(524288), 0.0, "—", Some((3984, 3984)), &palette);
+        // A full bar with "剩余 —" reads like a failure; it must not appear.
+        assert!(!line.contains("剩余"), "got {line}");
+        assert!(line.contains("100%"), "got {line}");
+        assert!(line.ends_with("3984/3984 个文件"), "got {line}");
+    }
+
+    #[test]
+    fn remaining_stays_visible_until_the_last_file_is_counted() {
+        let palette = Palette::new(false);
+        // All bytes transferred, one file still finishing: still in progress.
+        let line = progress_line(
+            524288,
+            Some(524288),
+            0.0,
+            "2s",
+            Some((3983, 3984)),
+            &palette,
+        );
+        assert!(line.contains("剩余 2s"), "got {line}");
+    }
+
+    #[test]
+    fn an_unknown_total_shows_no_percentage_instead_of_zero() {
+        let palette = Palette::new(false);
+        let line = progress_line(2048, None, 0.0, "—", None, &palette);
+        // A bar with no denominator is indeterminate, and "0%" would be a claim.
+        assert!(line.contains("  ?%"), "got {line}");
+        assert!(line.contains('·'), "got {line}");
+        assert!(!line.contains("剩余 —  0/"), "got {line}");
+    }
+
+    #[test]
+    fn the_percentage_column_does_not_shift_between_digits() {
+        let palette = Palette::new(false);
+        let one = progress_line(9, Some(1000), 0.0, "—", None, &palette);
+        let two = progress_line(99, Some(1000), 0.0, "—", None, &palette);
+        let three = progress_line(999, Some(1000), 0.0, "—", None, &palette);
+        // Every line puts "[", at the same column because the width is padded.
+        let col = |s: &str| s.find('[').unwrap();
+        assert_eq!(col(&one), col(&two));
+        assert_eq!(col(&two), col(&three));
+    }
+
+    #[test]
+    fn phases_are_derived_from_the_installer_labels() {
+        // These prefixes are the contract with `launcher-core`; if a label is
+        // renamed there, this test is what notices.
+        assert_eq!(Phase::of("Minecraft 1.21.1 客户端"), Phase::Client);
+        assert_eq!(Phase::of("依赖 com.ibm.icu:icu4j:73.2"), Phase::Client);
+        assert_eq!(Phase::of("日志配置 client-1.12.xml"), Phase::Client);
+        assert_eq!(Phase::of("资源索引 17"), Phase::Client);
+        assert_eq!(Phase::of("资源 minecraft/sounds/a.ogg"), Phase::Assets);
+        assert_eq!(
+            Phase::of("加载器依赖 net.fabricmc:fabric-loader"),
+            Phase::Loader
+        );
+        assert_eq!(Phase::of("something else"), Phase::Other);
     }
 
     #[test]

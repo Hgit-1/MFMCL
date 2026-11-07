@@ -134,6 +134,58 @@ pub fn progress_text(completed: u64, total: Option<u64>) -> String {
     }
 }
 
+/// A transfer rate, in the units people read network speeds in.
+///
+/// `B/s` for slow transfers and `MiB/s` for fast ones, because "0.0 MiB/s" is
+/// useless when a small metadata file is trickling in.
+pub fn rate(bytes_per_second: f64) -> String {
+    if !bytes_per_second.is_finite() || bytes_per_second <= 0.0 {
+        return "—".to_owned();
+    }
+    if bytes_per_second < 1024.0 {
+        format!("{bytes_per_second:.0} B/s")
+    } else {
+        format!("{}/s", bytes(bytes_per_second as u64))
+    }
+}
+
+/// A countdown, bounded so a stalled transfer does not print a day.
+///
+/// Clamped at 99 minutes: past that the estimate is derived from a rate that has
+/// already decayed, and a precise-looking "1h 47m" would be false confidence.
+pub fn eta(remaining_bytes: u64, bytes_per_second: f64) -> String {
+    if !bytes_per_second.is_finite() || bytes_per_second <= 0.0 {
+        return "—".to_owned();
+    }
+    let seconds = (remaining_bytes as f64 / bytes_per_second).ceil();
+    if !seconds.is_finite() || seconds < 0.0 {
+        return "—".to_owned();
+    }
+    let seconds = seconds.min(99.0 * 60.0) as u64;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60)
+    }
+}
+
+/// An elapsed duration, in the compact form a summary line wants.
+pub fn duration(seconds: f64) -> String {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return "—".to_owned();
+    }
+    let seconds = seconds as u64;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60)
+    }
+}
+
 /// Strip the timezone from an RFC 3339 timestamp for display.
 ///
 /// Records are stored in UTC with an offset; showing `2026-11-07T05:03:11+00:00`
@@ -458,5 +510,37 @@ mod tests {
     fn timestamp_falls_back_for_unparsable_values() {
         assert_eq!(timestamp("not a date"), "not a date");
         assert_eq!(timestamp("2026-11-07T05:03:11+00:00"), "2026-11-07 05:03");
+    }
+
+    #[test]
+    fn rates_use_the_unit_that_keeps_the_number_readable() {
+        assert_eq!(rate(512.0), "512 B/s");
+        assert_eq!(rate(1024.0), "1.0 KiB/s");
+        assert_eq!(rate(19_400_000.0), "18.5 MiB/s");
+        // A stalled or not-yet-measured rate must not print "0 B/s", which reads
+        // as a broken transfer rather than an unknown one.
+        assert_eq!(rate(0.0), "—");
+        assert_eq!(rate(f64::NAN), "—");
+        assert_eq!(rate(-5.0), "—");
+    }
+
+    #[test]
+    fn etas_are_bounded_and_never_negative() {
+        assert_eq!(eta(1000, 1000.0), "1s");
+        assert_eq!(eta(90_000, 1000.0), "1m 30s");
+        assert_eq!(eta(3_900_000, 1000.0), "1h 05m");
+        // An unknown rate has no meaningful estimate.
+        assert_eq!(eta(1000, 0.0), "—");
+        // A year's worth of remaining bytes clamps instead of printing "8760h".
+        assert_eq!(eta(u64::MAX, 1.0), "1h 39m");
+        assert_eq!(eta(u64::MAX, f64::INFINITY), "—");
+    }
+
+    #[test]
+    fn durations_are_compact() {
+        assert_eq!(duration(0.0), "0s");
+        assert_eq!(duration(59.9), "59s");
+        assert_eq!(duration(125.0), "2m 05s");
+        assert_eq!(duration(3725.0), "1h 02m");
     }
 }
