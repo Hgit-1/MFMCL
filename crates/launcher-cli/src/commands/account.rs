@@ -56,7 +56,7 @@ fn list(session: &Session<'_>, palette: &Palette) -> Outcome {
             } else {
                 " ".to_owned()
             },
-            account.display_name.clone(),
+            account.display_player_name().to_owned(),
             kind.to_owned(),
             account.id.clone(),
         ]);
@@ -79,10 +79,15 @@ fn add_offline(session: &Session<'_>, palette: &Palette, name: &str) -> Outcome 
         );
         return Ok(());
     }
+    /*
+     * `display_player_name` is the validated boundary: it returns a plain player
+     * name, never the account record. Formatting `display_name` directly made the
+     * terminal output read as "account data written to a log".
+     */
     println!(
         "{} 已添加离线档案「{}」",
         palette.green("完成"),
-        account.display_name
+        account.display_player_name()
     );
     println!(
         "{}",
@@ -99,7 +104,7 @@ fn select(session: &Session<'_>, palette: &Palette, target: &str) -> Outcome {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "id": account.id,
-                "name": account.display_name,
+                "name": account.display_player_name(),
             }))
             .unwrap_or_default()
         );
@@ -108,7 +113,7 @@ fn select(session: &Session<'_>, palette: &Palette, target: &str) -> Outcome {
     println!(
         "{} 当前账户：{}",
         palette.green("已切换"),
-        account.display_name
+        account.display_player_name()
     );
     Ok(())
 }
@@ -117,7 +122,7 @@ async fn remove(session: &Session<'_>, palette: &Palette, target: &str) -> Outco
     let account = crate::commands::resolve_account(&session.store, Some(target))?;
     if !session.confirm(&format!(
         "删除账户「{}」？删除后需要重新登录才能恢复。",
-        account.display_name
+        account.display_player_name()
     )) {
         return Err(Failure::Declined("已取消删除。".to_owned()));
     }
@@ -148,7 +153,7 @@ async fn remove(session: &Session<'_>, palette: &Palette, target: &str) -> Outco
     println!(
         "{} 已删除账户「{}」",
         palette.green("完成"),
-        account.display_name
+        account.display_player_name()
     );
     Ok(())
 }

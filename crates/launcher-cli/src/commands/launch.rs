@@ -42,7 +42,7 @@ pub async fn run(session: &Session<'_>, args: &LaunchArgs) -> Outcome {
      * a GUI shows a dialog for the same flag.
      */
     if account.kind == AccountKind::Offline && !args.offline_ok {
-        let name = &account.display_name;
+        let name = account.display_player_name();
         let accepted = session.confirm(&format!(
             "离线档案「{name}」不验证 Minecraft 正版所有权，仅适用于单人或已授权的服务器。继续启动？"
         ));
