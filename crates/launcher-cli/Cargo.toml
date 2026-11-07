@@ -1,0 +1,30 @@
+[package]
+name = "mfmcl-cli"
+version.workspace = true
+edition.workspace = true
+description = "Command-line frontend for MFMCL"
+
+[[bin]]
+name = "mfmcl"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "wrap_help"] }
+chrono.workspace = true
+download-engine = { path = "../download-engine" }
+launcher-core = { path = "../launcher-core" }
+launcher-runtime = { path = "../launcher-runtime" }
+mc-metadata = { path = "../mc-metadata" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Only for `SetConsoleOutputCP`: keeping Chinese output readable on a console whose
+# default code page is 936. See `src/console.rs`.
+windows-sys = { version = "0.60", features = ["Win32_System_Console"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -30,7 +30,7 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
-      - run: cargo test -p mc-metadata -p download-engine -p launcher-core -p launcher-auth
+      - run: cargo test -p mc-metadata -p download-engine -p launcher-core -p launcher-auth -p launcher-runtime -p mfmcl-cli
       - run: cargo check -p launcher-auth --features native-credentials
 
   desktop-compile:

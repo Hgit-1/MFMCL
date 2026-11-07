@@ -27,6 +27,8 @@ Android, iOS, and HarmonyOS local game execution remain documentation-only in [`
 
 See [`docs/BUILDING.md`](docs/BUILDING.md) for prerequisites, frontend preview, tests, and native desktop builds. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for module and trust boundaries, and [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) for distribution constraints.
 
+A command-line frontend is available as `mfmcl`: see [`docs/CLI.md`](docs/CLI.md). It shares the desktop application's data directory, instances, and accounts.
+
 Signing in with a Microsoft account needs your own application client ID; [`docs/MICROSOFT_LOGIN.md`](docs/MICROSOFT_LOGIN.md) walks through registering one and the Minecraft-services approval that goes with it.
 
 Handing the project to someone else (or moving it to another machine): [`HANDOFF.md`](HANDOFF.md) covers what to carry over, what to regenerate, and the credentials that end up inside builds.
