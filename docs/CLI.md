@@ -80,10 +80,41 @@ would delete something declines unless `--yes` is passed. Silence is not consent
 `--json` affects stdout only. Progress and narration always go to stderr, so
 `mfmcl list instances --json | jq` cannot be broken by a progress bar.
 
-`--quiet` suppresses progress but keeps errors and the final result.
+### Download progress
+
+`download` reports progress the way a package manager does, rather than printing a
+line per file:
+
+```text
+安装 1.21.1
+已下载  47% [==========>          ] 412.3 MiB / 877.7 MiB  18.4 MiB/s  剩余 25s  71/3984 个文件
+```
+
+The progress line is rewritten in place (about eight times a second), so a full
+1.21.1 install occupies one row of the terminal instead of several thousand. The
+bar uses the `====>` shape so "almost done" never looks identical to "done".
+While files are still being verified after the last byte arrives, the estimate
+reads `收尾` instead of a misleading `—`.
+
+The line shows the **whole task** — total bytes and file count across the entire
+install — not the current file. A per-file figure drops to zero at every file
+boundary and reads as if the install restarted.
+
+When stderr is not a terminal (a pipe, a log file, CI), in-place rewriting is
+impossible, so the output switches to one line per phase plus a closing summary:
+
+```text
+安装 1.21.1
+↓ 获取游戏文件（1/73 个文件）  964 B / 89.7 MiB
+↓ 获取资源文件（73/3984 个文件）  89.7 MiB / 877.7 MiB
+完成 已获取 877.7 MiB，3984/3984 个文件，用时 4m 22s（平均 3.3 MiB/s）
+```
+
+`--quiet` suppresses all of it; errors and the final result still print.
 
 `--colour auto|always|never` controls ANSI colour. `NO_COLOR` is honoured, and a
-redirected stdout never receives escapes.
+redirected stdout never receives escapes. `TERM=dumb` also disables colour and
+in-place redrawing, on the assumption that the terminal cannot handle them.
 
 On Windows the console output code page is switched to UTF-8 so Chinese text is
 readable with the default Chinese console settings. Redirected output is written as
