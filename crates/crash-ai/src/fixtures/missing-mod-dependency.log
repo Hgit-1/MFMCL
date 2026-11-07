@@ -1,0 +1,12 @@
+[15:20:31] [main/INFO]: Loading Minecraft 1.20.1 with Fabric Loader 0.15.3
+[15:20:38] [main/WARN]: Mod resolution failed
+[15:20:38] [main/INFO]: Immediate reason: [HARD_DEP_NO_CANDIDATE] notenoughcrashes 5.0.0+1.20.1 {depends fabric-api @ [*]}
+[15:20:38] [main/INFO]: A potential solution has been determined:
+[15:20:38] [main/INFO]: 	- Install fabric-api version 0.92.2 or later
+[15:20:38] [main/ERROR]: Encountered an unexpected exception
+net.fabricmc.loader.impl.discovery.ModResolutionException: Missing dependency: fabric-api is required by notenoughcrashes
+	at net.fabricmc.loader.impl.discovery.ModDiscoverer.lambda$find$0(ModDiscoverer.java:120)
+	at net.fabricmc.loader.impl.discovery.ModDiscoverer.find(ModDiscoverer.java:96)
+	at net.fabricmc.loader.impl.FabricLoaderImpl.load(FabricLoaderImpl.java:194)
+	at net.fabricmc.loader.impl.launch.knot.Knot.init(Knot.java:142)
+[15:20:39] [main/INFO]: Process exited with code 1

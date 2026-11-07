@@ -1,0 +1,9 @@
+[09:14:01] [main/INFO]: Loading Minecraft 1.16.5 with Forge 36.2.39
+[09:14:09] [main/INFO]: ModLauncher running: args [--username, Player, --version, 1.16.5]
+[09:14:15] [main/ERROR]: Failed to start the game
+java.lang.UnsupportedClassVersionError: net/minecraftforge/fml/loading/ModLauncher has been compiled by a more recent version of the Java Runtime (class file version 61.0), this version of the Java Runtime only recognizes class file versions up to 52.0
+	at java.base/java.lang.ClassLoader.defineClass1(Native Method)
+	at java.base/java.lang.ClassLoader.defineClass(ClassLoader.java:1016)
+	at cpw.mods.modlauncher.LaunchServiceHandlerDecorator.launch(LaunchServiceHandlerDecorator.java:32)
+	at cpw.mods.modlauncher.LaunchServiceHandler.launch(LaunchServiceHandler.java:53)
+[09:14:15] [main/INFO]: Process exited with code 1

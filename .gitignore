@@ -34,6 +34,11 @@ src-tauri/resources/aria2/*
 *.sqlite
 *.sqlite3
 *.db
+# Crash-analysis fixtures are source: the rules ship with them as regression
+# tests, and `crash-ai-cli --self-test` include_str!s them at compile time.
+# Without this exception they are silently dropped by the `*.log` rule above,
+# which made `cargo build --workspace` fail on a clean clone.
+!crates/crash-ai/src/fixtures/*.log
 
 # OS / editor
 .DS_Store

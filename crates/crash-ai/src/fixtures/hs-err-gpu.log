@@ -1,0 +1,44 @@
+#
+# A fatal error has been detected by the Java Runtime Environment:
+#
+#  EXCEPTION_ACCESS_VIOLATION (0xc0000005) at pc=0x00007ffb2a1c4d10, pid=14208, tid=15524
+#
+# JRE version: OpenJDK Runtime Environment (21.0.2+13) (build 21.0.2+13-LTS)
+# Java VM: OpenJDK 64-Bit Server VM (21.0.2+13-LTS, mixed mode, sharing, tiered, compressed oops)
+# Problematic frame:
+# C  [opengl32.dll+0x1d4d10]
+#
+# Core dump will be written. Default location: C:\Users\Player\.minecraft\hs_err_pid14208.mdmp
+#
+---------------  S U M M A R Y ------------
+
+Command Line: -Xmx4096m -Djava.library.path=natives net.minecraft.client.main.Main --version 1.20.4
+
+Host: AMD64, 16 cores, 32768M, Windows 10 10.0
+Time: Tue Mar 12 20:14:33 2024
+Elapsed time: 42.317 seconds
+
+---------------  T H R E A D  ---------------
+
+Current thread (0x000001f2c81a2000):  JavaThread "Render thread" [_thread_in_native, id=15524]
+
+Stack: [0x000000a4c0000000,0x000000a4c0100000]
+Native frames: (J=compiled Java code, j=interpreted, Vv=VM code, C=native code)
+C  [opengl32.dll+0x1d4d10]
+C  [lwjgl_opengl.dll+0x9a12]
+J 1165 c2 org.lwjgl.opengl.GL11C.nglDrawElements(IJIJ)V (0 bytes) @ 0x000001f2d4a1c8a7
+
+Java Threads: ( => current thread )
+  0x000001f2c81a2000 JavaThread "Render thread"
+  0x000001f2c81a4000 JavaThread "Server thread"
+  0x000001f2c81a6000 JavaThread "Client thread"
+
+VM state:not at safepoint (normal execution)
+
+---------------  S Y S T E M  ---------------
+
+OS: Windows 10.0, 64 bit
+CPU: total 16 (initial active 16) (8 cores per cpu, 2 threads per core)
+Memory: 4k page, physical 33554432k(20971520k free)
+
+vm_info: OpenJDK 64-Bit Server VM (21.0.2+13-LTS) for windows-amd64 JRE (21.0.2+13-LTS), built on Jan 16 2024

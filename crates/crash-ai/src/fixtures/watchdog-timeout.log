@@ -1,0 +1,6 @@
+[21:10:04] [Server thread/WARN]: Can't keep up! Is the server overloaded? Running 61234ms behind, skipping 1224 tick(s)
+[21:10:34] [Server Watchdog/ERROR]: A single server tick took 60.00 seconds (should be max 0.05)
+[21:10:34] [Server Watchdog/ERROR]: Considering it to be crashed, server will forcibly shutdown.
+[21:10:34] [Server Watchdog/ERROR]: watchdog thread timed out while waiting for server thread
+[21:10:34] [Server Watchdog/FATAL]: This crash report has been saved to: ./crash-reports/crash-2024-03-11_21.10.34-server.txt
+[21:10:35] [main/INFO]: Process exited with code 1

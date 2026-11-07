@@ -618,6 +618,29 @@ pub(crate) fn library_allowed(library: &Library) -> bool {
     allowed
 }
 
+/// The architecture name Mojang's metadata rules are written against.
+///
+/// ## Why this is not `std::env::consts::ARCH`
+///
+/// The rules use `x86` for 32-bit and `x64`/`arm64` for 64-bit, matched as regular
+/// expressions. Rust reports the same machine as `x86_64`, so testing the rule
+/// pattern `x86` against it **matches** — and every 32-bit native library was
+/// selected on a 64-bit machine. The visible symptom was a failed install at
+/// `lwjgl-stb-3.3.3-natives-windows-x86.jar` after downloading everything else.
+///
+/// Returning Mojang's own vocabulary keeps the regex comparison meaningful. The
+/// values are deliberately not normalised further: a metadata rule may legitimately
+/// contain a pattern like `(x86|x64)`.
+pub(crate) fn minecraft_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86" => "x86",
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "arm" => "arm32",
+        other => other,
+    }
+}
+
 pub(crate) fn rule_matches(rule: &LibraryRule, features: &[(&str, bool)]) -> bool {
     if let Some(os) = &rule.os {
         let current_os = match std::env::consts::OS {
@@ -631,7 +654,7 @@ pub(crate) fn rule_matches(rule: &LibraryRule, features: &[(&str, bool)]) -> boo
             let Ok(regex) = Regex::new(pattern) else {
                 return false;
             };
-            if !regex.is_match(std::env::consts::ARCH) {
+            if !regex.is_match(minecraft_arch()) {
                 return false;
             }
         }
@@ -689,7 +712,16 @@ fn native_classifier(library: &Library) -> Option<(String, mc_metadata::NativeEx
         other => other,
     };
     let template = library.natives.get(os)?;
-    let arch = if std::env::consts::ARCH == "x86" {
+    /*
+     * The `${arch}` placeholder in a natives template is `32` or `64`, not `x86`/
+     * `x64`: this is a different vocabulary from `os.arch` in rules, and mixing
+     * them up silently produces `lwjgl-stb-…-natives-windows-x64.jar` (a file
+     * Mojang does not publish) instead of the real `…-natives-windows.jar`.
+     *
+     * Only a genuinely 32-bit build takes the 32 branch; arm has no 32/64 split
+     * here because the affected libraries key on the OS alone.
+     */
+    let arch = if minecraft_arch() == "x86" {
         "32"
     } else {
         "64"
@@ -788,6 +820,46 @@ fn extract_native_archive(
 mod asset_tests {
     use super::*;
 
+    /*
+     * Arch names, which cost a real install to learn.
+     *
+     * Mojang writes `os.arch` rules as regular expressions over `x86`/`x64`, while
+     * Rust reports `x86_64`. Matching the rule pattern against Rust's value made
+     * `x86` match a 64-bit machine, so the 32-bit natives were chosen and the
+     * download failed on a URL Mojang does not serve. These tests pin both the
+     * name mapping and the fact that a rule mentioning `x86` does not select the
+     * 64-bit build.
+     */
+    #[test]
+    fn the_reported_arch_uses_mojang_vocabulary() {
+        let arch = minecraft_arch();
+        assert!(
+            !arch.contains("_64"),
+            "rules are written against x64, not Rust's {arch}"
+        );
+        match std::env::consts::ARCH {
+            "x86_64" => assert_eq!(arch, "x64"),
+            "x86" => assert_eq!(arch, "x86"),
+            "aarch64" => assert_eq!(arch, "arm64"),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn a_32_bit_arch_rule_does_not_select_the_64_bit_build() {
+        let rule: LibraryRule = serde_json::from_value(serde_json::json!({
+            "action": "allow",
+            "os": { "name": "windows", "arch": "x86" }
+        }))
+        .unwrap();
+        let matches = rule_matches(&rule, &[]);
+        assert_eq!(
+            matches,
+            minecraft_arch() == "x86",
+            "an `x86` rule must only match a real 32-bit build (arch is {})",
+            minecraft_arch()
+        );
+    }
     #[test]
     fn client_update_fingerprint_tracks_artifact_changes_only() {
         let base: GameVersionMetadata = serde_json::from_value(serde_json::json!({

@@ -1,0 +1,11 @@
+[13:22:40] [main/INFO]: Loading Minecraft 1.20.1 with Fabric Loader 0.15.3
+[13:22:47] [main/WARN]: Mod resolution failed
+[13:22:47] [main/INFO]: Two files in mods/ provide the same mod id:
+[13:22:47] [main/INFO]: 	mods/sodium-fabric-0.5.8.jar
+[13:22:47] [main/INFO]: 	mods/sodium-fabric-0.5.3.jar
+[13:22:47] [main/ERROR]: Encountered an unexpected exception
+net.fabricmc.loader.impl.discovery.ModResolutionException: Duplicate mod sodium found (versions 0.5.8 and 0.5.3)
+	at net.fabricmc.loader.impl.discovery.ModDiscoverer.verify(ModDiscoverer.java:214)
+	at net.fabricmc.loader.impl.FabricLoaderImpl.load(FabricLoaderImpl.java:191)
+	at net.fabricmc.loader.impl.launch.knot.Knot.init(Knot.java:142)
+[13:22:48] [main/INFO]: Process exited with code 1
