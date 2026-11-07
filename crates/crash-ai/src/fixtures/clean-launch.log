@@ -1,0 +1,19 @@
+[20:02:11] [main/INFO]: Loading Minecraft 1.20.4 with Fabric Loader 0.15.6
+[20:02:12] [main/INFO]: Loading 42 mods:
+	- fabric-api 0.92.2
+	- lithium 0.12.1
+	- sodium 0.5.8
+[20:02:19] [main/INFO]: Started 8 worker threads
+[20:02:24] [Render thread/INFO]: Backend library: LWJGL version 3.3.2+13
+[20:02:26] [Render thread/INFO]: OpenGL debug context
+[20:02:27] [Render thread/INFO]: Narrator library loaded
+[20:02:31] [Server thread/INFO]: Preparing level "world"
+[20:02:48] [Server thread/INFO]: Time elapsed: 17321 ms
+[20:03:02] [Render thread/INFO]: Loaded 1284 recipes
+[20:03:05] [Render thread/INFO]: Sound engine started
+[20:03:09] [Server thread/INFO]: Done (38.102s)! For help, type "help"
+[20:04:40] [Render thread/INFO]: Saving and pausing game...
+[20:04:41] [Render thread/INFO]: Saving chunks for level 'ServerLevel[world]'/minecraft:overworld
+[20:04:44] [Render thread/INFO]: Stopping!
+[20:04:44] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world]'/minecraft:overworld
+[20:04:45] [main/INFO]: All chunks saved, shutting down.

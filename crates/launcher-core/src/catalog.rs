@@ -611,9 +611,17 @@ fn parse_versions(bytes: &[u8]) -> Result<Vec<CatalogVersion>, String> {
     }
     let parsed: Vec<Version> =
         serde_json::from_slice(bytes).map_err(|_| "Modrinth 版本列表无效。")?;
-    if parsed.len() > 100 {
-        return Err("Modrinth 版本数量异常。".into());
-    }
+    /*
+     * No count ceiling.
+     *
+     * There used to be a `len() > 100` check here, and it made the lookup fail
+     * outright for any popular project: JEI returns 242 versions for
+     * `game_versions=["1.21.1"]` + `loaders=["fabric"]` alone. The response size is
+     * already bounded by `MAX_RESPONSE`, which is the limit that actually protects
+     * memory; the element count adds nothing but a spurious error. Callers that only
+     * want the newest version take `first()`, and `list mod-versions` truncates for
+     * display.
+     */
     parsed
         .into_iter()
         .map(|version| {

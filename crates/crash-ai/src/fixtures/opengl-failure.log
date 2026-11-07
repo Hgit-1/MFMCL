@@ -1,0 +1,10 @@
+[08:33:12] [main/INFO]: Loading Minecraft 1.20.4 with Fabric Loader 0.15.6
+[08:33:20] [Render thread/INFO]: Backend library: LWJGL version 3.3.2+13
+[08:33:21] [Render thread/ERROR]: Failed to create GL context
+org.lwjgl.opengl.GLException: Function not supported: glGetError
+	at org.lwjgl.opengl.GL.getFunctionAddress(GL.java:239)
+	at org.lwjgl.opengl.GLCapabilities.init(GLCapabilities.java:1182)
+	at net.minecraft.client.Minecraft.<init>(Minecraft.java:503)
+	at net.minecraft.client.main.Main.main(Main.java:242)
+[08:33:21] [Render thread/ERROR]: Could not initialise the renderer
+[08:33:22] [main/INFO]: Process exited with code 1

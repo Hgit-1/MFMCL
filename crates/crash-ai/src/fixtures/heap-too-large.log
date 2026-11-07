@@ -1,0 +1,6 @@
+[12:01:02] [main/INFO]: Loading Minecraft 1.20.1 with Forge 47.2.20
+[12:01:06] [main/INFO]: Launching target 'forgeclient' with arguments
+[12:01:14] [main/ERROR]: Error occurred during initialization of VM
+[12:01:14] [main/ERROR]: Could not reserve enough space for 16384KB object heap
+[12:01:14] [main/ERROR]: Failed to start the minecraft server
+[12:01:15] [main/INFO]: Process exited with code 1

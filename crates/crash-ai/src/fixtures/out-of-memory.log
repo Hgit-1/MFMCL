@@ -1,0 +1,12 @@
+[17:44:08] [Render thread/INFO]: Loading Minecraft 1.20.4 with Fabric Loader 0.15.6
+[17:44:21] [Render thread/INFO]: Preparing spawn area: 42%
+[17:46:33] [Render thread/INFO]: Preparing spawn area: 88%
+[17:48:02] [Render thread/ERROR]: Encountered an unexpected exception
+java.lang.OutOfMemoryError: Java heap space
+	at java.base/java.util.Arrays.copyOf(Arrays.java:3537)
+	at java.base/java.io.ByteArrayOutputStream.grow(ByteArrayOutputStream.java:124)
+	at net.minecraft.client.renderer.chunk.RenderChunk.rebuildChunk(RenderChunk.java:412)
+	at net.minecraft.client.renderer.chunk.ChunkRenderDispatcher$RenderChunk.rebuildChunk(ChunkRenderDispatcher.java:798)
+	at java.base/java.lang.Thread.run(Thread.java:1583)
+[17:48:03] [Render thread/INFO]: Stopping!
+[17:48:04] [main/INFO]: Process exited with code 1

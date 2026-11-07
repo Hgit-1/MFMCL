@@ -1,0 +1,8 @@
+[19:05:12] [main/INFO]: Loading Minecraft 1.20.4 with Fabric Loader 0.15.6
+[19:05:19] [main/ERROR]: Failed to write config
+java.nio.file.AccessDeniedException: C:\Program Files (x86)\Minecraft\instances\new-world\game\config\lithium.properties
+	at java.base/sun.nio.fs.WindowsException.translateToIOException(WindowsException.java:89)
+	at java.base/sun.nio.fs.WindowsFileSystemProvider.newByteChannel(WindowsFileSystemProvider.java:245)
+	at java.base/java.nio.file.Files.newOutputStream(Files.java:202)
+	at net.minecraft.client.Minecraft.<init>(Minecraft.java:615)
+[19:05:20] [main/INFO]: Process exited with code 1
