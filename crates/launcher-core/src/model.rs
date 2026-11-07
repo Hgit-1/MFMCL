@@ -327,6 +327,51 @@ pub struct AccountProfile {
     pub created_at: String,
 }
 
+impl AccountProfile {
+    /// The player name, validated as safe to display.
+    ///
+    /// ## Why this exists
+    ///
+    /// A Minecraft player name is public — it appears beside every chat message
+    /// and on every server's player list. But `display_name` lives on a record
+    /// that also holds an auth-server URL and a keyring reference, and static
+    /// analysis treats the whole record as account data. Formatting the raw field
+    /// into terminal output therefore reads as "logging account data", and it is
+    /// reported as one.
+    ///
+    /// This accessor is the explicit boundary: it re-applies the character-set
+    /// rule that every code path producing a name already enforces (Microsoft and
+    /// Yggdrasil profiles are validated by `GameProfile::new`, offline profiles by
+    /// `offline_profile`), and returns `None` for anything that does not match.
+    /// A caller that gets `Some` is holding a plain player name, not an account
+    /// record.
+    ///
+    /// The check is not decorative: a database edited by hand, or a future
+    /// provider that stops validating names, would otherwise let a string with
+    /// control characters or delimiters reach the terminal.
+    pub fn public_player_name(&self) -> Option<&str> {
+        let name = self.display_name.as_str();
+        if (3..=16).contains(&name.len())
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            Some(name)
+        } else {
+            None
+        }
+    }
+
+    /// The player name for display, falling back to a placeholder.
+    ///
+    /// Returning a fixed string for an unrepresentable name keeps callers from
+    /// having to branch, and makes the terminal output honest: something is wrong
+    /// with the record rather than with the name.
+    pub fn display_player_name(&self) -> &str {
+        self.public_player_name().unwrap_or("（无效名称）")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceState {
@@ -547,5 +592,61 @@ pub fn directory_name_for(name: &str) -> String {
         "instance".to_owned()
     } else {
         cut
+    }
+}
+
+#[cfg(test)]
+mod account_name_tests {
+    use super::*;
+
+    fn profile(name: &str) -> AccountProfile {
+        AccountProfile {
+            id: "id".into(),
+            display_name: name.into(),
+            kind: AccountKind::Offline,
+            auth_server: None,
+            credential_ref: None,
+            selected: true,
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_normal_player_name_is_exposed_for_display() {
+        // Every real name reaches the terminal through this accessor, so the
+        // common case has to be the unremarkable one.
+        for name in ["Steve", "Alex_99", "abc"] {
+            let profile = profile(name);
+            assert_eq!(profile.public_player_name(), Some(name));
+            assert_eq!(profile.display_player_name(), name);
+        }
+    }
+
+    #[test]
+    fn names_outside_the_minecraft_rule_are_not_exposed() {
+        /*
+         * The boundary exists so a record that was hand-edited, or produced by a
+         * future provider that stopped validating, cannot push control characters
+         * or delimiters into terminal output. These are the shapes that would have
+         * done exactly that.
+         */
+        for name in [
+            "",
+            "ab",
+            "this_name_is_way_too_long_for_minecraft",
+            "has space",
+            "tab\there",
+            "quote\"inside",
+            "lines;and,more",
+        ] {
+            let profile = profile(name);
+            assert_eq!(
+                profile.public_player_name(),
+                None,
+                "{name:?} must not be treated as displayable"
+            );
+            // The fallback keeps callers branch-free and never echoes the raw value.
+            assert_eq!(profile.display_player_name(), "（无效名称）");
+        }
     }
 }

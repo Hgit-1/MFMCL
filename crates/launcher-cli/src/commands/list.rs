@@ -131,7 +131,7 @@ fn accounts(session: &Session<'_>, palette: &Palette, json: bool) -> Outcome {
             } else {
                 " ".to_owned()
             },
-            account.display_name.clone(),
+            account.display_player_name().to_owned(),
             kind.to_owned(),
             account.id.clone(),
         ]);

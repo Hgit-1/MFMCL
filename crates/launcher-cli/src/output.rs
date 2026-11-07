@@ -397,13 +397,22 @@ impl Table {
 /// answer used when stdin is not a terminal. That second part is what lets a
 /// script run without hanging, and it is why every destructive prompt's default
 /// is `false`.
+///
+/// ## Why the prompt goes to stderr
+///
+/// stdout is reserved for the command's actual result. A prompt is interaction,
+/// not output, and writing it to stdout broke `--json`: a confirmation question
+/// would be interleaved with the JSON document and make it unparsable. It also
+/// keeps prompts out of any log that captures stdout.
 pub fn confirm(question: &str, default: bool) -> bool {
     if !std::io::stdin().is_terminal() {
         return default;
     }
     let hint = if default { "[Y/n]" } else { "[y/N]" };
-    print!("{question} {hint} ");
-    let _ = std::io::stdout().flush();
+    let mut stderr = std::io::stderr();
+    let _ = write!(stderr, "{question} {hint} ");
+    let _ = stderr.flush();
+    drop(stderr);
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_err() {
         return default;
