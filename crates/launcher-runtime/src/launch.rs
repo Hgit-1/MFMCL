@@ -344,6 +344,17 @@ pub async fn launch(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    /*
+     * The game draws its own window, but the JVM console must not appear beside it.
+     * From a `windows`-subsystem parent that console would be a new window; from a
+     * terminal it would be the terminal itself, so the flag is a no-op there only
+     * because Windows ignores it when a console is inherited.
+     */
+    launcher_core::process::hide_console_async(&mut command);
+    /*
+     * Plugin-contributed environment variables. Applied after the base command is
+     * built so they layer over the parent environment rather than replacing it.
+     */
     for (key, value) in &plan.env {
         command.env(key, value);
     }
@@ -495,12 +506,20 @@ async fn run_pre_launch_command(command: &str, working_directory: &std::path::Pa
     if program.contains("..") {
         return Err(RuntimeError::message("启动前命令不能使用包含 .. 的路径。"));
     }
-    let status = Command::new(program)
+    let mut pre_launch = Command::new(program);
+    pre_launch
         .args(args)
         .current_dir(working_directory)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    /*
+     * A user's pre-launch command is typically a shell script or batch file, which
+     * is a console program. Without this it flashed a window on every launch from
+     * the desktop app.
+     */
+    launcher_core::process::hide_console_async(&mut pre_launch);
+    let status = pre_launch
         .status()
         .await
         .map_err(|error| RuntimeError::message(format!("无法执行启动前命令：{error}")))?;

@@ -267,6 +267,8 @@ impl LlamaRuntime {
                     .unwrap_or_else(std::process::Stdio::null),
             )
             .kill_on_drop(true);
+        // The engine is a server, not a window: keep it off the desk.
+        launcher_core::process::hide_console_async(&mut command);
 
         let child = command
             .spawn()

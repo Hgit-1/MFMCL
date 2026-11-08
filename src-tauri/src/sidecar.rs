@@ -76,16 +76,16 @@ pub async fn verified_aria2(resource_dir: &Path) -> Result<PathBuf, String> {
     download_engine::verify_file(&path, None, None, Some(&pin.sha256))
         .await
         .map_err(|_| "aria2 文件与发布清单不一致，拒绝执行。")?;
-    let output = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::process::Command::new(&path)
-            .arg("--version")
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| "aria2 版本检测超时。")?
-    .map_err(|_| "aria2 无法执行。")?;
+    /*
+     * A version probe is a console program; from the GUI it must not draw a window.
+     */
+    let mut version_probe = tokio::process::Command::new(&path);
+    version_probe.arg("--version").kill_on_drop(true);
+    launcher_core::process::hide_console_async(&mut version_probe);
+    let output = tokio::time::timeout(Duration::from_secs(5), version_probe.output())
+        .await
+        .map_err(|_| "aria2 版本检测超时。")?
+        .map_err(|_| "aria2 无法执行。")?;
     if !output.status.success()
         || !String::from_utf8_lossy(&output.stdout)
             .lines()

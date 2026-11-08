@@ -15,6 +15,7 @@ mod model;
 pub mod modpacks;
 pub mod mods;
 pub mod plugins;
+pub mod process;
 pub mod settings;
 mod store;
 pub mod updates;
