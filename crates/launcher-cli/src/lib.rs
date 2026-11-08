@@ -128,6 +128,23 @@ fn run(args: Vec<String>) -> u8 {
     };
 
     let outcome = runtime.block_on(commands::dispatch(&cli, &sink));
+
+    /*
+     * Tear the runtime down without waiting for outstanding tasks.
+     *
+     * Dropping a `Runtime` blocks until every spawned task finishes. `launch`
+     * spawns a watcher that outlives the command on purpose (it owns the child
+     * process and drains its log), so a plain drop made the process hang at the
+     * very end — after all output had been printed — until the user pressed
+     * Ctrl+C. `--detach` hit this on every invocation.
+     *
+     * `shutdown_background` is the documented way to say "do not wait": pending
+     * tasks are dropped. Anything that must survive the command is already a
+     * separate OS process, and anything that must be flushed has been written
+     * before this point.
+     */
+    runtime.shutdown_background();
+
     match outcome {
         Ok(()) => 0,
         Err(commands::Failure::Declined(message)) => {
