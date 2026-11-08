@@ -7,15 +7,32 @@ one data directory, one SQLite database, and one set of game files.
 Nothing here opens a window. The only exception is Microsoft account sign-in, which
 is not implemented on the command line yet; see [Limits](#limits).
 
-## Install and run
+## How you reach it
 
-Build from the repository root:
+The two frontends are packaged differently per platform, because Windows makes one
+binary serve both impossible (see [Why Windows differs](#why-windows-differs)).
+
+| Platform | Launch the GUI | Use the CLI |
+| --- | --- | --- |
+| Linux, macOS | `mfmcl` | `mfmcl cli download …` |
+| Windows | `mfmcl.exe` | `mfmcl-cli.exe download …` |
+
+On Linux and macOS the GUI binary forwards `cli <function>` to the CLI before any
+window is created, so a `.deb`, `.rpm` or AppImage contains one executable. On
+Windows the CLI ships as its own console executable alongside the GUI.
+
+The commands themselves are identical; only the program name before the first
+command differs.
+
+## Build
 
 ```sh
+# GUI (and, on Linux/macOS, the CLI inside it)
+npm run tauri -- build
+
+# standalone CLI executable
 cargo build --release -p mfmcl-cli
 ```
-
-The binary is `target/release/mfmcl` (`target\release\mfmcl.exe` on Windows).
 
 ## Commands
 
@@ -128,6 +145,28 @@ UTF-8 and is unaffected.
 | 1 | The command failed |
 | 2 | The command line was wrong |
 | 3 | The user declined, or a destructive command lacked `--yes` |
+
+## Why Windows differs
+
+A Windows executable declares a subsystem in its PE header. A `windows`-subsystem
+process has no console attached, so `println!` goes nowhere; a `console` subsystem
+process always opens (or inherits) a console window, which flashes on every desktop
+launch.
+
+Neither can be made to work for both modes in one file:
+
+- **GUI subsystem forwarding to a terminal** does not deliver output. `println!`
+  writes nothing, and an explicit `AttachConsole` plus `CreateFileW("CONOUT$")` and
+  `SetStdHandle` still produced zero bytes in a ConPTY. Both were measured on
+  Windows with a minimal reproduction.
+- **Console subsystem hiding its own window** requires detecting how the process was
+  started. `AttachConsole(-1)` fails under ConPTY while `is_terminal()` returns true,
+  so the check reports "started from Explorer" for a terminal launch and hides the
+  window the user is reading.
+
+Linux and macOS have no subsystem distinction: one executable opens a window when it
+has no `cli` argument and writes a terminal when it does. That is why the packaging
+differs rather than the commands.
 
 ## Sharing state with the desktop application
 

@@ -1283,7 +1283,77 @@ async fn consume_game_log<R>(
     }
 }
 
+/// Serve `mfmcl cli <function>` when this binary is asked to act as the CLI.
+///
+/// ## Why this exists on Unix only
+///
+/// Linux and macOS have no PE subsystem: one executable can open a window or write
+/// a terminal, decided purely by its arguments. So the packaged binary answers both
+/// `mfmcl` (GUI) and `mfmcl cli doctor` (terminal).
+///
+/// Windows cannot. A `windows`-subsystem process has no console, and neither
+/// `println!` nor an explicit `AttachConsole` plus handle rebinding delivers any
+/// output to a ConPTY — both were measured. The Windows build therefore ships the
+/// GUI alone, and the CLI stays a separate `mfmcl.exe` from `mfmcl-cli`.
+///
+/// Returns the exit code when the arguments addressed the CLI, so the caller can
+/// exit without starting Tauri. Returns `None` when a window should open.
+pub fn run_cli_if_requested() -> Option<u8> {
+    forward_cli(std::env::args().collect())
+}
+
+/// The decision and forwarding, split out so it can be tested without a real
+/// process argument list.
+fn forward_cli(args: Vec<String>) -> Option<u8> {
+    /*
+     * Match only the exact first argument `cli`. A GUI launch has no arguments, and
+     * anything else (`--help`, a file path) belongs to the desktop app or to the
+     * platform's own argument handling.
+     *
+     * `args.first()` keeps a process with an empty argument list from panicking on
+     * indexing; that cannot happen through a real shell, but the function is also
+     * reachable from tests and from a future launcher.
+     */
+    if args.get(1).map(String::as_str) != Some("cli") {
+        return None;
+    }
+
+    #[cfg(windows)]
+    {
+        /*
+         * Refuse rather than print a broken success: a console-less process cannot
+         * report progress, errors, or `--json` output. Saying so on stderr is the
+         * only honest option, and stderr is still visible when the caller redirected
+         * it to a file.
+         */
+        eprintln!(
+            "错误：此构建是图形界面版本，不包含命令行前端。\n\
+             请使用同一发布包中的 mfmcl-cli 可执行文件，或改用 Linux/macOS 构建。"
+        );
+        Some(launcher_cli::EXIT_UNSUPPORTED)
+    }
+
+    #[cfg(not(windows))]
+    {
+        /*
+         * Rebuild the argument list without the `cli` keyword so the CLI sees the
+         * command it expects: `mfmcl cli download -v 1.21.1` becomes
+         * `mfmcl download -v 1.21.1`.
+         *
+         * Indexing is safe because the guard above proved `args[1]` exists. The
+         * program name stays as `args[0]` so clap reports the name the user typed.
+         */
+        let mut forwarded = Vec::with_capacity(args.len().saturating_sub(1));
+        forwarded.push(args[0].clone());
+        forwarded.extend(args.into_iter().skip(2));
+        Some(launcher_cli::exit_code_of(forwarded))
+    }
+}
+
 pub fn run() {
+    if let Some(code) = run_cli_if_requested() {
+        std::process::exit(i32::from(code));
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -1484,4 +1554,70 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("MFMCL desktop application failed");
+}
+
+#[cfg(test)]
+mod cli_forward_tests {
+    use super::forward_cli;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn an_empty_argument_list_starts_the_window_instead_of_panicking() {
+        // Defensive: no real shell produces this, but indexing args[0] would abort.
+        assert_eq!(forward_cli(Vec::new()), None);
+    }
+
+    #[test]
+    fn a_bare_launch_starts_the_window() {
+        // No arguments is the desktop case: forwarding must not claim it.
+        assert_eq!(forward_cli(args(&["mfmcl"])), None);
+    }
+
+    #[test]
+    fn an_unrelated_first_argument_still_starts_the_window() {
+        /*
+         * `cli` is matched exactly. `cli-extra` and `clients` are plausible typos
+         * and must not silently drop the user into a terminal path that then fails
+         * with a confusing parse error.
+         */
+        for value in ["cli-extra", "clients", "--help", "download"] {
+            assert_eq!(
+                forward_cli(args(&["mfmcl", value])),
+                None,
+                "{value} must not be treated as the cli keyword"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cli_keyword_is_only_honoured_positionally_first() {
+        // A later `cli` is an argument to something else, not a dispatch.
+        assert_eq!(forward_cli(args(&["mfmcl", "download", "cli"])), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reports_that_this_build_has_no_cli() {
+        // Silence here would be a lie: a console-less process cannot report
+        // progress or errors, so the build says so and exits with its own code.
+        assert_eq!(
+            forward_cli(args(&["mfmcl", "cli", "list", "instances"])),
+            Some(launcher_cli::EXIT_UNSUPPORTED)
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_forwards_to_the_cli_without_the_keyword() {
+        /*
+         * `mfmcl cli help` must behave like `mfmcl help`: the keyword is stripped
+         * before the CLI parses. Help is used here because it is the one command
+         * that does no I/O, so the test needs no data directory or network.
+         */
+        let code = forward_cli(args(&["mfmcl", "cli", "help"]));
+        assert_eq!(code, Some(0));
+    }
 }

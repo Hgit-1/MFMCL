@@ -2509,6 +2509,7 @@ dependencies = [
  "launcher-auth",
  "launcher-core",
  "mc-metadata",
+ "mfmcl-cli",
  "open",
  "regex",
  "reqwest 0.12.28",
