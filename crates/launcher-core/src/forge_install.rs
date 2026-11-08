@@ -863,11 +863,17 @@ async fn run_processor(
     );
     // 进度：处理器是一串串行步骤，用序号表达进度比假装百分比更诚实。
     let _ = (index, total);
-    let output = tokio::process::Command::new(java)
+    /*
+     * The processor is a Java program run per install step. Hidden like every other
+     * helper: a `windows`-subsystem parent has no console to hand down.
+     */
+    let mut processor = tokio::process::Command::new(java);
+    processor
         .arg("-cp")
         .arg(classpath.join(separator))
         .arg(&main_class)
-        .args(&args)
+        .args(&args);
+    let output = crate::process::hide_console_async(&mut processor)
         .output()
         .await
         .map_err(|error| format!("无法启动安装器处理器（{command}）：{error}"))?;

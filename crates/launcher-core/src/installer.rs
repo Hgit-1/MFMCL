@@ -686,21 +686,30 @@ pub(crate) fn rule_matches(rule: &LibraryRule, features: &[(&str, bool)]) -> boo
 }
 
 fn current_os_version() -> Option<String> {
+    /*
+     * All three spawn a system program. Without `hide_console` the Windows branch
+     * (`cmd /C ver`) flashes a console window whenever metadata rules require the OS
+     * version — inside the GUI, that is on every install.
+     */
     #[cfg(target_os = "macos")]
-    let output = std::process::Command::new("sw_vers")
-        .args(["-productVersion"])
-        .output()
-        .ok()?;
+    let mut command = {
+        let mut command = std::process::Command::new("sw_vers");
+        command.arg("-productVersion");
+        command
+    };
     #[cfg(target_os = "windows")]
-    let output = std::process::Command::new("cmd")
-        .args(["/C", "ver"])
-        .output()
-        .ok()?;
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "ver"]);
+        command
+    };
     #[cfg(target_os = "linux")]
-    let output = std::process::Command::new("uname")
-        .args(["-r"])
-        .output()
-        .ok()?;
+    let mut command = {
+        let mut command = std::process::Command::new("uname");
+        command.arg("-r");
+        command
+    };
+    let output = crate::process::hide_console(&mut command).output().ok()?;
     String::from_utf8(output.stdout)
         .ok()
         .map(|version| version.trim().to_owned())

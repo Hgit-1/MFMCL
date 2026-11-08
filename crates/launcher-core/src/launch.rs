@@ -712,8 +712,14 @@ fn add_java_root_candidates(candidates: &mut Vec<PathBuf>, root: &Path, executab
 }
 
 fn inspect_java(java_path: &Path) -> Result<JavaRuntimeInfo, LaunchError> {
-    let output = Command::new(java_path)
-        .arg("-version")
+    /*
+     * `hide_console` matters here more than anywhere else: discovery probes up to
+     * 128 candidate paths, and every probe used to flash a console window on a
+     * desktop launch.
+     */
+    let mut command = Command::new(java_path);
+    command.arg("-version");
+    let output = crate::process::hide_console(&mut command)
         .output()
         .map_err(|_| LaunchError::JavaNotFound)?;
     let text = String::from_utf8_lossy(&output.stderr).to_string()

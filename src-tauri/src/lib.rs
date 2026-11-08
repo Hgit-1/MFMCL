@@ -1046,6 +1046,8 @@ async fn launch_instance(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // The game draws its own window; the JVM console must not appear beside it.
+    launcher_core::process::hide_console_async(&mut command);
     /*
      * 插件贡献的环境变量。
      *
@@ -1227,12 +1229,15 @@ async fn run_pre_launch_command(
     if program.contains("..") {
         return Err("启动前命令不能使用包含 .. 的路径。".into());
     }
-    let status = Command::new(program)
+    let mut pre_launch = Command::new(program);
+    pre_launch
         .args(args)
         .current_dir(working_directory)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    launcher_core::process::hide_console_async(&mut pre_launch);
+    let status = pre_launch
         .status()
         .await
         .map_err(|error| format!("无法执行启动前命令：{error}"))?;
