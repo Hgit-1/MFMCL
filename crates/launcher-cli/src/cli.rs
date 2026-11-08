@@ -16,10 +16,13 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[derive(Parser, Debug)]
 #[command(
     name = "mfmcl",
-    // The binary is `mfmcl.exe` on Windows; clap would otherwise print
-    // "Usage: mfmcl.exe …" in every help screen, which is not the command people
-    // type or the one the docs show.
-    bin_name = "mfmcl",
+    /*
+     * `bin_name` is deliberately not set. It defaults to the executable's own name,
+     * which is correct for both shapes this CLI is reached in: `mfmcl cli …` on
+     * Linux/macOS (where the desktop binary forwards to it) and `mfmcl-cli …` as a
+     * standalone executable on Windows. Hard-coding one would make help screens in
+     * the other build show a command the user cannot type.
+     */
     version,
     // Our own `help` subcommand takes `--function`, which would collide with
     // clap's built-in one. `--help` still works on every command.
@@ -28,12 +31,17 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     long_about = "MFMCL 命令行启动器。
 
 与图形界面共用同一份数据目录、同一套实例与账户，因此两边的操作互为可见。
-所有命令都在终端中完成，不需要图形界面。",
+所有命令都在终端中完成，不需要图形界面。
+
+Linux 与 macOS 的发布包里没有独立的命令行程序：同一个 mfmcl 二进制用
+`mfmcl cli <功能>` 进入命令行模式。Windows 是图形界面专用版本，命令行在
+同目录的 mfmcl-cli.exe 里。",
     after_help = "常用例子：\n  \
         mfmcl download --game 1.21.1 --mod-loader neoforge latest --name \"1.21.1_neoforge\"\n  \
         mfmcl launch --instance 1.21.1_neoforge\n  \
         mfmcl backup create --instance 1.21.1_neoforge --to \"D:\\Backups\"\n  \
         mfmcl help --function download\n\n\
+        从图形界面版本进入命令行时，把上面的 mfmcl 换成 mfmcl cli。\n\
         退出码：0 成功；1 失败；2 参数错误；3 用户取消。"
 )]
 pub struct Cli {

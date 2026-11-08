@@ -4,8 +4,18 @@ version.workspace = true
 edition.workspace = true
 description = "Command-line frontend for MFMCL"
 
+# The logic lives in a library so the desktop binary can serve `mfmcl cli …` on
+# platforms where one executable can be both a GUI and a terminal program.
+[lib]
+name = "launcher_cli"
+path = "src/lib.rs"
+
+# Named `mfmcl-cli`, not `mfmcl`: the GUI binary takes the `mfmcl` name on every
+# platform (see `mainBinaryName` in `src-tauri/tauri.conf.json`). On Linux and
+# macOS this standalone binary is not shipped at all — the desktop binary answers
+# `mfmcl cli …` instead — but it stays buildable for anyone who wants a pure CLI.
 [[bin]]
-name = "mfmcl"
+name = "mfmcl-cli"
 path = "src/main.rs"
 
 [dependencies]

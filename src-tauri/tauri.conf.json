@@ -3,6 +3,7 @@
   "productName": "MFMCL",
   "version": "0.1.0",
   "identifier": "dev.mfmcl.launcher",
+  "mainBinaryName": "mfmcl",
   "build": {
     "beforeDevCommand": "npm run dev --prefix design/flowlaunch-ui -- --host 127.0.0.1 --port 5173 --strictPort",
     "devUrl": "http://127.0.0.1:5173",

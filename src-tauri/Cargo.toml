@@ -43,6 +43,10 @@ download-engine = { path = "../crates/download-engine" }
 launcher-core = { path = "../crates/launcher-core" }
 crash-ai = { path = "../crates/crash-ai" }
 launcher-auth = { path = "../crates/launcher-auth", features = ["native-credentials"] }
+# The CLI frontend as a library, so one binary can serve `mfmcl cli …` on the
+# platforms where a single executable can be both a GUI and a terminal program.
+# The package is `mfmcl-cli`; its library is `launcher_cli`.
+launcher-cli = { package = "mfmcl-cli", path = "../crates/launcher-cli" }
 open = "5"
 zeroize = "1"
 mc-metadata = { path = "../crates/mc-metadata" }

@@ -310,10 +310,6 @@ impl Table {
         self
     }
 
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.rows.len()
-    }
     pub fn row(&mut self, cells: Vec<String>) {
         debug_assert_eq!(
             cells.len(),
@@ -409,10 +405,16 @@ pub fn confirm(question: &str, default: bool) -> bool {
         return default;
     }
     let hint = if default { "[Y/n]" } else { "[y/N]" };
-    let mut stderr = std::io::stderr();
-    let _ = write!(stderr, "{question} {hint} ");
-    let _ = stderr.flush();
-    drop(stderr);
+    /*
+     * Scoped so the handle is released before reading stdin. Keeping it alive is
+     * harmless, but a reader may reasonably wonder whether the prompt is still
+     * buffered when the answer is read; the block answers that.
+     */
+    {
+        let mut stderr = std::io::stderr();
+        let _ = write!(stderr, "{question} {hint} ");
+        let _ = stderr.flush();
+    }
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_err() {
         return default;

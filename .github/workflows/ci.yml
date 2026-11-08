@@ -60,3 +60,6 @@ jobs:
         shell: bash
       - run: npm ci --prefix design/flowlaunch-ui
       - run: cargo check -p mfmcl-desktop
+      # The CLI is a library the desktop binary links, so a break in either shows
+      # up in the desktop build above; this catches the standalone binary too.
+      - run: cargo check -p mfmcl-cli --all-targets

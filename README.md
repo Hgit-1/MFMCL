@@ -27,7 +27,7 @@ Android, iOS, and HarmonyOS local game execution remain documentation-only in [`
 
 See [`docs/BUILDING.md`](docs/BUILDING.md) for prerequisites, frontend preview, tests, and native desktop builds. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for module and trust boundaries, and [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) for distribution constraints.
 
-A command-line frontend is available as `mfmcl`: see [`docs/CLI.md`](docs/CLI.md). It shares the desktop application's data directory, instances, and accounts.
+A command-line frontend is available: see [`docs/CLI.md`](docs/CLI.md). On Linux and macOS it is part of the desktop binary (`mfmcl cli <command>`); on Windows it ships as a separate `mfmcl-cli.exe`, because a single Windows executable cannot be both a windowed app and a working terminal program. Both share the desktop application's data directory, instances, and accounts.
 
 Signing in with a Microsoft account needs your own application client ID; [`docs/MICROSOFT_LOGIN.md`](docs/MICROSOFT_LOGIN.md) walks through registering one and the Minecraft-services approval that goes with it.
 

@@ -10,7 +10,6 @@ members = [
   "crates/crash-ai",
   "src-tauri",
 ]
-
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
