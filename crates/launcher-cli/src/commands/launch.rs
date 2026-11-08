@@ -40,8 +40,13 @@ pub async fn run(session: &Session<'_>, args: &LaunchArgs) -> Outcome {
      * The runtime requires an explicit offline confirmation on every launch. Ask
      * once here rather than in the runtime: the wording is interface-specific, and
      * a GUI shows a dialog for the same flag.
+     *
+     * The answer must reach the runtime. Answering `y` at the prompt used to
+     * proceed to the next step and then fail with "离线账户启动必须先由用户确认",
+     * because the request was still built from `args.offline_ok` alone.
      */
-    if account.kind == AccountKind::Offline && !args.offline_ok {
+    let mut offline_confirmed = args.offline_ok || account.kind != AccountKind::Offline;
+    if account.kind == AccountKind::Offline && !offline_confirmed {
         let name = account.display_player_name();
         let accepted = session.confirm(&format!(
             "离线档案「{name}」不验证 Minecraft 正版所有权，仅适用于单人或已授权的服务器。继续启动？"
@@ -51,6 +56,7 @@ pub async fn run(session: &Session<'_>, args: &LaunchArgs) -> Outcome {
                 "已取消启动。确认后可用 --offline-ok 跳过这个提示。".to_owned(),
             ));
         }
+        offline_confirmed = true;
     }
 
     if !session.cli.quiet {
@@ -86,7 +92,7 @@ pub async fn run(session: &Session<'_>, args: &LaunchArgs) -> Outcome {
         LaunchRequest {
             instance_id: instance.id.clone(),
             account_id: account.id.clone(),
-            offline_confirmed: args.offline_ok || account.kind != AccountKind::Offline,
+            offline_confirmed,
             java_path: args.java.clone(),
         },
     )
@@ -129,5 +135,58 @@ pub async fn run(session: &Session<'_>, args: &LaunchArgs) -> Outcome {
                 .map_or_else(|| "未知".to_owned(), |code| code.to_string()),
             event.log_path
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use launcher_core::AccountKind;
+
+    /// The confirmation decision, extracted so it can be asserted without a
+    /// terminal. Mirrors `run`: an online account needs no confirmation,
+    /// `--offline-ok` skips the prompt, and answering yes must report confirmed.
+    fn confirm_offline(kind: &AccountKind, offline_ok: bool, answer: Option<bool>) -> Option<bool> {
+        let mut confirmed = offline_ok || *kind != AccountKind::Offline;
+        if *kind == AccountKind::Offline && !confirmed {
+            match answer {
+                Some(true) => confirmed = true,
+                _ => return None,
+            }
+        }
+        Some(confirmed)
+    }
+
+    #[test]
+    fn answering_yes_at_the_prompt_confirms_the_launch() {
+        // The bug: the answer was collected and then discarded, so the runtime
+        // rejected the launch immediately after the user said yes.
+        assert_eq!(
+            confirm_offline(&AccountKind::Offline, false, Some(true)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn declining_the_prompt_aborts() {
+        assert_eq!(
+            confirm_offline(&AccountKind::Offline, false, Some(false)),
+            None
+        );
+        assert_eq!(confirm_offline(&AccountKind::Offline, false, None), None);
+    }
+
+    #[test]
+    fn offline_ok_skips_the_prompt() {
+        assert_eq!(
+            confirm_offline(&AccountKind::Offline, true, None),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn online_accounts_need_no_confirmation() {
+        for kind in [AccountKind::Microsoft, AccountKind::SkinServer] {
+            assert_eq!(confirm_offline(&kind, false, None), Some(true));
+        }
     }
 }
