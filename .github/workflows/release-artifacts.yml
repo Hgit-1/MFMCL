@@ -183,6 +183,12 @@ jobs:
     needs: [linux, macos]
     runs-on: ubuntu-24.04
     steps:
+      # `gh release upload` resolves the repository from the working directory's
+      # git remote. Without a checkout there is no `.git`, and it fails with
+      # "fatal: not a git repository" before it even looks at the tag — which
+      # reads like a permissions problem and is not one.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
