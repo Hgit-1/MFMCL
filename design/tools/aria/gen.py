@@ -41,7 +41,41 @@ ENDPOINT = "https://api.gpt.ge/v1/images/generations"
 MODEL = os.environ.get("MFMCL_ARIA_IMAGE_MODEL", "gpt-image-2.6-sunburst")
 
 HERE = Path(__file__).resolve().parent
-OUT_DIR = HERE.parent.parent / "flowlaunch-ui" / "public" / "plugins" / "aria-with-you"
+"""
+素材输出目录。
+
+## 为什么不再默认指向主仓库
+
+立绘不再随启动器打包：它们由 [mfmcl-aria-with-you](https://github.com/Hgit-1/mfmcl-aria-with-you)
+单独发布，启动器运行时从 CDN 取（见 `utils/aria.ts` 的 `ART_BASE`）。默认路径若
+还指向 `public/plugins/`，下次重新生成就会往主仓库里写一份 7.6 MB，然后两份各自
+漂移——这正是这次迁移要消除的。
+
+## 为什么改成必须显式指定
+
+尝试过「按相对路径猜同级的插件仓库」，但那依赖两个仓库怎么摆放：放在
+`Documents/` 下、放进 `MFMCL/` 里、或者克隆到别的盘，猜中的概率都不高，而猜错时
+的错误是「往一个新建的空目录里写 36 张图」，比报错更难发现。
+
+所以改为：有 `MFMCL_ARIA_OUT_DIR` 就用它；没有就打印应该怎么设，然后退出。
+"""
+
+
+def resolve_out_dir() -> Path:
+    configured = os.environ.get("MFMCL_ARIA_OUT_DIR")
+    if configured:
+        return Path(configured)
+    print(
+        "请设置 MFMCL_ARIA_OUT_DIR 指向插件仓库的 assets 目录，例如：\n"
+        "  PowerShell:  $env:MFMCL_ARIA_OUT_DIR='C:\\Users\\you\\Documents\\mfmcl-aria-with-you\\assets'\n"
+        "  bash:        export MFMCL_ARIA_OUT_DIR=~/Documents/mfmcl-aria-with-you/assets\n"
+        "\n素材不再写进启动器仓库（public/plugins/），那里已经没有这个目录。",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
+OUT_DIR = resolve_out_dir()
 
 # ---------------------------------------------------------------------------
 # The character

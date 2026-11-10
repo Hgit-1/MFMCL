@@ -41,6 +41,7 @@ wired into CI later without inventing another convention.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -51,7 +52,29 @@ except ImportError:  # pragma: no cover - environment guard
     raise SystemExit("Pillow and numpy are required: pip install pillow numpy")
 
 HERE = Path(__file__).resolve().parent
-ASSET_DIR = HERE.parent.parent / "flowlaunch-ui" / "public" / "plugins" / "aria-with-you"
+"""
+素材目录。
+
+与 `gen.py` 一样，必须由 `MFMCL_ARIA_OUT_DIR` 指定：素材已迁到独立的插件仓库
+（[mfmcl-aria-with-you](https://github.com/Hgit-1/mfmcl-aria-with-you)），主仓库的
+`public/plugins/` 已经不存在了。
+"""
+
+
+def resolve_asset_dir() -> Path:
+    configured = os.environ.get("MFMCL_ARIA_OUT_DIR")
+    if configured:
+        return Path(configured)
+    print(
+        "请设置 MFMCL_ARIA_OUT_DIR 指向插件仓库的 assets 目录，例如：\n"
+        "  PowerShell:  $env:MFMCL_ARIA_OUT_DIR='C:\\Users\\you\\Documents\\mfmcl-aria-with-you\\assets'\n"
+        "  bash:        export MFMCL_ARIA_OUT_DIR=~/Documents/mfmcl-aria-with-you/assets",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
+ASSET_DIR = resolve_asset_dir()
 # Reports and contact sheets live beside the tool, not in the shipped asset
 # directory: `public/` is what gets bundled into the app, and an audit report has
 # no business being in the binary.

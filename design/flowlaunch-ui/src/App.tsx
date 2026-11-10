@@ -1399,6 +1399,24 @@ function App() {
    * 立绘就是墙纸；现在换成了按页取图，没生成的页面宁可不画。
    */
   const ariaWatermark = ariaPage ? ariaSeason : null;
+  /**
+   * 素材是否取不到。
+   *
+   * 立绘从远端 CDN 加载（见 `utils/aria.ts`），断网、CDN 被墙、或上游删了某个
+   * tag 时它会加载失败。此时 `AriaFigure` 渲染为空，而内容区仍为它留着一列
+   * 宽度——那会变成一块什么都没有的空白，比没有立绘更像故障。
+   *
+   * 所以失败要能回传到这一层：一旦确认取不到，收回那一列，界面回到「没有插件」
+   * 的样子。只在用户主动启用 Aria 时才可能出现，而且恢复后下次会话自然重试。
+   */
+  const [ariaArtworkFailed, setAriaArtworkFailed] = useState(false);
+  /*
+   * 换页或换季后重新尝试。
+   *
+   * 一次失败往往是单张图的问题（某个 tag 少了一张、当天 CDN 抖动），而不是整个
+   * 素材源都不可用。把失败状态永久粘住，会让用户在换页后明明能取到也不显示了。
+   */
+  useEffect(() => setAriaArtworkFailed(false), [ariaPage, season]);
 
   /**
    * Aria 设置的写入入口。
@@ -1852,7 +1870,7 @@ function App() {
        * 用一个属性而不是在 `.main` 上写死内边距：关掉插件、或者当前页没有
        * 动作时，布局要立刻回到没有这一列的状态，不能留下一块无用的空白。
        */
-      data-aria-watermark={ariaWatermark ? 'true' : undefined}
+      data-aria-watermark={ariaWatermark && !ariaArtworkFailed ? 'true' : undefined}
     >
       {/*
         背景层：铺在一切之下。
@@ -2139,6 +2157,7 @@ function App() {
             variant="watermark"
             label="watermark"
             page={ariaPage}
+            onUnavailable={() => setAriaArtworkFailed(true)}
           />
         </div>
       )}

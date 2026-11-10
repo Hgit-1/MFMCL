@@ -132,11 +132,7 @@ export function resolveSeason(setting: AriaSetting, now: Date = new Date()): Sea
 // ---------------------------------------------------------------------------
 
 /**
- * 素材路径。
- *
- * 写成常量而不是 `fetch('manifest.json')`：八张图的文件名是构建产物的一部分，
- * 运行期再取一次清单只是多一个可能失败的请求。清单仍然随包发布（`manifest.json`
- * 记录了生成用的模型、提示词与哈希），供人核对，不供运行时查询。
+ * 一个季节的三张图。
  *
  * 尺寸：`hero` 是 1024×1536 竖幅全身，`portrait` 是 1024×1024 半身；`thumb` 是
  * 384 px 的长边缩略图，供侧栏与卡片使用——把 280 KB 的原图塞进 96 CSS px 的框里，
@@ -148,7 +144,40 @@ export interface SeasonArt {
   thumb: string;
 }
 
-const ART_BASE = '/plugins/aria-with-you';
+/**
+ * 素材路径。
+ *
+ * ## 为什么素材在另一个仓库
+ *
+ * 立绘来自 [mfmcl-aria-with-you](https://github.com/Hgit-1/mfmcl-aria-with-you)，
+ * 不再随启动器打包。理由是两个仓库的节奏不同：启动器发版是按功能走，立绘更新
+ * 是按季节走；把 7.6 MB 图片钉死在启动器的每次构建里，等于让换一张图也要发一次
+ * 启动器版本，也让启动器仓库的体积被美术资产主导。
+ *
+ * 素材本身是生成出来的（见那个仓库的 `tools/`），可复现、可复核，所以从远端取
+ * 与从本地取在信任上没有区别——两侧都不需要人工确认某张图是不是「对的那张」。
+ *
+ * ## 为什么用 jsDelivr 而不是 raw.githubusercontent.com
+ *
+ * jsDelivr 走公共 CDN，带长缓存与 `immutable` 语义（下面通过版本号锁定，见
+ * `ART_PIN`），换季当天的加载不会因为 GitHub 的 rate limit 或地域性连接问题
+ * 失败。raw 域名在国内经常直连不上，而这个启动器的用户主要在中文区。
+ *
+ * ## 版本锁定而不是 `@main`
+ *
+ * 指向分支意味着上游一推送，所有用户的界面第二天就变了，且没有回滚点——如果新
+ * 一批立绘有问题，启动器这边没有任何办法退回。锁定到一个 tag，换图就是一次
+ * 显式的版本号提升，出问题时改回去也是一行。
+ */
+const ART_REPO = 'Hgit-1/mfmcl-aria-with-you';
+/**
+ * 素材版本。
+ *
+ * 与插件仓库的 release tag 一致。提升它的唯一理由是素材变了——不是启动器发版。
+ */
+const ART_PIN = 'v1.1.0';
+
+const ART_BASE = `https://cdn.jsdelivr.net/gh/${ART_REPO}@${ART_PIN}/assets`;
 
 export const SEASON_ART: Record<Season, SeasonArt> = {
   spring: {

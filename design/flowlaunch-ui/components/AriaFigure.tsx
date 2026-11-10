@@ -38,6 +38,18 @@ interface AriaFigureProps {
    * 突然空出一块，看起来像插件坏了。
    */
   page?: AriaPage | null;
+  /**
+   * 素材彻底取不到时通知调用方。
+   *
+   * ## 为什么需要这个回调
+   *
+   * 素材现在来自远端（见 `utils/aria.ts` 的 `ART_BASE`），而内容区右侧为立绘
+   * 留了一列宽度（`--aria-figure-width`）。如果素材加载失败、组件渲染为空，
+   * 那一列就变成一块什么都没有的空白——比没有立绘更像故障。
+   *
+   * 调用方收到这个信号后收回那一列，界面回到「没有插件」的样子。
+   */
+  onUnavailable?: () => void;
 }
 
 /**
@@ -49,7 +61,7 @@ interface AriaFigureProps {
  * `key={season}` 由父组件负责——没有它，React 会复用同一个 `img` 节点，浏览器
  * 在 `src` 变化时先画旧图再画新图，视觉上是一次闪烁。重挂载则是一次干净的替换。
  */
-export function AriaFigure({ season, variant, label, page }: AriaFigureProps) {
+export function AriaFigure({ season, variant, label, page, onUnavailable }: AriaFigureProps) {
   const { t } = useI18n();
   /*
    * 水印用半身像，分页动作与主页用全身像。
@@ -102,8 +114,7 @@ export function AriaFigure({ season, variant, label, page }: AriaFigureProps) {
    * 分页素材缺失时退回通用季节立绘，只退一次。
    *
    * 不以「HTTP 能不能取到」预判，因为运行期拿不到文件系统；`onError` 是唯一
-   * 可靠的信号。退过一次之后再失败就当作真的没有素材，渲染为空——否则两张都缺
-   * 时会来回切换，比不显示更糟。
+   * 可靠的信号。退过一次之后再失败就当作真的没有素材。
    */
   const fallback = variant === 'sidebar' ? SEASON_ART[season].thumb : SEASON_ART[season].hero;
   const handleError = () => {
@@ -112,6 +123,7 @@ export function AriaFigure({ season, variant, label, page }: AriaFigureProps) {
       return;
     }
     setFailed(true);
+    onUnavailable?.();
   };
 
   return (
