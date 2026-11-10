@@ -44,12 +44,21 @@ import {
   permissionHint,
   permissionLabel,
   pluginNeedsAttention,
+  pluginFromInstalled,
   toPluginStatePayload,
   type LauncherPlugin,
   type PluginGlyph,
   type PluginOption,
   type PluginStore,
 } from '../utils/plugins';
+import {
+  listInstalledPlugins,
+  reloadPlugins,
+  removeInstalledPlugin,
+  type InstalledPluginRecord,
+} from '../utils/pluginInstall';
+import { PluginImportBar } from './PluginImportBar';
+import { PluginSourcePanel } from './PluginSourcePanel';
 import {
   clearLaunchHistory,
   errorText,
@@ -161,6 +170,23 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
     return () => { alive = false; };
   }, []);
 
+  /*
+   * 打开插件页时从磁盘同步一次已安装列表。
+   *
+   * 挂在插件页而不是 App 上：这里才是需要它的界面，App 挂载时同步会让每次启动
+   * 都多读一次目录，而大多数会话根本不会打开插件页。列表本身已经在
+   * `loadPluginStore` 里用缓存渲染过，所以这一次同步是「校正」而不是「首次加载」，
+   * 晚几百毫秒不会有空白。
+   */
+  const refreshed = useRef(false);
+  useEffect(() => {
+    if (refreshed.current) return;
+    refreshed.current = true;
+    void refreshInstalled();
+    // `refreshInstalled` 只读磁盘、不依赖渲染状态；依赖数组留空是刻意的。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const clearHistory = async () => {
     try {
       await clearLaunchHistory();
@@ -224,6 +250,70 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
   /** 已安装数（不含计划中的条目）：页头的「已安装 N 个」不能把预告算进去。 */
   const installedCount = useMemo(() => installedPluginCount(store), [store]);
   const text = (value: Localized) => renderLocalized(language, value);
+
+  /**
+   * 用磁盘结果替换「已安装」那一组。
+   *
+   * ## 为什么是整体替换而不是合并
+   *
+   * 磁盘是这一组的唯一真值。合并会让「用户手工删掉了插件目录」留下一个幽灵条目：
+   * 它在列表里、能开关、能展开，但点安装/启动时什么都不存在。整体替换的代价只是
+   * 每次多写一次 localStorage，换来的是列表与文件系统永远一致。
+   *
+   * `enabled` 不清空：装了的插件应当保留用户拨过的开关。`prunePluginStore` 会在
+   * 下一次加载时清掉真正不再存在的 id。
+   */
+  const applyInstalled = (records: InstalledPluginRecord[]) => {
+    const installed = records
+      .map(record => pluginFromInstalled(record))
+      .filter((plugin): plugin is NonNullable<typeof plugin> => plugin !== null);
+    updateStore({ ...store, installed });
+  };
+
+  const refreshInstalled = async () => {
+    try {
+      applyInstalled(await listInstalledPlugins());
+    } catch {
+      // 预览模式或后端不可用：保留缓存的那一份，页面照常可用。
+    }
+  };
+
+  /**
+   * 重新加载：读磁盘 + 后端对账，然后提示结果。
+   *
+   * 两件事必须一起做。只刷新前端列表，后端启动链路还在用旧的 `plugin_state`；
+   * 只调后端对账，界面又是旧的。所以走 `reloadPlugins`——它在 Rust 侧两件都做，
+   * 返回的结果直接喂给列表。
+   */
+  const reloadNow = async () => {
+    try {
+      const records = await reloadPlugins();
+      applyInstalled(records);
+      onNotice(t('plugin.reloadDone', { values: { count: records.length } }));
+      onPendingRestartChange([]);
+    } catch (error) {
+      onNotice(errorText(error, t('plugin.syncFailed', { values: { reason: '' } })));
+    }
+  };
+
+  /**
+   * 安装成功后的确认。
+   *
+   * ## 为什么一定要停在这一步
+   *
+   * 「装完自动弹窗 + 用户确认后才 reload」不是仪式。插件在磁盘上存在、但后端
+   * 还没把它读进运行时，是这套系统里最容易被误解的中间态：卡片已经出现在列表里，
+   * 用户以为一切就绪，而这个插件的贡献在下次启动时根本不会被应用。把选择交给
+   * 用户，并在弹窗里说清「现在重新加载还是先关掉」，用户就有了一个明确的时刻
+   * 知道自己装了什么、什么时候生效。
+   *
+   * ## 为什么允许「先关闭」
+   *
+   * 装一个自己不想要的东西是常事（点错了、看错作者）。让他能立刻退出去把它移除，
+   * 比强制立刻生效更尊重人——尤其是当那个插件申请了 `launchHook` 的时候。
+   */
+  const [installResult, setInstallResult] = useState<InstalledPluginRecord | null>(null);
+  const [sourceOpen, setSourceOpen] = useState(false);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -307,11 +397,32 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
   const remove = (plugin: LauncherPlugin) => {
     void (async () => {
       if (!(await confirmAction(t('plugin.removeConfirm', { values: { name: text(plugin.name) } })))) return;
+      /*
+       * 两种来源，两种删除方式。
+       *
+       * 从磁盘装的要真的删目录——否则界面上的卡片消失了、文件还在，下次 reload
+       * 又会出现。粘贴清单的没有磁盘痕迹，只清 localStorage 的记录即可。共用的
+       * 只有「清掉开关状态」这一步。
+       */
+      if (plugin.thirdParty) {
+        try {
+          await removeInstalledPlugin(plugin.id);
+        } catch (error) {
+          onNotice(errorText(error, t('plugin.syncFailed', { values: { reason: '' } })));
+          return;
+        }
+      }
       const enabled = { ...store.enabled };
       const options = { ...store.options };
       delete enabled[plugin.id];
       delete options[plugin.id];
-      updateStore({ ...store, custom: store.custom.filter(item => item.id !== plugin.id), enabled, options });
+      updateStore({
+        ...store,
+        custom: store.custom.filter(item => item.id !== plugin.id),
+        installed: (store.installed ?? []).filter(item => item.id !== plugin.id),
+        enabled,
+        options,
+      });
       if (expanded === plugin.id) setExpanded(null);
       onPendingRestartChange(pendingRestart.filter(id => id !== plugin.id));
     })();
@@ -485,6 +596,34 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
         </button>
       </div>
 
+      {/*
+        导入与来源区。
+        放在工具栏下方、列表上方：它是「往这个列表里加东西」的入口，视觉上应该
+        紧挨列表而不是压在页脚。三个动作分成两组——本机文件与网址是「装某一个」，
+        插件源是「逛一逛」——所以中间留了分隔。
+      */}
+      <PluginImportBar
+        onNotice={onNotice}
+        onInstalled={record => {
+          // 先把它写进列表（让用户立刻看到卡片），再弹确认框问要不要 reload。
+          setInstallResult(record);
+          void refreshInstalled();
+        }}
+        onOpenSourcePanel={() => setSourceOpen(true)}
+        onReload={() => { void reloadNow(); }}
+      />
+
+      {sourceOpen && (
+        <PluginSourcePanel
+          onNotice={onNotice}
+          onInstalled={record => {
+            setInstallResult(record);
+            void refreshInstalled();
+          }}
+          installedIds={new Set(plugins.filter(plugin => plugin.thirdParty).map(plugin => plugin.id))}
+        />
+      )}
+
       <div className={styles.list}>
         {pendingRestart.length > 0 && (
           <p className={styles.notice} role="status">
@@ -528,8 +667,7 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
                     <div className={styles.headCopy}>
                       <div className={styles.nameLine}>
                         <span className={styles.name} title={name}>{name}</span>
-                        <span className={styles.tag}>{t(plugin.builtin ? 'plugin.builtin' : 'plugin.thirdParty')}</span>
-                        {/* 「计划中」与「第三方」并列：身份和状态是两件事，缺一项都会误导。 */}
+                        <span className={styles.tag}>{t(plugin.builtin ? 'plugin.builtin' : 'plugin.thirdParty')}</span>                        {/* 「计划中」与「第三方」并列：身份和状态是两件事，缺一项都会误导。 */}
                         {plugin.planned && (
                           <span className={`${styles.tag} ${styles.tagPlanned}`}>{t('plugin.planned')}</span>
                         )}
@@ -605,7 +743,7 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
                         计划中的插件根本没被安装，给它一个「移除」按钮只会让用户以为
                         自己装过它；内置插件则由启动器负责，同样不给移除。
                       */}
-                      {!plugin.builtin && !plugin.planned && (
+                      {!plugin.builtin && !plugin.bundled && !plugin.planned && (
                         <button
                           type="button"
                           className={`${styles.ghostButton} ${styles.dangerButton}`}
@@ -901,6 +1039,58 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
           <p className={styles.error} role="alert">
             <AlertTriangle size={13} /> {renderLocalized(language, installError)}
           </p>
+        )}
+      </Modal>
+
+      {/*
+        安装成功后的确认框。
+        两个按钮的措辞刻意不对称：「重新加载」是动作，「先关闭」是延后而不是拒绝。
+        用户点「先关闭」之后插件仍在列表里（未生效），下次点「重新加载插件」即可——
+        所以这里不能说「取消」，那会让他以为安装被撤销了。
+      */}
+      <Modal
+        isOpen={installResult !== null}
+        onClose={() => setInstallResult(null)}
+        title={t('plugin.installReloadTitle')}
+        size="sm"
+        footer={(
+          <div className={styles.modalActions}>
+            <button type="button" className={styles.modalButton} onClick={() => setInstallResult(null)}>
+              {t('plugin.closeInstead')}
+            </button>
+            <button
+              type="button"
+              className={`${styles.modalButton} ${styles.modalPrimary}`}
+              onClick={() => { setInstallResult(null); void reloadNow(); }}
+            >
+              {t('plugin.reloadConfirm')}
+            </button>
+          </div>
+        )}
+      >
+        {installResult && (
+          <>
+            <p className={styles.installHint}>
+              {t('plugin.installReloadBody', {
+                values: {
+                  name: String(installResult.id),
+                  version: installResult.version,
+                },
+              })}
+            </p>
+            <p className={styles.installHint}>{t('plugin.installReloadHint')}</p>
+            {/*
+              第三方声明放在确认框里，而不是只放在卡片上。
+              安装的这一刻是用户唯一还在读文字的时刻；之后再提醒，他已经在用了。
+            */}
+            <p className={styles.thirdPartyNote}>
+              <AlertTriangle size={13} />
+              <span>
+                <strong>{t('plugin.thirdPartyWarningTitle')}</strong>
+                {t('plugin.thirdPartyNoSandbox')}
+              </span>
+            </p>
+          </>
         )}
       </Modal>
     </div>

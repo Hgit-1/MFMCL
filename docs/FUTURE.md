@@ -38,17 +38,21 @@ If a mobile client becomes viable before local game execution, prioritize safe i
 
 ## Aria with You: seasonal artwork plugin
 
-A planned third-party plugin, listed in the plugin workspace as `planned` (see
-[`PLUGIN.md`](../PLUGIN.md)). It would switch the Aria character artwork between spring,
-summer, autumn and winter based on the real date, and tint the launcher's surfaces to match
-the current season.
+**Shipped.** This section previously described the plugin as planned. It is now installed
+by default and listed in `BUNDLED_PLUGINS`, so the gates below are historical. What
+changed: the three hooks it needed (`theme`, `background`, `sidebar`) are now triggered by
+`App.tsx`, and its artwork is generated, audited and packed by `design/tools/aria/`
+(`gen.py`, `audit.py`, `seg.py`, `pack.py`).
 
-### Why it cannot ship as a normal plugin
+The original reasoning is kept below because it is the template for the next plugin that
+needs a capability the launcher does not have.
 
-The declared hooks are `theme`, `background` and `sidebar`. Only the `launch` hook is
-currently triggered; the other three are accepted in a manifest and reported honestly as
-"declared only, not triggered yet". The plugin therefore needs an entire capability the
-launcher does not have, not just a switch:
+### Why it could not ship as a normal plugin at the time
+
+The declared hooks were `theme`, `background` and `sidebar`. Only the `launch` hook was
+triggered at the time; the other three were accepted in a manifest and reported honestly as
+"declared only, not triggered yet". The plugin therefore needed an entire capability the
+launcher did not have, not just a switch:
 
 1. A theme override channel that lets a plugin substitute visual variables (accent, surface
    tint, radius) without breaking contrast in any of the four presets or in high-contrast
@@ -61,12 +65,84 @@ launcher does not have, not just a switch:
    `theme`, `uiSlot` and `storage` only - deliberately no `network` (artwork must ship with
    the plugin, not be fetched at runtime) and no `filesystem` (it must not touch game files).
 
-### Gates before it is implemented
+### Gates that were met
 
-1. Define the theme-override contract and prove it across all four presets, light/dark, and
-   reduced-motion mode without regressing text contrast.
-2. Set hard limits for plugin-supplied images (dimensions, bytes, decode memory) and test
-   them with a deliberately oversized asset.
-3. Decide how artwork assets are shipped and integrity-checked, and whether redistribution
-   rights for each seasonal artwork set are cleared.
-4. Only then move the manifest out of `PLANNED_PLUGINS` and let users install it normally.
+1. The theme-override contract is `utils/aria.ts::applySeasonTheme`, which routes the accent
+   through `applyAccent` and never writes `--color-bg-*` or `--color-text-*`, so contrast
+   stays the launcher's responsibility rather than the plugin's.
+2. Artwork limits are enforced by `plugin_package.rs` on the whole package (32 MiB extracted,
+   8 MiB per entry, 256 entries) and by the thumbnail step, which caps side art at 384 px.
+3. Assets ship inside the `.mflp`; the index pins a SHA-256 and the installer verifies it
+   before unpacking. Redistribution rights remain the author's responsibility, stated in the
+   plugin's `author` field.
+4. It moved out of `PLANNED_PLUGINS` into `BUNDLED_PLUGINS` and can now be disabled.
+
+## Distribution through application stores
+
+Recorded as research, not as a plan with a date. The question is whether MFMCL can be
+installed by people who do not read a README, and the answer depends more on store policy
+than on packaging work.
+
+### What blocks it today
+
+**The plugin system, structurally.** Users install plugin packages at runtime from an HTTPS
+index; those packages may contain a `main.js` that runs inside the WebView. That is
+"download and execute code which introduces or changes features" in the exact words of two
+store policies:
+
+- **Apple, App Review Guidelines 2.5.2**: an app must be self-contained and "may not
+  download, install, or execute code which introduces or changes features or functionality
+  of the app". A runtime plugin loader fails this by design, not by implementation detail.
+  For reference, none of Prism Launcher, MultiMC or comparable Java Edition launchers are on
+  the Mac App Store.
+- **Microsoft Store, policy 10.2.5**: the same prohibition for products that fetch remote
+  code changing core functionality after certification.
+
+Disabling the plugin system for a store build is technically possible and would be the only
+honest way to satisfy those policies. It is a product decision, not an engineering one:
+a store build without plugins is a different product from the one described in
+[`PLUGIN.md`](../PLUGIN.md).
+
+**No code signing.** `tauri.conf.json` declares no `signingIdentity`, and
+`.github/workflows/desktop-artifacts.yml` builds with `--no-sign` on purpose. Without
+signing, macOS Gatekeeper blocks the app and Windows SmartScreen warns on first run. This
+is a prerequisite for *any* distribution to non-technical users, store or not.
+
+**Flathub requires a network-free build.** Its builder enforces the sandbox with networking
+disabled, so `npm ci` and `cargo fetch` fail. Building there means vendoring the whole
+dependency closure into the repository and committing lockfiles that no longer resolve at
+build time. Feasible, but it changes how releases are produced.
+
+### Candidate channels, ordered by reachability
+
+| Channel | Blocking requirement | Verdict |
+| --- | --- | --- |
+| GitHub Releases + in-app updater | Code signing (Windows and macOS) | Closest to done; the only work is certificates, notarisation and `tauri-plugin-updater` |
+| winget | A stable installer URL and SHA-256; signing strongly recommended but not enforced | Straightforward once releases are signed |
+| Flathub | Network-free reproducible build, vendored dependencies | Possible; needs a separate build pipeline |
+| Mac App Store | Removing or sandboxing the plugin system | Contradicts the current design |
+| Microsoft Store | Same as Apple, policy 10.2.5 | Same |
+
+### Why a store presence is probably the wrong goal anyway
+
+Minecraft Java Edition players find launchers through communities and videos, not through
+app-store search. The measurable goal behind "available to everyone" is *install without
+friction*, and a signed downloadable installer plus an in-app updater achieves that without
+asking a store to accept a plugin loader. A landing page with download links, version
+history and published checksums reaches the same audience with no review queue.
+
+### Gates before any store work starts
+
+1. Windows and macOS releases are signed, notarised, and verified on physical machines;
+   `--no-sign` disappears from the release workflow.
+2. An install / upgrade / uninstall cycle is verified on all three platforms, including the
+   path where an update arrives while the game is running.
+3. A store build has an explicit answer to the plugin question: either plugins are compiled
+   out (and the UI says so), or the store channel is dropped as incompatible.
+4. For Flathub specifically: a reproducible offline build is proven to produce the same
+   binary as the CI build, so the store is not shipping something different from what was
+   tested.
+
+Until 1 and 2 are done, no store submission should be attempted: an unsigned app would be
+rejected or flagged regardless of how the plugin question is resolved, and a rejection
+teaches nothing about the parts that actually need deciding.

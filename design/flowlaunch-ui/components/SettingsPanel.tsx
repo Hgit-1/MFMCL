@@ -31,6 +31,8 @@ import { ModelDownloadCard } from './ModelDownloadCard';
 import { MotionSection } from './MotionSection';
 import { readMotionLevel, type MotionLevel } from '../utils/motion';
 import { LauncherLogCard } from './LauncherLogCard';
+import { AriaSection } from './AriaSection';
+import type { AriaSetting } from '../utils/aria';
 import { readBackgroundSetting, saveBackgroundSetting, type BackgroundSetting } from '../utils/background';
 import styles from './SettingsPanel.module.css';
 
@@ -73,9 +75,19 @@ type SettingsPanelProps = {
   dark: boolean;
   /** 重新运行首次引导。高级页的「重新运行引导」用它。 */
   onRerunOnboarding?: () => void;
+  /**
+   * Aria with You 的设置与改动入口。
+   *
+   * 从 `App` 传进来而不是在设置面板内部读 localStorage：季节要同时驱动主页、
+   * 侧栏与这一页本身，三处共用一个 state 才不会出现「改了这里、那边还是旧的」。
+   */
+  ariaSetting?: AriaSetting;
+  onAriaChange?: (next: Partial<AriaSetting>) => void;
+  /** 插件页那个开关的当前值（与 `ariaSetting.enabled` 同源）。 */
+  ariaPluginEnabled?: boolean;
 };
 
-export function SettingsPanel({ theme, onThemeChange, onClose, instance, initialTab, onJavaRuntimesChange, onGlobalJavaChange, onInstanceJavaChange, onSaveSettings, onBackgroundChange, onNotice, dark, onRerunOnboarding }: SettingsPanelProps) {
+export function SettingsPanel({ theme, onThemeChange, onClose, instance, initialTab, onJavaRuntimesChange, onGlobalJavaChange, onInstanceJavaChange, onSaveSettings, onBackgroundChange, onNotice, dark, onRerunOnboarding, ariaSetting, onAriaChange, ariaPluginEnabled }: SettingsPanelProps) {
   const { t, language } = useI18n();
   const [prefs, setPrefs] = useState<LauncherPrefs>(() => {
     // 从未保存过强调色时，回落到屏幕上实际生效的值，而不是硬编码的默认色。
@@ -608,6 +620,20 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         onNotice={onNotice ?? (() => undefined)}
         dark={dark}
       />
+      {/*
+        Aria 排在背景之后。
+        两者都是「界面长什么样」，而背景是启动器自己的功能、Aria 是插件——把
+        内置功能放在插件之前，用户看设置页时的顺序才与「哪些是原生的」一致。
+        没有传回调时整块不渲染（例如实例设置页复用同一个组件时不需要它）。
+      */}
+      {ariaSetting && onAriaChange && (
+        <AriaSection
+          setting={ariaSetting}
+          onChange={onAriaChange}
+          pluginEnabled={ariaPluginEnabled ?? ariaSetting.enabled}
+          dark={dark}
+        />
+      )}
       <section className={styles.group}>
         <h3>{t('settings.display')}</h3>
         {field(t('settings.opacity'), t('settings.opacityHint'),

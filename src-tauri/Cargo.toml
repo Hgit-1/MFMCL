@@ -38,6 +38,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 chrono.workspace = true
+hex.workspace = true
 sha2.workspace = true
 download-engine = { path = "../crates/download-engine" }
 launcher-core = { path = "../crates/launcher-core" }
@@ -53,9 +54,11 @@ mc-metadata = { path = "../crates/mc-metadata" }
 reqwest.workspace = true
 regex.workspace = true
 shlex.workspace = true
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 uuid.workspace = true
+zip.workspace = true
 tauri-plugin-dialog = "2"

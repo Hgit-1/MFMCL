@@ -27,10 +27,12 @@ import { useEffect, useMemo, useRef } from 'react';
 import { Play } from 'lucide-react';
 import { Button } from './Button';
 import { InstanceIcon } from './InstanceIcon';
+import { AriaFigure } from './AriaFigure';
 import { useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
 import type { LoaderIcon as LoaderIconSpec } from '../utils/store/loaders';
 import type { InstanceIconRecord } from '../utils/instanceIcons';
+import type { Season } from '../utils/aria';
 import type { Account, GameInstance } from '../types';
 import styles from './Dashboard.module.css';
 
@@ -56,6 +58,13 @@ interface DashboardProps {
   instanceIcons: Record<string, InstanceIconRecord>;
   /** 元数据在、图读不出来时清掉那条记录。 */
   onIconMissing: (instanceId: string) => void;
+  /**
+   * Aria 立绘的当前季节；`null` 表示插件没开或用户关掉了主页立绘。
+   *
+   * 由 `App` 传入而不是在这里读设置：季节要在侧栏、设置页与这一页保持一致，
+   * 三处各读一次 localStorage 会在「用户刚改了固定季节」的那一帧里不一致。
+   */
+  ariaSeason?: Season | null;
 }
 
 /** 启动阶段的展示文案。与 App 里的进度条共用同一套键。 */
@@ -80,6 +89,7 @@ export function Dashboard({
   iconForLoader,
   instanceIcons,
   onIconMissing,
+  ariaSeason,
 }: DashboardProps) {
   const { t } = useI18n();
 
@@ -153,7 +163,7 @@ export function Dashboard({
   const percent = isLaunching ? Math.round(launching.progress * 100) : 0;
 
   return (
-    <div className={styles.page}>
+    <div className={styles.page} data-aria={ariaSeason ?? undefined}>
       {/*
         实例信息区。PCL2 把版本名写在按钮下方；这里反过来把「要启动的实例」放在
         页面正中：按钮是动作，实例是宾语，读起来是
@@ -194,6 +204,13 @@ export function Dashboard({
             </p>
           )}
         </div>
+
+        {/*
+          Aria 立绘。放在实例信息之后，视觉上落在右侧。
+          `key` 是必要的：换季时复用同一个节点会让浏览器先画旧图再画新图，
+          表现为一次闪烁（见 AriaFigure 的注释）。
+        */}
+        {ariaSeason && <AriaFigure key={ariaSeason} season={ariaSeason} variant="hero" label="home" />}
       </div>
 
       {/*

@@ -6,6 +6,148 @@
   min-height: 100vh;
   display: flex;
   overflow: hidden;
+  /*
+   * 侧栏宽度，供多个「需要避开侧栏」的绝对定位层共用。
+   *
+   * 240px 与 `.sidebar` 的 `width` 是同一个值；写成变量是因为水印层、底色层都
+   * 需要它，而各抄一遍数字迟早会有一个改漏。760px 断点处侧栏折成顶部横条，
+   * 把这个变量归零即可让两层同时跟上。
+   */
+  --sidebar-width: 240px;
+  /*
+   * Aria 水印立绘占用的列宽。
+   *
+   * ## 为什么内容区要为它让出一列
+   *
+   * 立绘画在内容之下，而很多页面整页只铺一张不透明大卡片（内容商店的版本列表
+   * 就是典型：一张 resultsCard 从顶部铺到底部）。这种情况下人物只剩右边缘
+   * 一条，看起来像被裁坏了——用户报的就是这个。
+   *
+   * 实测四页 × 四档分辨率，版本列表页的可见比例只有 5–27%，其余页面 55–75%。
+   * 所以「让它垫在下面」对全幅卡片页不成立：没有空间的地方，垫在下面等于没有。
+   *
+   * 修法是给它一列。内容区右侧让出这个宽度，卡片就不会压到人物；立绘仍然
+   * 绝对定位、不参与文档流，只是现在它站的那块地方真的空出来了。
+   *
+   * ## 为什么是一个变量而不是两处各写一遍
+   *
+   * 立绘的 `width` 和内容区的 `padding-right` 必须是同一个值，否则留出的空间
+   * 与人物对不上，边缘又会露出来。断点只在这里定义一次，`AriaFigure.module.css`
+   * 只消费变量——这样调尺寸不会出现「改了一处、另一处还是旧值」。
+   */
+  --aria-figure-width: clamp(180px, min(24vw, 34vh), 380px);
+}
+
+/*
+ * 有水印的页面让出右侧一列。
+ *
+ * 只在立绘真的存在时生效：`data-aria-watermark` 由 App 在「插件已启用且有本页
+ * 动作」时写上，所以关掉插件后布局立刻恢复到没有这一列的样子——不会留下一块
+ * 无用的空白。
+ */
+.app[data-aria-watermark='true'] .main {
+  padding-right: var(--aria-figure-width);
+}
+
+/*
+ * 与 `AriaFigure.module.css` 的隐藏断点必须一致。
+ *
+ * 立绘在窄窗口下不显示时，这块留白也必须一起消失，否则内容区右侧会空出一条
+ * 什么都没有的窄带——那比没有立绘更像 bug。两处的断点写在两个文件里，改一处
+ * 就要改另一处；这是 CSS 模块化的固有限制，注释在这里是为了让人改得到。
+ */
+@media (max-width: 820px) {
+  .app[data-aria-watermark='true'] .main {
+    padding-right: 0;
+  }
+}
+
+@media (max-height: 460px) {
+  .app[data-aria-watermark='true'] .main {
+    padding-right: 0;
+  }
+}
+
+@media (max-width: 620px) {
+  .app[data-aria-watermark='true'] .main {
+    padding-right: 0;
+  }
+}
+
+/* 矮但不太窄：留白收窄到一半，立绘仍能站住而不挤占内容。 */
+@media (max-height: 600px) and (min-width: 821px) {
+  .app[data-aria-watermark='true'] {
+    --aria-figure-width: clamp(150px, min(18vw, 28vh), 260px);
+  }
+}
+
+/*
+ * Aria 水印立绘的定位层。
+ *
+ * ## 为什么需要一层容器，而不是直接放在 `.main` 里
+ *
+ * 水印必须在**内容之下**。`.main` 自己有不透明底色，所以两种放法都失败：
+ *
+ *   - 负 z-index 作 `.main` 的子元素 → 被 `.main` 的底色整个盖住（完全不可见）；
+ *   - 正 z-index 作 `.main` 的子元素 → 画在卡片上面（文字被压住，不可读）。
+ *
+ * 实测九档分辨率（1024×768 到 3440×1440），凡是在 `.main` 内部的做法，人物脸部
+ * 都会和第一张卡片打架。所以水印被提到 `.main` 之前，成为同级的独立一层：
+ * `.main` 之后绘制，卡片自然压在它上面，而它又不会被 `.main` 的底色盖掉。
+ *
+ * ## 为什么是 `position: absolute; inset: 0` 加 `padding-left`
+ *
+ * 这一层覆盖整个窗口，用内边距让出侧栏，于是它的内容区与 `.main` 的坐标完全
+ * 重合（包括 760px 以下侧栏变顶部横条时，内边距归零）。用 `right: 0` 直接锚
+ * 窗口右边缘也可以，但那样在有竖向滚动条时会偏出几个像素。
+ */
+.ariaWatermarkLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  /*
+   * 只避开侧栏，右边一直延伸到窗口右缘。
+   *
+   * ## 为什么右边不能也减去立绘宽度
+   *
+   * 内容区用 `padding-right: var(--aria-figure-width)` 让出一列，那一列位于
+   * **窗口最右侧**。立绘层若也减去同样的宽度，它的右边缘就退到内容区里，立绘
+   * 跟着被推进卡片下方——实测那样做可见比例掉到 8%，比修复前更差。
+   *
+   * 正确的关系是：立绘层铺到窗口右缘，立绘靠 `right: 0` 站进那块留白。
+   */
+  left: var(--sidebar-width, 240px);
+  overflow: hidden;
+}
+
+/*
+ * 内容区底色。
+ *
+ * `.main` 自己原来画这层底色，但它必须给水印让路：底色不透明就会盖住水印，
+ * 而水印又不能画在 `.main` 内部（那样会被卡片盖住，实测九档分辨率全中）。
+ *
+ * 所以底色被拆到这一层，顺序变成：底色 → 水印 → 内容。三者在同一个 z-index
+ * 层级里按 DOM 顺序绘制，`z-index: 0` 是它们在侧栏/内容区（`z-index: 1`）之下的
+ * 原因。
+ *
+ * 与 `.main` 的坐标保持一致（同样的左偏移），否则浅色主题下会露出一条缝。
+ */
+.ariaUnderlay {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  left: var(--sidebar-width, 240px);
+  background: var(--color-bg-primary);
+}
+
+/* 窄屏：侧栏折成顶部横条（见下方 760px 断点），内容区横向占满。 */
+@media (max-width: 760px) {
+  .ariaWatermarkLayer,
+  .ariaUnderlay {
+    left: 0;
+  }
 }
 
 /*
@@ -19,6 +161,41 @@
 .main {
   position: relative;
   z-index: 1;
+}
+
+/*
+ * Aria 季节染色层。
+ *
+ * 夹在背景层（z-index 0）与面板（z-index 1）之间。浓度由
+ * `--aria-tint-strength` 控制：插件关闭或用户关掉染色时它是 0，整层不可见，
+ * 但它仍然存在——这样开关是纯粹的「透明度变化」，不是挂载/卸载节点，切换时
+ * 不会有一次性重排。
+ *
+ * 浓度上限刻意很低（12%）。这一层只是让界面「有季节的光」，不是把界面染成
+ * 那个颜色：再高就会和背景遮罩叠加，把用户选的背景照片压没。
+ */
+.ariaTint {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: var(--aria-tint-strength, 0);
+  background:
+    radial-gradient(120% 90% at 12% 0%, var(--aria-tint-a, transparent) 0%, transparent 62%),
+    radial-gradient(110% 85% at 100% 100%, var(--aria-tint-b, transparent) 0%, transparent 58%);
+  mix-blend-mode: normal;
+  transition: opacity var(--duration-slow) var(--ease, ease);
+}
+
+/*
+ * 染色层与背景图同时存在时，它的颜色会被照片本身盖住。
+ *
+ * 这是可接受的：用户主动选了一张背景照片，那就以照片为准。强行提高染色浓度
+ * 去「压过」照片会得到一个脏兮兮的界面，而且不同照片需要不同浓度，没有一组
+ * 固定值能通用。
+ */
+.app[data-has-background='true'] .ariaTint {
+  opacity: calc(var(--aria-tint-strength, 0) * 0.35);
 }
 
 /*
@@ -136,9 +313,7 @@
   flex-direction: column;
   background: var(--color-bg-elevated);
   border-right: 1px solid var(--color-border);
-}
-
-.sidebarHeader {
+}.sidebarHeader {
   padding: var(--space-lg);
   border-bottom: 1px solid var(--color-border);
 }
@@ -535,7 +710,21 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--color-bg-primary);
+  /*
+   * 透明，不再是 `var(--color-bg-primary)`。
+   *
+   * 这一层底色会盖住 Aria 水印：水印画在 `.main` 之下（见 `.ariaWatermarkLayer`），
+   * 而 `.main` 铺满整个内容区且不透明，于是立绘在 DOM 里、位置正确、图片已解码，
+   * 却一行像素都看不见。
+   *
+   * 底色改由 `.ariaUnderlay` 承担，绘制顺序变成：底色 → 水印 → 内容。视觉上
+   * 没有变化（同一颜色，同一区域），只是把「垫在最下面的颜色」和「内容」拆成了
+   * 两层，中间留出放装饰的位置。
+   *
+   * 有背景图时这条规则由 `.app[data-has-background='true'] .main` 覆盖成半透明
+   * 毛玻璃，那一条保持不变——它本来就需要透出背景照片。
+   */
+  background: transparent;
   /* 启动进度条绝对定位在底部，需要一个定位上下文。 */
   position: relative;
 }

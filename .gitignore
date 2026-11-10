@@ -46,3 +46,11 @@ Thumbs.db
 .idea/
 .vscode/
 .audit/
+
+# Aria artwork pipeline output. `out/` holds generated contact sheets, the
+# audit report, segmentation previews and previous-alpha backups. All of it is
+# reproducible from `audit.py`, `seg.py` and the assets themselves, and together
+# it is ~15 MB of derived PNGs — the kind of thing that makes a repository
+# uncloneable without being any part of the product. The scripts and the shipped
+# `.webp` assets under `public/plugins/` are source and stay tracked.
+design/tools/aria/out/
