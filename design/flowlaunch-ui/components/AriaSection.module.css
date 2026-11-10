@@ -1,0 +1,291 @@
+/*
+ * Aria 设置区块。
+ *
+ * 版式与「背景」区块保持一致（同一套字号、同一套边框与圆角），因为两者在
+ * 「外观」页里上下相邻，任何差异都会被读成「这两个功能不是一回事」。
+ *
+ * 唯一的例外是季节缩略图：它需要一块可以放图的正方形，而 `.field` 的两列
+ * 布局给不了这个空间。
+ */
+
+.group {
+  margin: 0 0 23px;
+}
+
+.group h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 9px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+/* 插件名徽章：说明这一块来自插件，不是启动器内置功能。 */
+.badge {
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--color-primary-500) 40%, var(--color-border));
+  border-radius: 999px;
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+
+.lead {
+  margin: 0 0 12px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+/*
+ * 关闭时的灰化。
+ *
+ * `opacity` 而不是 `display: none`：用户需要看到「打开之后有哪些设置」再决定
+ * 要不要打开，这正是插件清单里列全权限的理由同一个。
+ */
+.body {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  transition: opacity .16s;
+}
+
+.body:disabled {
+  opacity: .45;
+}
+
+/* --- 开关行 ----------------------------------------------------------- */
+/*
+ * 复选 + 两行文字。用原生 `<input type="checkbox">` 而不是自绘开关：
+ * 这一页有十几项设置，键盘可达性靠原生控件保证比逐个补 `role`/`aria` 可靠。
+ */
+.switchRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-elevated);
+  cursor: pointer;
+}
+
+.switchRow input {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  accent-color: var(--color-primary-500);
+  cursor: pointer;
+}
+
+.switchRow strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.switchRow span {
+  display: block;
+  margin-top: 3px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+/* 总开关：视觉上比其余行重一点，它是「这一整块是否生效」。 */
+.masterRow .switchRow {
+  border-color: color-mix(in srgb, var(--color-primary-500) 32%, var(--color-border));
+}
+
+/* --- 两列行（标题在左，控件在右）------------------------------------- */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-elevated);
+}
+
+.rowCopy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rowCopy strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.rowCopy span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* --- 二选一分段 ------------------------------------------------------- */
+.segmented {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-primary);
+}
+
+.segment {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.segment:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.segmentActive {
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+  font-weight: 600;
+}
+
+/* --- 自动模式的说明行 -------------------------------------------------- */
+.note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+/* --- 季节缩略图 ------------------------------------------------------- */
+.seasons {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.season {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  transition: border-color .16s, background .16s, color .16s;
+}
+
+.season:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+  color: var(--color-text-primary);
+}
+
+/* 选中态与背景区块的四个模式按钮一致：色调底 + 强调色文字，不用实色。 */
+.seasonActive,
+.seasonActive:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary-500) 55%, var(--color-border));
+  background: var(--color-primary-tonal);
+  color: var(--color-primary-tonal-text);
+  font-weight: 600;
+}
+
+/*
+ * 缩略图框。
+ *
+ * 棋盘格底：立绘是透明的，直接铺在白底上看不出边缘，铺在深色底上又会让人
+ * 误以为图有黑边。棋盘格是「这里是透明」的通用记号，用户一眼就懂。
+ */
+.seasonThumb {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 7px;
+  background:
+    repeating-conic-gradient(
+      color-mix(in srgb, var(--color-text-secondary) 12%, transparent) 0 25%,
+      transparent 0 50%
+    ) 50% / 10px 10px,
+    var(--color-bg-primary);
+}
+
+.seasonThumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* --- 尾注 ------------------------------------------------------------- */
+.footnote {
+  margin: 10px 0 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.6;
+  opacity: .85;
+}
+
+/*
+ * 窄窗口：四个季节按钮改成两列。
+ * 一行四个在 320px 宽下每个只有 60px，缩略图会小到看不出是哪个季节。
+ */
+@media (max-width: 520px) {
+  .seasons {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .segmented {
+    width: 100%;
+  }
+
+  .segment {
+    flex: 1;
+  }
+}

@@ -24,6 +24,53 @@
   overflow-y: auto;
 }
 
+/*
+ * 有 Aria 立绘时，信息区与立绘分成两列。
+ *
+ * 用 `grid-template-columns` 而不是给信息区加右内边距：立绘的宽度是
+ * `min(34vw, 300px)`，用内边距就得把这个值抄第二遍，两者迟早会不一致。
+ * 让网格按内容分配宽度，只有一个真值。
+ *
+ * `justify-items: center` 让信息区在两列里保持居中——立绘占走右侧一部分宽度后，
+ * 信息区如果仍按整页居中，视觉重心会偏到左边。
+ */
+.page[data-aria] .stage {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  justify-items: center;
+  column-gap: clamp(8px, 2.5vw, 36px);
+}
+
+/*
+ * 窄窗口：立绘移到信息区下方并缩小。
+ *
+ * 不分两列是因为在 700px 宽下，两列会让「实例名 + 元信息」被压成一列竖排文字，
+ * 而那是打开启动器第一眼要看的东西。立绘退让，它是装饰。
+ */
+@media (max-width: 780px) {
+  .page[data-aria] .stage {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-md);
+  }
+
+  /* 立绘不抢注意力：在窄屏只占一个小横幅位，且按比例裁切。 */
+  .page[data-aria] .stage > figure {
+    width: min(46vw, 190px);
+    height: min(30vh, 220px);
+  }
+}
+
+/* 极矮窗口（高度 ≤ 560px）：立绘与启动按钮会重叠，直接让位。 */
+@media (max-height: 560px) {
+  .page[data-aria] .stage > figure {
+    display: none;
+  }
+
+  .page[data-aria] .stage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .hero {
   display: flex;
   flex-direction: column;

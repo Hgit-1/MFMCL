@@ -6,6 +6,8 @@ mod curseforge;
 mod downloads;
 mod llama_runtime;
 mod management;
+mod plugin_install;
+mod plugin_package;
 mod plugin_runtime;
 mod sidecar;
 mod updates;
@@ -1543,6 +1545,13 @@ pub fn run() {
             plugin_runtime::plugin_state,
             plugin_runtime::plugin_save_state,
             plugin_runtime::plugin_preview,
+            plugin_install::plugin_list_installed,
+            plugin_install::plugin_install_file,
+            plugin_install::plugin_install_url,
+            plugin_install::plugin_remove_installed,
+            plugin_install::plugin_reload,
+            plugin_install::plugin_fetch_index,
+            plugin_install::plugin_directory,
             plugin_runtime::launch_history,
             plugin_runtime::clear_launch_history,
             crash_ai::crash_ai_status,

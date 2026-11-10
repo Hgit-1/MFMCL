@@ -21,6 +21,8 @@ import type { SkinSetting } from '../components/SkinSection';
 import { LegalNotice } from '../components/LegalNotice';
 import { applyMotionLevel, readMotionLevel } from '../utils/motion';
 import {
+  allPlugins,
+  isPluginEnabled,
   loadPluginStore,
   savePluginStore,
   updatablePluginCount,
@@ -66,6 +68,15 @@ import {
 import type { GameInstance, Account, AppContext, DownloadTask } from '../types';
 import type { StoreCategory } from '../utils/store/types';
 import { CATEGORY_KEYS } from '../utils/store/types';
+import {
+  applySeasonTheme,
+  pageForContext,
+  readAriaSetting,
+  resolveSeason,
+  saveAriaSetting,
+  type AriaSetting,
+} from '../utils/aria';
+import { AriaFigure } from '../components/AriaFigure';
 import {
   controlDownload,
   createInstance as createInstanceNative,
@@ -663,6 +674,25 @@ function App() {
   const [launchProgress, setLaunchProgress] = useState<{ instanceId: string; stage: string; progress: number } | null>(null);
   const [instanceOverrides, setInstanceOverrides] = useState<OverrideMap>(loadInstanceOverrides);
   const [pluginStore, setPluginStore] = useState<PluginStore>(loadPluginStore);
+  /**
+   * Aria with You 的设置。
+   *
+   * 与 `pluginStore` 分开存放，而不是塞进插件的 `options`：`options` 只支持
+   * `toggle` 和 `number` 两种（见 PLUGIN.md），而这里需要「自动/固定」「南北半球」
+   * 「固定哪个季节」这些枚举。硬塞成三个数字开关会让设置页变成谜题。
+   *
+   * 两者的启用状态是同步的：插件页那个开关是入口，`enabled` 是它写下的结果，
+   * 见下面的 `syncAriaEnabled`。一处能改，另一处跟着变。
+   */
+  const [ariaSetting, setAriaSetting] = useState<AriaSetting>(readAriaSetting);
+  /**
+   * 今天的季节。
+   *
+   * 用 state 而不是每次渲染现算：`new Date()` 每渲染一次就变一次，会让依赖它的
+   * `useEffect` 反复触发；而且跨过零点时页面不会自己重渲染，界面会停在昨天的
+   * 季节。这里在挂载时算一次，并用一个每分钟的定时器在跨零点后刷新。
+   */
+  const [season, setSeason] = useState(() => resolveSeason(readAriaSetting()));
   /**
    * 把界面里的插件状态推给后端一次。
    *
@@ -1350,6 +1380,75 @@ function App() {
     return instances[0];
   }, [defaultLaunchId, instances, selectedInstance]);
 
+  /** 插件开启、且当前季节有立绘时，界面上的季节；否则 `null`。 */
+  const ariaSeason = ariaSetting.enabled ? season : null;
+  /** 是否画季节染色层。 */
+  const ariaTint = ariaSetting.enabled && ariaSetting.tintSurfaces;
+  /**
+   * 当前页面专属的动作。
+   *
+   * 每页一个手势（见 `utils/aria.ts` 的 `AriaPage`），天气与穿搭跟随季节。返回
+   * `null` 的页面不画水印——包括主页，它已经有那张竖幅全身；也包括将来新增的
+   * 页面，避免它们悄悄继承一张与内容无关的立绘。
+   */
+  const ariaPage = ariaSeason && ariaSetting.showWatermark ? pageForContext(context) : null;
+  /**
+   * 其余页面的水印立绘。
+   *
+   * 只在有分页动作时画。之前是「除主页以外每页都画同一张图」，五个页面同一张
+   * 立绘就是墙纸；现在换成了按页取图，没生成的页面宁可不画。
+   */
+  const ariaWatermark = ariaPage ? ariaSeason : null;
+
+  /**
+   * Aria 设置的写入入口。
+   *
+   * 统一在这里落盘，不散落到各个调用点：设置页与插件页都能改这个开关，两处各写
+   * 一次 localStorage 就会出现「一处写了、另一处没写」的半状态。所有改动都经过
+   * 这个函数，落盘只有一处。
+   */
+  const changeAriaSetting = (next: Partial<AriaSetting>) => {
+    setAriaSetting(current => {
+      const merged = { ...current, ...next };
+      saveAriaSetting(merged);
+      return merged;
+    });
+    /*
+     * 总开关与插件状态双向同步。
+     *
+     * 设置页的开关和插件页的开关是同一件事的两个入口。只写一边的话，用户从设置页
+     * 打开、再到插件页看，卡片仍显示「未启用」——他会以为刚才那一下没生效，然后
+     * 再拨一次，把它关掉。
+     */
+    if (next.enabled !== undefined) {
+      const enabled = next.enabled;
+      setPluginStore(current => {
+        const merged = { ...current, enabled: { ...current.enabled, 'aria-with-you': enabled } };
+        savePluginStore(merged);
+        return merged;
+      });
+    }
+  };
+
+  /**
+   * 插件页的开关 → Aria 设置。
+   *
+   * 插件页是插件的通用入口，它只知道「这个插件启用了吗」；Aria 的具体选项在
+   * 设置页。两者不能各存一份：用户在插件页关掉插件，设置页的状态必须跟着变，
+   * 否则下一次从设置页打开会与插件页显示的状态矛盾。
+   */
+  useEffect(() => {
+    const plugin = allPlugins(pluginStore).find(item => item.id === 'aria-with-you');
+    if (!plugin || plugin.planned) return;
+    const wanted = isPluginEnabled(plugin, pluginStore);
+    setAriaSetting(current => {
+      if (current.enabled === wanted) return current;
+      const merged = { ...current, enabled: wanted };
+      saveAriaSetting(merged);
+      return merged;
+    });
+  }, [pluginStore]);
+
   /** 设置/切换默认启动实例，并写回本地偏好。 */
   const selectDefaultTarget = (instanceId: string) => {
     setDefaultLaunchId(instanceId);
@@ -1658,6 +1757,51 @@ function App() {
     applyAccent(manual);
   }, [background, slideIndex, globalPrefs.customAccent, resolvedTheme]);
 
+  /**
+   * 每分钟检查一次季节是否变了。
+   *
+   * 之所以不是「每分钟重算一次季节」：`resolveSeason` 的返回值在 99.99% 的分钟内
+   * 是同一个，直接写回 state 会引发一次无意义的重渲染（连同立绘的 `<img>`）。
+   * 比较之后再写，只有真正换季的那一分钟才有更新。
+   *
+   * 定时器用 60 秒而不是算到下一个整点/换季日：用户可能让启动器开着过夜，精确
+   * 安排一个「3 月 1 日 00:00 触发」的定时器要处理休眠唤醒、系统时钟调整，而
+   * 最多晚一分钟换季没有人会察觉。
+   */
+  useEffect(() => {
+    const tick = () => {
+      const next = resolveSeason(ariaSetting);
+      setSeason(current => (current === next ? current : next));
+    };
+    tick();
+    const timer = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(timer);
+  }, [ariaSetting]);
+
+  /**
+   * 把季节写进界面，并保证关掉插件后界面回到用户原来的配色。
+   *
+   * `applySeasonTheme` 返回的撤销函数只恢复它自己改过的东西；强调色由这里恢复，
+   * 因为只有这一层知道用户原本用的是哪个（手选的，或从背景取的）。
+   */
+  useEffect(() => {
+    if (!ariaSetting.enabled) return;
+    const undo = applySeasonTheme(season, resolvedTheme === 'dark', ariaSetting.tintSurfaces);
+    return () => {
+      undo();
+      /*
+       * 撤销之后再按原规则重算一次强调色。
+       *
+       * 不重算的话，被撤销的只是 `--color-primary-500` 这一条，而
+       * `--color-primary-600/700`、solid、tonal、文字色都还停留在季节色的推导
+       * 结果上，界面会变成「主色回去了、按钮还是樱粉」的混合状态。
+       */
+      const manual = globalPrefs.customAccent || DEFAULT_ACCENT;
+      const auto = autoAccentOf(background, slideIndex);
+      applyAccent(background.accentMode === 'auto' && auto ? auto : manual);
+    };
+  }, [ariaSetting.enabled, ariaSetting.tintSurfaces, season, resolvedTheme, background, slideIndex, globalPrefs.customAccent]);
+
   if (!eulaAccepted) {
     return (
       <div className={styles.app}>
@@ -1698,13 +1842,34 @@ function App() {
 
   // 主界面
   return (
-    <div className={styles.app} data-has-background={background.mode !== 'none' ? 'true' : undefined}>
+    <div
+      className={styles.app}
+      data-has-background={background.mode !== 'none' ? 'true' : undefined}
+      /*
+       * 有水印时给内容区让出右侧一列（见 `App.module.css` 的
+       * `--aria-figure-width`）。
+       *
+       * 用一个属性而不是在 `.main` 上写死内边距：关掉插件、或者当前页没有
+       * 动作时，布局要立刻回到没有这一列的状态，不能留下一块无用的空白。
+       */
+      data-aria-watermark={ariaWatermark ? 'true' : undefined}
+    >
       {/*
         背景层：铺在一切之下。
         放在 `.app` 内部而不是 body 上，是为了让它与侧栏、内容区共享同一个裁剪
         区域；将来给窗口加圆角时，背景不会从角上漏出去。
       */}
       <BackgroundLayer setting={background} dark={resolvedTheme === 'dark'} slideIndex={slideIndex} />
+
+      {/*
+        季节染色层（Aria with You）。
+
+        只画一层极淡的双色渐变，浓度由 `--aria-tint-strength` 控制（插件未开启
+        或用户关掉染色时为 0，整层不可见）。它**不**覆盖 `--color-bg-*`、也不
+        参与任何对比度计算：文字可读性仍由主题与 `applyAccent` 保证。这是
+        docs/FUTURE.md 里那条「插件不得破坏四个预设的对比度」的实现方式。
+      */}
+      {ariaTint && <div className={styles.ariaTint} aria-hidden="true" />}
 
       {/* 侧边栏 */}
       <aside className={styles.sidebar}>
@@ -1893,6 +2058,13 @@ function App() {
         </nav>
 
         <div className={styles.sidebarFooter}>
+          {/*
+            Aria 侧栏立绘。放在页脚之上而不是插进导航：导航项的数目会变（内容商店
+            会展开子项），立绘夹在中间会让它随抽屉开合上下跳。
+          */}
+          {ariaSeason && ariaSetting.showSidebar && (
+            <AriaFigure key={ariaSeason} season={ariaSeason} variant="sidebar" label="sidebar" />
+          )}
           <button className={styles.navItem} onClick={toggleTheme} aria-label={t('app.switchTheme')} title={t('app.switchTheme')}>
             {resolvedTheme === 'light' ? <MoonIcon /> : <SunIcon />}
             <span>{resolvedTheme === 'light' ? t('app.themeToDark') : t('app.themeToLight')}</span>
@@ -1943,6 +2115,34 @@ function App() {
         </div>
       </aside>
 
+      {/*
+        内容区底色 + 水印立绘，两层都排在内容之下。
+
+        ## 为什么底色被单独拆出来
+
+        `.main` 原来自己画 `--color-bg-primary`。要放一张「在内容之下、底色之上」
+        的立绘，就必须把底色和内容拆成两层——否则立绘要么被底色盖住（负 z-index），
+        要么盖住卡片（正 z-index）。九档分辨率实测证明了后者的后果：每一档的人物
+        脸部都被第一张卡片压住。
+
+        绘制顺序：`.ariaUnderlay`（底色）→ `.ariaWatermarkLayer`（立绘）→
+        `.main`（内容）。三者同在 `z-index: 0`，靠 DOM 顺序决定先后。
+
+        两层都由 App 统一渲染，页面切换时不重挂载，立绘不会每换一页闪一下。
+      */}
+      {ariaWatermark && <div className={styles.ariaUnderlay} aria-hidden="true" />}
+      {ariaWatermark && (
+        <div className={styles.ariaWatermarkLayer} aria-hidden="true">
+          <AriaFigure
+            key={`${ariaPage}-${ariaWatermark}`}
+            season={ariaWatermark}
+            variant="watermark"
+            label="watermark"
+            page={ariaPage}
+          />
+        </div>
+      )}
+
       {/* 主内容区 */}
       <main className={styles.main}>
         {/*
@@ -1965,6 +2165,7 @@ function App() {
             iconForLoader={iconForLoader}
             instanceIcons={instanceIcons}
             onIconMissing={forgetInstanceIcon}
+            ariaSeason={ariaSeason && ariaSetting.showHero ? ariaSeason : null}
           />
         )}        {/* 空状态 - 无游戏 */}
         {context === 'home' && instances.length === 0 && (
@@ -2521,6 +2722,10 @@ function App() {
         onInstanceJavaChange={persistInstanceJava}
         /* 背景即时生效：面板里每改一项都立刻反映到这一层之后。 */
         onBackgroundChange={setBackground}
+        /* Aria：与 App 共用同一份 state，改一项立刻反映到主页与侧栏。 */
+        ariaSetting={ariaSetting}
+        onAriaChange={changeAriaSetting}
+        ariaPluginEnabled={ariaSetting.enabled}
         onNotice={setToast}
         dark={resolvedTheme === 'dark'}
         /*

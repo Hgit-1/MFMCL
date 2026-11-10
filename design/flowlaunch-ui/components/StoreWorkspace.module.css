@@ -41,7 +41,16 @@
   gap: clamp(12px, 2vw, 24px);
   overflow: hidden;
   padding: clamp(12px, 2vw, 24px);
-  background: var(--color-bg-primary);
+  /*
+   * Transparent, not `var(--color-bg-primary)`.
+   *
+   * `.main` already paints that colour, so this plate added nothing except an
+   * opaque layer above the Aria watermark — the figure was rendered, correctly
+   * positioned, and completely hidden behind it on the store page while showing
+   * through on the library page. Removing it changes nothing visually, because
+   * the same colour is underneath, and it lets the decorative layer through.
+   */
+  background: transparent;
 }
 
 /* --- 左侧设置栏 ---------------------------------------------------------- */

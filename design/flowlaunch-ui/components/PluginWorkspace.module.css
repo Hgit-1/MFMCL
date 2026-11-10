@@ -5,7 +5,12 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--color-bg-primary);
+  /*
+   * Transparent: `.main` already paints this colour, so the plate only served to
+   * hide the Aria watermark behind an opaque layer on this page while it showed
+   * through everywhere else.
+   */
+  background: transparent;
 }
 
 /* --- 椤靛ご ---------------------------------------------------------------- */
@@ -1012,4 +1017,391 @@
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+ * 导入与插件源
+ *
+ * 与列表区的视觉关系：这一块是「往列表里加东西」的入口，所以用比卡片更轻的
+ * 表面（无边框、只留底色差），避免和下方每张插件卡片争夺注意力。
+ * 只有在展开输入框或源面板时才长出边框——那才是需要被看的地方。
+ * ------------------------------------------------------------------------- */
+
+.importBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.importAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 10.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color .16s, color .16s, background .16s;
+}
+
+.importAction:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, var(--color-border));
+  color: var(--color-text-primary);
+}
+
+.importAction:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+/* 分隔「装某一个」与「逛一逛」——两组动作的意图不同，不该连成一排。 */
+.importDivider {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--color-border);
+}
+
+.importBusy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-text-secondary);
+  font-size: 10.5px;
+}
+
+/*
+ * 文件选择器必须留在文档里才能被 `.click()` 触发，所以隐藏而不是移除。
+ * `display: none` 在部分 WebView 上会让 Safari 拒绝打开对话框，用裁剪更稳。
+ */
+.hiddenInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.importUrlRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding-top: 4px;
+}
+
+.importUrlRow input {
+  flex: 1 1 260px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 11px;
+}
+
+.importUrlRow button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--color-primary-solid);
+  border-radius: 8px;
+  background: var(--color-primary-solid);
+  color: var(--color-on-primary);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.importUrlRow button:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.importUrlRow p {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* --- 插件源面板 ------------------------------------------------------- */
+
+.sourcePanel {
+  margin: 10px 12px 0;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-elevated);
+}
+
+.sourceHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.sourceHeader h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sourceHeader p {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.sourceAdd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px dashed var(--color-border);
+  border-radius: 9px;
+}
+
+.sourceAdd label {
+  display: flex;
+  flex: 1 1 220px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sourceAdd label span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.sourceAdd input {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 11px;
+}
+
+.sourceAdd button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--color-primary-solid);
+  border-radius: 8px;
+  background: var(--color-primary-solid);
+  color: var(--color-on-primary);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sourceAdd button:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.sourceWarning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-danger-600) 10%, transparent);
+  color: var(--color-danger-600);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.sourceGroup {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.sourceGroupHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sourceGroupHeader strong {
+  display: block;
+  font-size: 11px;
+}
+
+.sourceGroupHeader code {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: 9px;
+  word-break: break-all;
+}
+
+.sourceGroupActions {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
+.sourceGroupActions button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.sourceGroupActions button:hover {
+  color: var(--color-text-primary);
+}
+
+.sourceLoading,
+.sourceError {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.sourceError {
+  color: var(--color-danger-600);
+}
+
+.sourceList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sourceList li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-bg-primary);
+}
+
+.sourceItemCopy {
+  min-width: 0;
+}
+
+.sourceItemCopy strong {
+  display: block;
+  font-size: 11px;
+}
+
+.sourceItemCopy span {
+  color: var(--color-text-secondary);
+  font-size: 9.5px;
+}
+
+.sourceItemCopy p {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/*
+ * 权限摘要。用斜体而不是小号正文：它是一句「注意」，读起来要和平铺描述不同，
+ * 又不能红到像错误——大部分插件申请的权限是合理的。
+ */
+.sourceItemCopy em {
+  display: block;
+  margin-top: 5px;
+  color: var(--color-primary-text);
+  font-size: 9.5px;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.sourceInstallButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--color-primary-solid);
+  border-radius: 8px;
+  background: var(--color-primary-solid);
+  color: var(--color-on-primary);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sourceInstallButton:disabled {
+  border-color: var(--color-border);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-disabled);
+  cursor: default;
+}
+
+.thirdPartyNote {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-danger-600) 9%, transparent);
+  color: var(--color-danger-600);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.thirdPartyNote strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+/* 加载中的图标转一圈；关掉动效时保持静止，不要变成一个抖动的方块。 */
+.spin {
+  animation: pluginSpin 1.1s linear infinite;
+}
+
+@keyframes pluginSpin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
 }

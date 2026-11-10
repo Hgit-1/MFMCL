@@ -1,0 +1,238 @@
+/*
+ * Aria 立绘。
+ *
+ * 两种尺寸共用一套规则，靠 `data-variant` 分出差异：主页那张是竖幅全身、占满
+ * 右侧一块固定宽度；侧栏那张是方形小图，宽度受侧栏内边距限制。
+ *
+ * 关键的一条：**立绘不参与布局计算**。两张都用绝对定位或固定比例盒，父容器
+ * 的空间完全由原有布局决定。否则打开插件会改变侧栏宽度、把导航挤到折行——
+ * 那正是 docs/FUTURE.md 里列为「实现前提」的问题。
+ */
+
+.figure {
+  margin: 0;
+  display: block;
+  /*
+   * `pointer-events: none`：立绘是装饰，不能让它在角落吃掉一次点击——主页的
+   * 提示条、侧栏的账户按钮都可能和它重叠。
+   */
+  pointer-events: none;
+  /*
+   * 光晕。径向渐变比 box-shadow 好：它跟着元素尺寸走，不需要为两种 variant
+   * 各写一组偏移与扩散参数。
+   */
+  background: radial-gradient(
+    circle at 50% 45%,
+    color-mix(in srgb, var(--color-primary-500) 18%, transparent) 0%,
+    transparent 68%
+  );
+}
+
+.image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /*
+   * `drop-shadow` 而不是 `box-shadow`：前者沿透明像素的实际轮廓投影，后者会
+   * 给整个矩形盒子加一个方框。立绘的边缘必须先被「托」起来，深色主题下才不
+   * 会与页面糊成一片。
+   */
+  filter: drop-shadow(0 8px 24px color-mix(in srgb, #000 22%, transparent));
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* --- 主页立绘 --------------------------------------------------------- */
+/*
+ * 高度跟随视口，夹在一个区间里：太小看不见人物，太大在矮窗口上会与启动按钮
+ * 重叠。`min()` 里的 62vh 是经验值——主页信息区在常见窗口高度下大约占三成，
+ * 立绘取剩余部分再留一点呼吸。
+ */
+.figure[data-variant='hero'] {
+  width: min(34vw, 300px);
+  height: min(62vh, 560px);
+  flex: 0 0 auto;
+  animation: ariaIn calc(var(--duration-slow) * 1.4) var(--ease-out) both;
+}
+
+@keyframes ariaIn {
+  from { opacity: 0; transform: translateY(10px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+
+/* --- 侧栏立绘 --------------------------------------------------------- */
+/*
+ * 侧栏里没有额外空间，所以这张图**叠在页脚上方**而不是插进文档流。侧栏本身
+ * 是 `flex-direction: column`，插一个真元素会把页脚顶出去。
+ */
+.figure[data-variant='sidebar'] {
+  position: relative;
+  width: 100%;
+  max-width: 148px;
+  aspect-ratio: 1;
+  margin: 0 auto var(--space-sm);
+  /* 侧栏这张用同一段入场，但更快——它只是一小块，不需要排练一遍。 */
+  animation: ariaIn var(--duration-slow) var(--ease-out) both;
+}
+
+/* --- 其它页面的水印立绘 ------------------------------------------------ */
+/*
+ * 游戏库、内容商店、下载任务、插件与实例详情页右下角的大幅半身像。
+ *
+ * 三条约束，缺一条这个变体就会变成干扰：
+ *
+ *   1. **绝对定位、不参与布局**。它铺在内容下面，内容区的宽度、滚动条与卡片
+ *      网格必须与没有插件时完全一致，否则关掉插件界面会重排。
+ *   2. **在内容之下**。`z-index: -1` 不是笔误：`.main` 自己是一个层叠上下文
+ *      （`position: relative` + `z-index: 1`），所以负 z-index 的子元素按规范打在
+ *      「父元素的背景之后、普通流内容之前」——正好是背景之上、卡片之下。换成
+ *      `z-index: 0` 会画在卡片**上面**，那一页的小字就会被立绘压住。
+ *   3. **鼠标穿透**。卡片、表格行与按钮都在同一块区域，任何一次点击落到立绘上
+ *      都是 bug，而用户不会意识到是插件拦下了它。
+ *
+ * 固定在右下角、随滚动固定，并在右侧渐隐：内容会滚动而它不该跟着走；渐隐是
+ * 因为这张图会与卡片重叠，硬边会让人以为图片被裁坏了。
+ *
+ * 尺寸用 `min()` 夹在视口与固定值之间：太小看不出是谁，太大在 1280 宽的窗口里
+ * 会盖到第二列卡片。
+ */
+.figure[data-variant='watermark'] {
+  position: absolute;
+  /*
+   * 右边贴住内容区右边缘，不用负值。
+   *
+   * 原来是 `clamp(-24px, -1.5vw, 0px)`：负偏移让立绘探出窗口右缘，靠「右侧渐隐」
+   * 把探出的部分盖住。但渐隐只作用于图片自身的 alpha，元素框仍然超出，于是视口
+   * 滚动条出现、内容区被挤出 20 多像素——九档分辨率里每一档都超界 14–24px。
+   *
+   * 贴住边缘反而更干净：渐隐负责让边缘不硬，位置负责不越界。
+   */
+  right: 0;
+  bottom: 0;
+  /*
+   * 尺寸与内容区让出的那一列完全一致。
+   *
+   * ## 为什么必须共用同一个变量
+   *
+   * 内容区按 `--aria-figure-width` 让出右侧空间（见 `App.module.css` 的
+   * `.app[data-aria-watermark='true'] .main`），立绘要正好站进那块空位。两边各
+   * 写一遍数字迟早会不一致——那时人物要么被卡片压住一角，要么边缘露出一条缝，
+   * 两种都很难从截图上看出来是「两个数不一样」。
+   *
+   * ## 为什么不能用 `width: 100%`
+   *
+   * 父层是全屏的定位层，`100%` 会让立绘占满整个屏幕宽度，`contain` 再把人物缩到
+   * 中间一小团。实测那样做的结果是可见比例掉到 11–16%，比修复前更差。
+   */
+  width: var(--aria-figure-width, clamp(180px, min(24vw, 34vh), 380px));
+  aspect-ratio: 2 / 3;
+  height: auto;
+  max-height: 100%;
+  pointer-events: none;
+  /*
+   * 双重渐隐：右边缘与下边缘。
+   *
+   * 只有右侧渐隐时，立绘会在视口底部被「切一刀」——那看起来像渲染失败，而不是
+   * 装饰。加上底部渐隐，人物是「从页脚淡出」的，观众读得出这是设计。
+   *
+   * 用 `mask-image` 而不是叠一层同色渐变：后者要求知道页面底色，而这个插件刻意
+   * 不碰 `--color-bg-*`——底色是四个预设 × 深浅主题的变化组合，蒙层一旦对不上
+   * 就会在浅色主题下留一条灰边。
+   */
+  mask-image:
+    linear-gradient(to left, #000 58%, transparent 100%),
+    linear-gradient(to top, transparent 0%, #000 26%);
+  -webkit-mask-image:
+    linear-gradient(to left, #000 58%, transparent 100%),
+    linear-gradient(to top, transparent 0%, #000 26%);
+  /*
+   * 两个渐隐遮罩必须取交集，否则第二个会盖掉第一个，右边缘又变成硬边。
+   */
+  mask-composite: intersect;
+  -webkit-mask-composite: source-in;
+  /*
+   * 整体压到很低的浓度。它出现在每一页，而每一页的主要任务是「看内容」；
+   * 18% 是能辨认出人物、又不至于让卡片上的小字变糊的上限。
+   */
+  opacity: .18;
+  animation: ariaIn calc(var(--duration-slow) * 1.2) var(--ease-out) both;
+}
+
+/* 水印不要投影：它已经在页面底层，阴影只会让「它压在内容上」的错觉更重。 */
+.figure[data-variant='watermark'] .image {
+  filter: none;
+  /*
+   * `contain` + 右下对齐：立绘那一列的宽度由内容区让出，高度是整屏，而素材是
+   * 2:3。`contain` 保证整张图放得下、不被裁掉头或脚；右对齐让她的身体贴着内容区
+   * 边缘，留白落在左侧（那里是卡片，看不出来）。
+   */
+  object-fit: contain;
+  object-position: bottom right;
+}
+
+/*
+ * 窄窗口与矮窗口：不是简单地隐藏，而是逐级降级。
+ *
+ * ## 为什么原来「一刀切隐藏」不够
+ *
+ * 原来的规则是 `max-width: 900px` 或 `max-height: 620px` 时整个不显示。但
+ * 1366×768 这类常见的笔记本分辨率恰好落在 768 > 620 之外、900 之内，于是
+ * 立绘在 1366 宽下显示、在 1024 宽下消失——同一台机器换个窗口大小就变一次，
+ * 用户会以为功能坏了。
+ *
+ * 现在按「还能不能看清」分三档：先缩到最小可辨识尺寸，再退到只露半身，最后
+ * 才隐藏。三档都以短边为判断依据，因为决定可辨识度的是短边而不是窗口宽度。
+ */
+
+/* 短边不足 600px：把这一列收窄，人物仍可辨认，内容区也不至于被挤得太狠。 */
+@media (max-height: 600px) {
+  .figure[data-variant='watermark'] {
+    width: 100%;
+    height: 100%;
+  }
+}
+
+/* 窗口很窄：内容区几乎占满，立绘再小也会压住卡片文字，直接不显示。 */
+@media (max-width: 820px) {
+  .figure[data-variant='watermark'] {
+    display: none;
+  }
+}
+
+/* 极扁窗口（如 1600×500 的分屏）：立绘与内容抢空间，隐藏。 */
+@media (max-height: 460px) {
+  .figure[data-variant='watermark'] {
+    display: none;
+  }
+}
+
+/* 极窄但很高（竖屏/侧边栏展开）：内容已经是单列，隐藏。 */
+@media (max-width: 620px) {
+  .figure[data-variant='watermark'] {
+    display: none;
+  }
+}
+
+/* 减少动态效果时不做入场位移。 */
+@media (prefers-reduced-motion: reduce) {
+  .figure[data-variant='hero'],
+  .figure[data-variant='sidebar'],
+  .figure[data-variant='watermark'] {
+    animation: none;
+  }
+}
+
+/* 窄窗口下侧栏折成顶部图标条（见 App.module.css 的 760px 断点），那里没有空位。 */
+@media (max-width: 760px) {
+  .figure[data-variant='sidebar'] {
+    display: none;
+  }
+}
+
+/* 矮窗口：侧栏自身已经很挤，页脚与导航都压缩过，立绘没有容身之处。 */
+@media (max-height: 620px) {
+  .figure[data-variant='sidebar'] {
+    display: none;
+  }
+}

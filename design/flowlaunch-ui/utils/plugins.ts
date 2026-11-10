@@ -86,6 +86,33 @@ export interface LauncherPlugin {
   /** 内置插件不能被移除；手动安装的可以。 */
   builtin: boolean;
   /**
+   * 随包分发的第三方插件（`BUNDLED_PLUGINS`）。
+   *
+   * 与 `builtin` 的区别只在「谁写的」：内置是启动器自带功能的表现层，随包插件是
+   * 第三方作品、只是素材与清单一起发了出来。两者都**不能移除**——移除一张随包
+   * 卡片没有意义，因为它并没有被「安装」到别处，下一次启动又会回来；用户想关掉
+   * 它有的是开关。
+   *
+   * 与 `planned` 一样是只读字段：外部清单自称 `bundled` 只会骗到一个「移除」按钮
+   * 的可见性，但那正好是它不该有的东西。
+   */
+  bundled?: boolean;
+  /**
+   * 第三方来源标记：从插件包或插件源安装的插件。
+   *
+   * 与 `builtin` 不互斥到只剩一半——`builtin: false` 只说明「不是启动器自带的」，
+   * 而手动粘贴的清单同样不是自带。这个字段专门标「代码来自外部、启动器没有审查
+   * 过」，界面据此展示第三方提示与权限清单。清单不能自己声明它为 `false`。
+   */
+  thirdParty?: boolean;
+  /**
+   * 该插件素材的可访问前缀（由后端按平台给出）。
+   *
+   * 只有从包安装的插件才有：它的图片在磁盘上的包目录里，不在 `public/`。随包
+   * 分发的插件（如 Aria）用的是 `/plugins/<id>/` 这样的站内路径，不需要它。
+   */
+  assetBase?: string;
+  /**
    * 计划中的插件：清单已公布，但启动器还没有实现对应能力。
    *
    * ## 为什么要有这个状态
@@ -139,6 +166,20 @@ export interface LauncherPlugin {
 export interface PluginStore {
   /** 用户手动安装的插件（内置清单之外的部分）。 */
   custom: LauncherPlugin[];
+  /**
+   * 从插件包安装的插件（磁盘上的 `plugins/<id>/`）。
+   *
+   * ## 为什么不并进 `custom`
+   *
+   * `custom` 是「用户粘了一段 JSON」，它的生命周期完全由 localStorage 决定；
+   * 这一组是「磁盘上有一个目录」，它的真值在文件系统，localStorage 只是缓存。
+   * 混在一起会出现两种相反的错误：删掉磁盘目录后 `custom` 里的条目还在（幽灵
+   * 插件），或者插件被手工放进目录后界面上没有（装了却看不见）。分开存，并在
+   * 每次 reload 时用磁盘结果整体替换这一组，两种都不会发生。
+   *
+   * 运行时它和 `custom` 走同一条渲染与开关路径——用户不需要知道两者的区别。
+   */
+  installed?: LauncherPlugin[];
   /** 每个插件的启用状态；缺省时用 enabledByDefault。 */
   enabled: Record<string, boolean>;
   /** 每个插件的选项值；缺省时用选项定义里的默认值。 */
@@ -157,7 +198,7 @@ export interface PluginStore {
   acknowledgedUpdates: Record<string, string>;
 }
 
-export const EMPTY_PLUGIN_STORE: PluginStore = { custom: [], enabled: {}, options: {}, acknowledgedUpdates: {} };
+export const EMPTY_PLUGIN_STORE: PluginStore = { custom: [], installed: [], enabled: {}, options: {}, acknowledgedUpdates: {} };
 
 // ---------------------------------------------------------------------------
 // 内置插件目录
@@ -186,15 +227,16 @@ const HOOK_HINT_KEYS: Record<PluginHookId, MessageKey> = {
  *
  * 与后端 `plugin_runtime_info().kinds` 是同一件事的两个表述：那边列的是**贡献**
  * 类型（真正能做的事），这里列的是**时机**（什么时候被调用）。两者必须同时满足
- * 才算「会执行」——声明了 `theme` 时机但没有任何主题贡献类型，仍然什么都不会发生。
+ * 才算「会执行」。
  *
- * 目前只有 `launch` 会在启动时触发（见 PLUGIN.md 的贡献表）。其余四个接受声明、
- * 在详情里如实标注为「只声明、未执行」，而不是让用户以为拨了开关就生效。
+ * `launch` 由启动链路触发；`theme` / `background` / `sidebar` 由 `App.tsx` 触发
+ * （见 `ariaSeason`、`ariaTint` 与 `applySeasonTheme`），这是 Aria with You 从
+ * `planned` 转为可用的前提。`modInstall` / `instanceCreate` 仍然只接受声明。
  *
- * 这个判断放在前端是因为它只影响**说明文字**：真正会不会执行由后端决定，界面
- * 这里多说一句或少说一句不会改变行为，但说错了会误导用户。
+ * 这里的每一项都必须能指出**一行**读它的代码。加进来只是为了让某个插件的卡片
+ * 好看，就等于让界面替一个不存在的行为作证——那正是这份列表存在的理由。
  */
-export const EXECUTING_HOOKS: PluginHookId[] = ['launch'];
+export const EXECUTING_HOOKS: PluginHookId[] = ['launch', 'theme', 'background', 'sidebar'];
 
 const PERMISSION_LABEL_KEYS: Record<PluginPermissionId, MessageKey> = {
   filesystem: 'plugin.perm.filesystem',
@@ -281,6 +323,69 @@ export const BUILTIN_PLUGINS: LauncherPlugin[] = [
 ];
 
 /**
+ * 「已经实现的第三方插件」。
+ *
+ * 与 `BUILTIN_PLUGINS` 分开的原因不是语义上的洁癖，而是**安装形态**不同：
+ * 内置插件的清单与实现都随启动器编译；这一组由第三方维护，清单与素材随包
+ * 分发（`public/plugins/<id>/`），启动器只负责解释它声明的能力。
+ *
+ * ## 为什么它们可以出现在这份文件里
+ *
+ * `plugins.ts` 是前端的插件目录，不是「内置清单」。用户安装的插件也走同一个
+ * `custom` 通道，只是由用户粘贴清单；这一组是随包预置的 `custom` 条目——首次
+ * 运行时写进存档，之后与普通插件完全一样（可禁用、可移除、状态持久化）。
+ *
+ * ## 与 `planned` 的区别
+ *
+ * `PLANNED_PLUGINS` 里的条目**拨不动开关**，因为它们声明的能力启动器还没实现。
+ * 一旦某项能力被实现（`EXECUTING_HOOKS` 里加上了对应的时机），那个插件就该
+ * 从 `PLANNED_PLUGINS` 挪到 `BUNDLED_PLUGINS`——这正是 Aria with You 走的路：
+ * `theme` / `background` / `sidebar` 三个时机现在真的会触发（见 `App.tsx`
+ * 的 `ariaSeason` 与 `applySeasonTheme`）。
+ */
+export const BUNDLED_PLUGINS: LauncherPlugin[] = [
+  {
+    id: 'aria-with-you',
+    name: loc('plugin.ariaWithYou.name'),
+    version: '1.0.0',
+    author: 'Aria Project',
+    description: loc('plugin.ariaWithYou.description'),
+    glyph: 'palette',
+    accent: '#E39BD4',
+    /*
+     * 三个时机，全部已实现：
+     *   - `theme`：按季节调整强调色（经 `applyAccent`，对比度仍受既有规则保护）；
+     *   - `background`：季节染色层 + 主页/侧栏立绘；
+     *   - `sidebar`：侧栏底部的小立绘。
+     */
+    hooks: ['theme', 'background', 'sidebar'],
+    /*
+     * 三个权限，与实现一致：
+     *   - `theme`：写 `--color-primary-*` 与 `--aria-tint-*`；
+     *   - `uiSlot`：在侧栏与主页插入立绘；
+     *   - `storage`：记住季节模式、半球、显示位置。
+     *
+     * 不要 `network`：立绘随包分发，运行时不联网。也不要 `filesystem`：不碰游戏文件。
+     * 这两条现在可以在代码里核对——`utils/aria.ts` 不发出任何请求，也不读任何
+     * 游戏目录。
+     */
+    permissions: ['theme', 'uiSlot', 'storage'],
+    /*
+     * 默认关闭。
+     *
+     * 它是一个显眼的视觉改动（整页配色 + 两张立绘），不该在用户第一次打开启动器
+     * 时就替他决定。开着插件页那条「已启用」提示，用户能自己找到它。
+     */
+    enabledByDefault: false,
+    builtin: false,
+    /* 随包分发：素材在 `public/plugins/aria-with-you/`，不可以从插件页移除。 */
+    bundled: true,
+    status: loc('plugin.ariaWithYou.status'),
+    statusTone: 'info',
+  },
+];
+
+/**
  * 计划中的外置插件。
  *
  * ## 为什么它们不放进 `BUILTIN_PLUGINS`
@@ -301,57 +406,19 @@ export const BUILTIN_PLUGINS: LauncherPlugin[] = [
  */
 export const PLANNED_PLUGINS: LauncherPlugin[] = [
   /*
-   * Aria with You。
+   * 当前为空。
    *
-   * 目标：按真实日期切换季节形象（春/夏/秋/冬），为启动器的各个区域——主页、
-   * 侧栏、实例卡片、启动进度——提供随时间变化的 Aria 立绘与配色。
+   * 这里曾经只有一项（Aria with You），它已经实现了，条目挪到了上面的
+   * `BUNDLED_PLUGINS`。保留这个空数组而不是删掉它，是因为下面所有渲染与同步
+   * 路径都按「这个列表可能非空」写过（`allPlugins`、`prunePluginStore`、
+   * `toPluginStatePayload`、插件页的筛选与计数）——删掉数组会让那些分支变成
+   * 死代码，而它们在下一次有插件进入计划状态时立刻又需要。
    *
-   * 为什么声明了三个扩展点和三个权限，现在却什么也不做：这份清单描述的是**实现
-   * 之后**的形态。提前列出来有两个用处——用户能判断自己愿不愿意给它这些权限；
-   * 实现时也不容易「顺手多要一点」。清单是契约，先写下来比事后追加更可信。
-   *
-   * 它需要的能力恰好是启动器目前没有的：`theme` / `sidebar` / `background` 三个
-   * 时机都只接受声明、不触发执行（见 `EXECUTING_HOOKS` 与 PLUGIN.md）。所以它
-   * 不能和内置插件一样只差一个开关，而是缺一整套 UI 覆盖能力。
+   * 准入规则没变：一项能力没有实现、连一个能被指出的触发点都没有时，插件只能
+   * 出现在这里，开关必须是灰的。判断标准与 `BUILTIN_PLUGINS` 的准入规则同源，
+   * 理由相反——那边要求「能指出一行读这个开关的代码」，这边要求「能指出一行
+   * 会因为开关而运行的代码」。
    */
-  {
-    id: 'aria-with-you',
-    name: loc('plugin.ariaWithYou.name'),
-    /*
-     * 版本号写 `0.0.0` 而不是 `1.0.0`。
-     *
-     * 语义是「还没有发布任何版本」。写 1.0.0 会让人以为有一个能用的发行版，
-     * 而 0.0.0 在语义版本里正是「尚未发布」的常用写法，也和卡片上「尚未实现」
-     * 的标签一致。
-     */
-    version: '0.0.0',
-    author: 'Aria Project',
-    description: loc('plugin.ariaWithYou.description'),
-    glyph: 'palette',
-    accent: '#E39BD4',
-    /*
-     * 三个时机：
-     *   - `theme`：按季节调整强调色与背景色；
-     *   - `background`：提供季节背景图与立绘；
-     *   - `sidebar`：在侧栏挂一个随季节变化的小形象。
-     */
-    hooks: ['theme', 'background', 'sidebar'],
-    /*
-     * 三个权限：
-     *   - `theme`：需要覆盖界面视觉变量（配色、圆角）；
-     *   - `uiSlot`：需要在侧栏等处插入自己的界面；
-     *   - `storage`：需要记住用户选的季节模式与本季是否已切换过。
-     *
-     * 不要 `network`：形象随插件分发包自带，不该在运行时联网拉图。也不要
-     * `filesystem`：它不需要碰游戏文件。
-     */
-    permissions: ['theme', 'uiSlot', 'storage'],
-    planned: true,
-    builtin: false,
-    enabledByDefault: false,
-    status: loc('plugin.ariaWithYou.status'),
-    statusTone: 'info',
-  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -454,6 +521,90 @@ export function normalizePlugin(raw: unknown): LauncherPlugin | null {
 }
 
 /**
+ * 把一个**已安装的插件包**转成界面用的插件。
+ *
+ * ## 与 `normalizePlugin` 的区别
+ *
+ * `normalizePlugin` 校验用户粘贴的清单，任何必填字段缺失就返回 `null`——那是对的，
+ * 因为粘贴的东西没有别的来源可以兜底。
+ *
+ * 这一组不一样：文件已经在磁盘上、包已经通过了解压校验，清单是一个确定存在的
+ * 文件。所以这里**不返回 null**，而是给缺失的展示字段补上可读的兜底值。理由：
+ * 一个装好的插件因为 `description` 写成对象而不是字符串就整个消失，用户看到的
+ * 是「装了但列表里没有」，那是比「描述没显示」严重得多的失败。
+ *
+ * 真正不可缺的只有 `id` 与 `version`：它们已经是目录名，后端在安装时校验过。
+ *
+ * ## 素材前缀
+ *
+ * `assetBase` 由后端给出，这里把它存进 `LauncherPlugin`，供插件自己声明的图片
+ * 路径拼接。不对外部清单里的绝对 URL 做任何放行——一个插件要显示图片，图片就得
+ * 在它自己的包里。
+ */
+export function pluginFromInstalled(record: {
+  id: string;
+  version: string;
+  manifest: unknown;
+  assetBase?: string;
+}): LauncherPlugin | null {
+  if (!record.id || !record.version) return null;
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(record.id)) return null;
+
+  const raw = isPlainObject(record.manifest) ? record.manifest : {};
+  /*
+   * 缺名字时退回 id。
+   *
+   * `Localized` 允许一段原文（`raw`），正是为这种「拿不到词条」的情况准备的。
+   * 把 id 硬塞进 `loc()` 需要类型断言，运行时则会取到不存在的词条并显示成键名——
+   * 比显示 id 更糟。id 至少是用户能在插件目录里核对的东西。
+   */
+  const name: Localized = normalizeLocalized(raw.name) ?? { key: 'plugin.installedNoDescription', raw: record.id };
+  const description: Localized = normalizeLocalized(raw.description) ?? loc('plugin.installedNoDescription');
+  const author =
+    typeof raw.author === 'string' && raw.author.trim() ? raw.author.trim().slice(0, 48) : 'unknown';
+
+  const hooks = Array.isArray(raw.hooks)
+    ? HOOKS.filter(hook => (raw.hooks as unknown[]).includes(hook))
+    : [];
+  const permissions = Array.isArray(raw.permissions)
+    ? PERMISSIONS.filter(permission => (raw.permissions as unknown[]).includes(permission))
+    : [];
+  const options = Array.isArray(raw.options)
+    ? raw.options.map(normalizeOption).filter((option): option is PluginOption => option !== null)
+    : undefined;
+  const contributions = Array.isArray(raw.contributions)
+    ? raw.contributions
+        .map(normalizeContribution)
+        .filter((item): item is PluginContribution => item !== null)
+    : undefined;
+  const glyph = GLYPHS.includes(raw.glyph as PluginGlyph) ? (raw.glyph as PluginGlyph) : 'plug';
+
+  return {
+    id: record.id,
+    name,
+    version: record.version,
+    author,
+    description,
+    glyph,
+    accent: normalizeAccent(raw.accent),
+    hooks,
+    permissions,
+    ...(options?.length ? { options } : {}),
+    ...(contributions?.length ? { contributions } : {}),
+    // 新装的包默认启用。这是产品决定，不是疏忽：装一个插件的人已经表达了
+    // 「我要用它」，再让他去拨一次开关只是多一步。安全性由安装前的确认弹窗
+    // 承担（权限逐条列出），不由开关承担——一个默认关闭的开关挡不住任何东西，
+    // 它只会让用户以为自己装了却坏了。
+    enabledByDefault: raw.enabledByDefault !== false,
+    builtin: false,
+    requiresRestart: raw.requiresRestart === true,
+    // 来源标记：从包安装的一律是第三方。清单不能自称 `builtin`。
+    thirdParty: true,
+    ...(record.assetBase ? { assetBase: record.assetBase } : {}),
+  };
+}
+
+/**
  * 归一化一条贡献。
  *
  * 这里只保证形状（`kind` 是已知枚举、`value` 是字符串），**不做内容校验**——
@@ -479,6 +630,28 @@ export function loadPluginStore(): PluginStore {
     const custom = Array.isArray(parsed.custom)
       ? parsed.custom.map(normalizePlugin).filter((plugin): plugin is LauncherPlugin => plugin !== null)
       : [];
+    /*
+     * 磁盘插件的缓存。
+     *
+     * 它随时会被 `reloadPlugins()` 用磁盘真值整体替换，所以这里宁可读漏也不要
+     * 读错：`pluginFromInstalled` 会补上缺失的展示字段，而一个缓存里残留的
+     * 已删除插件会在启动后的第一次 reload 中被清掉。首次渲染用缓存是为了避免
+     * 「启动瞬间插件页是空的」，不是为了让它当权威。
+     */
+    const installed = Array.isArray(parsed.installed)
+      ? parsed.installed
+          .map(entry =>
+            isPlainObject(entry)
+              ? pluginFromInstalled({
+                  id: typeof entry.id === 'string' ? entry.id : '',
+                  version: typeof entry.version === 'string' ? entry.version : '',
+                  manifest: entry.manifest,
+                  assetBase: typeof entry.assetBase === 'string' ? entry.assetBase : undefined,
+                })
+              : null,
+          )
+          .filter((plugin): plugin is LauncherPlugin => plugin !== null)
+      : [];
     const enabled: Record<string, boolean> = {};
     if (isPlainObject(parsed.enabled)) {
       Object.entries(parsed.enabled).forEach(([id, value]) => {
@@ -503,7 +676,7 @@ export function loadPluginStore(): PluginStore {
         if (typeof value === 'string') acknowledgedUpdates[id] = value;
       });
     }
-    return prunePluginStore({ custom, enabled, options, acknowledgedUpdates });
+    return prunePluginStore({ custom, installed, enabled, options, acknowledgedUpdates });
   } catch {
     return EMPTY_PLUGIN_STORE;
   }
@@ -516,7 +689,10 @@ export function savePluginStore(store: PluginStore): void {
 }
 
 /**
- * 全部插件：内置清单在前，手动安装的在后。
+ * 全部插件：内置 → 随包 → 从包安装 → 手动粘贴 → 计划中。
+ *
+ * 排序即信任顺序：越靠前越是启动器自己能负责的东西。这不是装饰——用户扫列表时
+ * 第一眼看到的是最可信的一组，而要装什么外部代码时，它总在下面。
  *
  * 组装时把「已采纳的更新」应用到内置条目上：版本号换成新值、清掉待更新标记。
  * 这样徽章、卡片与「需要注意」筛选读到的都是同一份已更新的清单，
@@ -530,12 +706,32 @@ export function allPlugins(store: PluginStore): LauncherPlugin[] {
     return { ...plugin, version: accepted, updateAvailable: undefined };
   });
   /*
+   * 随包分发的第三方插件。
+   *
+   * 它们与用户自己安装的插件同处 `custom` 通道（可以被禁用、被移除），区别只在
+   * 来源：清单与素材随包分发，不需要用户粘贴。所以这里把它们插在「内置」与
+   * 「用户自装」之间——按「谁提供的」排序，越靠前越是启动器自带的东西。
+   *
+   * 同名时以随包条目为准：用户不会想在自己的 `custom` 里再放一份 Aria。
+   */
+  const bundledIds = new Set(BUNDLED_PLUGINS.map(plugin => plugin.id));
+  const custom = store.custom.filter(plugin => !bundledIds.has(plugin.id));
+  /*
+   * 从插件包装进磁盘的那些。
+   *
+   * 与 `custom` 分开放（见 `PluginStore.installed` 的说明），在这里合并时按 id
+   * 去重，随包与内置优先：一个包不能用 `aria-with-you` 这个 id 顶掉随包插件，
+   * 那会让「随包插件不可移除」这条规则失效。
+   */
+  const claimed = new Set([...builtin.map(item => item.id), ...bundledIds]);
+  const installed = (store.installed ?? []).filter(plugin => !claimed.has(plugin.id));
+  /*
    * 计划中的条目排在最后。
    *
    * 排序即优先级：列表顶部是用户现在能用的东西，底部才是「以后会有」。把预告混在
    * 前面会让人第一眼看到一张拨不动的卡片。
    */
-  return [...builtin, ...store.custom, ...PLANNED_PLUGINS];
+  return [...builtin, ...BUNDLED_PLUGINS, ...installed, ...custom, ...PLANNED_PLUGINS];
 }
 
 /** 插件当前是否启用。不兼容的插件永远视为未启用。 */
@@ -576,7 +772,13 @@ export function installedPluginCount(store: PluginStore): number {
  * 自定义插件不在清理范围内：它们的 id 由清单决定，只在用户卸载时移除。
  */
 export function prunePluginStore(store: PluginStore): PluginStore {
-  const known = new Set(BUILTIN_PLUGINS.map(plugin => plugin.id));
+  const known = new Set([
+    ...BUILTIN_PLUGINS.map(plugin => plugin.id),
+    ...BUNDLED_PLUGINS.map(plugin => plugin.id),
+    // 已装到磁盘的插件也是「已知」的：它们的开关状态必须活下来，否则每次刷新
+    // 都会把用户刚打开的开关重置成默认值。
+    ...(store.installed ?? []).map(plugin => plugin.id),
+  ]);
   const custom = new Set(store.custom.map(plugin => plugin.id));
   const keep = (id: string) => known.has(id) || custom.has(id);
 
@@ -653,7 +855,21 @@ export function optionValue(plugin: LauncherPlugin, optionId: string, store: Plu
  */
 export function toPluginStatePayload(store: PluginStore): PluginStatePayload {
   const custom: PluginDefinition[] = [];
-  for (const plugin of store.custom) {
+  /*
+   * 从磁盘装进来的插件也要发给后端。
+   *
+   * ## 为什么这一条不能省
+   *
+   * 后端不认识插件目录里的清单：它在启动时读 `plugin_state` 表，把那里的 `custom`
+   * 当成「用户装的插件」逐条校验并执行贡献。如果前端只同步粘贴的那些，一个从
+   * GitHub 装进来、界面上显示「已启用」的插件，在启动链路里**完全不存在**——
+   * 那正是「界面替一个不存在的行为作证」，也正是这份同步函数存在的理由。
+   *
+   * ## 与粘贴的那些的唯一区别
+   *
+   * 来源不同，贡献的执行方式相同。两者都在用户可移除的范围内。
+   */
+  for (const plugin of [...(store.installed ?? []), ...store.custom]) {
     /*
      * 计划中的插件不发给后端。
      *

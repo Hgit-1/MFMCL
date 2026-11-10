@@ -41,6 +41,24 @@ Minecraft client update checks re-read the official manifest and version profile
 - Instance and game directories hold version files and user data. Each new instance uses a unique instance root and its own game directory.
 - Diagnostic export requires a user-chosen destination, bounds file count/size, removes likely credential values and common token fields, and leaves originals in place. Raw game commands are never logged. The launcher latest log is also bounded per process.
 
+## Plugin packages and sources
+
+Plugins exist in three trust tiers, and the boundary between them is explicit:
+
+- **Bundled** (`public/plugins/<id>/`, catalogued in `utils/plugins.ts::BUNDLED_PLUGINS`): built and signed with the launcher itself. Aria with You is the only one.
+- **Pasted manifest**: stores a description only. No archive, no script, no files.
+- **Installed package**: a ZIP (`.mflp` / `.mfplugin` / `.zip`) downloaded from an HTTPS source index or picked from disk, extracted under `plugins/<id>/` in the app data directory.
+
+Archive handling lives in Rust (`src-tauri/src/plugin_package.rs`) because it cannot be done safely in the WebView: reading user-chosen bytes, validating entry paths, and writing with a bounded size and atomic swap. It rejects absolute paths, `..` segments, Windows reserved device names, control characters, symlink mode bits, oversized manifests, and archives beyond 32 MiB extracted / 8 MiB per entry / 256 entries / 200:1 compression.
+
+Duplicate entries are detected by scanning the central directory **before** handing the archive to `zip`, because `zip::ZipArchive` silently de-duplicates names — a validator built on its API never sees the second copy, and "which file wins" would then depend on extraction order.
+
+Source indexes are fetched over HTTPS with the scheme re-checked after redirects, a bounded body, and a required `schema` version. An optional `sha256` per entry is verified against the downloaded bytes before anything is extracted. The index is a pointer list, not a grant: the permissions a plugin actually receives come from the manifest inside its own package.
+
+Plugin artwork reaches the webview through Tauri's asset protocol, with the scope granted **per plugin directory** at read time. The whole app data directory is deliberately never in scope, because that would expose the SQLite database to any injected markup.
+
+There is no sandbox. A package may contain a `main.js` that runs in the WebView and can reach the IPC bridge; the archive defences above do not constrain a malicious script. The UI states this rather than implying otherwise, and every third-party install ends in a confirmation dialog.
+
 ## Download and aria2 controls
 
 The Rust downloader remains the authority for URLs, expected hashes, installation destinations, and publication. aria2 is optional and used only for pinned artifacts. It runs with a random local RPC secret bound to IPv4 loopback, bounded global and per-file connections, and a per-session configuration file with restricted Unix permissions. The binary is launched only when its platform SHA-256 is pinned in the release resource manifest and its version output matches. This repository's manifest intentionally has no binary pins yet; development and CI therefore use the native Rust downloader. No aria2 binary is being distributed until its corresponding-source and license review is complete.
