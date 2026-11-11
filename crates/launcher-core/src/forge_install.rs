@@ -665,6 +665,7 @@ async fn install_from_installer(
     if client_processors.is_empty() {
         return Err("安装器没有声明客户端处理器，无法完成安装。".into());
     }
+    let control = engine.control();
     for (index, processor) in client_processors.iter().enumerate() {
         let context = ProcessorContext {
             libraries: &root.join("libraries"),
@@ -674,17 +675,21 @@ async fn install_from_installer(
             data: &data,
             side: "client",
         };
-        run_processor(
-            Path::new(&java),
-            processor,
-            &context,
-            index,
-            client_processors.len(),
-        )
+        run_processor_operation(&control, async {
+            run_processor(
+                Path::new(&java),
+                processor,
+                &context,
+                index,
+                client_processors.len(),
+            )
+            .await?;
+            if let Some(outputs) = &processor.outputs {
+                verify_processor_outputs(outputs, &context)?;
+            }
+            Ok(())
+        })
         .await?;
-        if let Some(outputs) = &processor.outputs {
-            verify_processor_outputs(outputs, &context)?;
-        }
     }
 
     // --- 6. 合并版本配置并发布 ---------------------------------------------
@@ -710,17 +715,17 @@ async fn install_from_installer(
     )
     .map_err(|e| format!("原版配置解析失败：{e}"))?;
     let merged = merge_installer_profile(base, &patch, runtime_libraries)?;
+    let merged_bytes = serde_json::to_vec_pretty(&merged).map_err(|e| e.to_string())?;
+    control
+        .checkpoint()
+        .await
+        .map_err(|_| "加载器安装已取消。".to_owned())?;
 
-    publish_loader_profile(
-        &version_dir,
-        &serde_json::to_vec_pretty(&merged).map_err(|e| e.to_string())?,
-        replace_existing,
-        || {
-            store
-                .set_instance_loader(&instance.id, &format!("{}@{version}", kind.name()))
-                .map_err(|e| e.to_string())
-        },
-    )
+    publish_loader_profile(&version_dir, &merged_bytes, replace_existing, || {
+        store
+            .set_instance_loader(&instance.id, &format!("{}@{version}", kind.name()))
+            .map_err(|e| e.to_string())
+    })
 }
 
 /// 安装器 jar 的地址与已知 SHA-1。
@@ -814,6 +819,35 @@ fn extract_installer(source: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Pause only at verified step boundaries: Java processors cannot safely be restarted.
+/// Cancellation drops the operation, so child processes must use `kill_on_drop(true)`.
+async fn run_processor_operation<T>(
+    control: &download_engine::DownloadControl,
+    operation: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    control
+        .checkpoint()
+        .await
+        .map_err(|_| "加载器安装已取消。".to_owned())?;
+    let result = tokio::select! {
+        biased;
+        _ = async {
+            loop {
+                if control.is_cancelled() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        } => return Err("加载器安装已取消。".to_owned()),
+        result = operation => result?,
+    };
+    control
+        .checkpoint()
+        .await
+        .map_err(|_| "加载器安装已取消。".to_owned())?;
+    Ok(result)
+}
+
 /// 执行一个 processor。
 ///
 /// 命令行形如：
@@ -834,6 +868,11 @@ async fn run_processor(
             .get(&processor.jar)
             .ok_or_else(|| format!("安装器处理器 {} 未下载。", processor.jar))?,
     )?;
+    crate::launcher_log::log_info(format!(
+        "加载器处理器 {}/{}：{main_class}",
+        index + 1,
+        total
+    ));
     let mut classpath: Vec<String> = Vec::new();
     classpath.push(
         context
@@ -861,8 +900,6 @@ async fn run_processor(
         main_class,
         args.join(" ")
     );
-    // 进度：处理器是一串串行步骤，用序号表达进度比假装百分比更诚实。
-    let _ = (index, total);
     /*
      * The processor is a Java program run per install step. Hidden like every other
      * helper: a `windows`-subsystem parent has no console to hand down.
@@ -872,11 +909,54 @@ async fn run_processor(
         .arg("-cp")
         .arg(classpath.join(separator))
         .arg(&main_class)
-        .args(&args);
-    let output = crate::process::hide_console_async(&mut processor)
-        .output()
-        .await
-        .map_err(|error| format!("无法启动安装器处理器（{command}）：{error}"))?;
+        .args(&args)
+        .current_dir(context.installer_root)
+        .env_remove("_JAVA_OPTIONS")
+        .env_remove("JAVA_TOOL_OPTIONS")
+        .env_remove("JDK_JAVA_OPTIONS")
+        .env_remove("CLASSPATH")
+        .kill_on_drop(true);
+    let started = tokio::time::Instant::now();
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(180),
+        crate::process::hide_console_async(&mut processor).output(),
+    );
+    tokio::pin!(output);
+    let heartbeat_period = std::time::Duration::from_secs(10);
+    let mut heartbeat = tokio::time::interval_at(started + heartbeat_period, heartbeat_period);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let result = loop {
+        tokio::select! {
+            result = &mut output => break result,
+            _ = heartbeat.tick() => {
+                crate::launcher_log::log_info(format!(
+                    "加载器处理器 {}/{} 仍在执行（已用时 {:.1} 秒）：{main_class}",
+                    index + 1, total, started.elapsed().as_secs_f64()
+                ));
+            }
+        }
+    };
+    let output = match result {
+        Err(_) => {
+            crate::launcher_log::log_error(format!(
+                "加载器处理器 {}/{} 超时（180 秒，已用时 {:.1} 秒）：{main_class}",
+                index + 1,
+                total,
+                started.elapsed().as_secs_f64()
+            ));
+            return Err("加载器处理器执行超时。".to_owned());
+        }
+        Ok(Err(e)) => {
+            crate::launcher_log::log_error(format!(
+                "无法启动加载器处理器 {}/{}（{main_class}，已用时 {:.1} 秒）：{e}",
+                index + 1,
+                total,
+                started.elapsed().as_secs_f64()
+            ));
+            return Err(format!("无法启动安装器处理器（{command}）：{e}"));
+        }
+        Ok(Ok(output)) => output,
+    };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -885,12 +965,32 @@ async fn run_processor(
         } else {
             stderr
         };
+        /*
+         * 把 processor 自己的输出也写进日志。
+         *
+         * 用户看到的错误只会是「安装器处理器失败（第 3/7 步）」，而真正的原因
+         * （映射文件损坏、磁盘写不进去、Java 版本不对）全在 stderr 里。不落盘
+         * 就只能让用户重跑一次并祈祷它复现。
+         */
+        crate::launcher_log::log_error(format!(
+            "加载器处理器 {}/{} 失败（{main_class}，用时 {:.1} 秒）：\n{}",
+            index + 1,
+            total,
+            started.elapsed().as_secs_f64(),
+            truncate(&detail, 2000)
+        ));
         return Err(format!(
             "安装器处理器失败（第 {}/{total} 步，{main_class}）：\n{}",
             index + 1,
             truncate(&detail, 1200)
         ));
     }
+    crate::launcher_log::log_info(format!(
+        "加载器处理器 {}/{} 完成（用时 {:.1} 秒）：{main_class}",
+        index + 1,
+        total,
+        started.elapsed().as_secs_f64()
+    ));
     Ok(())
 }
 
@@ -1160,6 +1260,162 @@ pub fn installer_version_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use download_engine::DownloadControl;
+    use tokio::sync::{oneshot, watch};
+
+    #[tokio::test]
+    async fn processor_operation_waits_for_resume_before_starting() {
+        let control = DownloadControl::new();
+        control.pause();
+        let (started, mut start) = oneshot::channel();
+        let mut worker = Box::pin(run_processor_operation(&control, async {
+            started.send(()).unwrap();
+            Ok(42)
+        }));
+
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        assert!(matches!(
+            start.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        control.resume();
+        assert_eq!(worker.await, Ok(42));
+        assert_eq!(start.try_recv(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn processor_operation_pause_finishes_verification_then_resumes_same_worker() {
+        let control = DownloadControl::new();
+        let (starts, start_count) = watch::channel(0);
+        let (finish, finished) = oneshot::channel();
+        let (verified, mut verification) = oneshot::channel();
+        let mut worker = Box::pin(async {
+            let value = run_processor_operation(&control, async {
+                starts.send_modify(|count| *count += 1);
+                let value = finished.await.expect("finish the running processor");
+                verified.send(()).unwrap();
+                Ok(value)
+            })
+            .await?;
+            run_processor_operation(&control, async {
+                starts.send_modify(|count| *count += 1);
+                Ok(value + 1)
+            })
+            .await
+        });
+
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        assert_eq!(*start_count.borrow(), 1);
+        control.pause();
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        assert!(!finish.is_closed(), "pause must not drop the processor");
+
+        finish.send(41).unwrap();
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        assert_eq!(verification.try_recv(), Ok(()));
+        assert_eq!(*start_count.borrow(), 1, "next step must remain paused");
+
+        control.resume();
+        assert_eq!(worker.await, Ok(42));
+        assert_eq!(*start_count.borrow(), 2, "each processor runs exactly once");
+    }
+
+    #[tokio::test]
+    async fn processor_operation_resume_during_execution_keeps_the_running_future() {
+        let control = DownloadControl::new();
+        let (starts, start_count) = watch::channel(0);
+        let (finish, finished) = oneshot::channel();
+        let mut worker = Box::pin(run_processor_operation(&control, async {
+            starts.send_modify(|count| *count += 1);
+            Ok(finished.await.expect("finish the original processor"))
+        }));
+
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        control.pause();
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        control.resume();
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        assert_eq!(*start_count.borrow(), 1);
+
+        finish.send(42).unwrap();
+        assert_eq!(worker.await, Ok(42));
+        assert_eq!(*start_count.borrow(), 1);
+    }
+
+    #[tokio::test]
+    async fn processor_operation_cancel_while_paused_before_start_exits() {
+        let control = DownloadControl::new();
+        control.pause();
+        let (started, mut start) = oneshot::channel();
+        let mut worker = Box::pin(run_processor_operation(&control, async {
+            started.send(()).unwrap();
+            Ok(())
+        }));
+
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        control.cancel();
+        assert_eq!(worker.await, Err("加载器安装已取消。".to_owned()));
+        assert!(matches!(
+            start.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn processor_operation_cancel_while_paused_after_verification_exits() {
+        let control = DownloadControl::new();
+        let (finish, finished) = oneshot::channel();
+        let (verified, mut verification) = oneshot::channel();
+        let mut worker = Box::pin(run_processor_operation(&control, async {
+            finished.await.expect("finish the running processor");
+            verified.send(()).unwrap();
+            Ok(())
+        }));
+
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        control.pause();
+        finish.send(()).unwrap();
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        assert_eq!(verification.try_recv(), Ok(()));
+
+        control.cancel();
+        assert_eq!(worker.await, Err("加载器安装已取消。".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn processor_operation_cancel_running_drops_the_process_future() {
+        struct DropSignal(Option<oneshot::Sender<()>>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+
+        let control = DownloadControl::new();
+        let (started, mut start) = oneshot::channel();
+        let (finish, finished) = oneshot::channel::<()>();
+        let (dropped, mut drop_signal) = oneshot::channel();
+        let mut worker = Box::pin(run_processor_operation(&control, async {
+            let _drop_signal = DropSignal(Some(dropped));
+            started.send(()).unwrap();
+            finished.await.expect("cancel instead of completing");
+            Ok(())
+        }));
+
+        assert!(futures_util::poll!(worker.as_mut()).is_pending());
+        assert_eq!(start.try_recv(), Ok(()));
+        control.pause();
+        control.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), worker)
+            .await
+            .expect("cancellation must stay responsive even while paused");
+        assert_eq!(result, Err("加载器安装已取消。".to_owned()));
+        assert_eq!(drop_signal.try_recv(), Ok(()));
+        assert!(finish.is_closed());
+    }
 
     /// Forge 的版本号自带游戏版本前缀，不能再拼一次。
     ///

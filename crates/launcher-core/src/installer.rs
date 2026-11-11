@@ -1,6 +1,6 @@
 use crate::{InstanceRecord, InstanceState, LauncherStore, StoreError};
 use download_engine::{ArtifactSpec, DownloadEngine, DownloadError, DownloadProgress};
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::StreamExt;
 use mc_metadata::{
     AssetIndex, GameVersionMetadata, Library, LibraryRule, SourcePreference, fetch_manifest,
     fetch_version_metadata,
@@ -566,15 +566,41 @@ async fn download_artifacts(
      * 总量只要有一个文件大小未知，就是 `None`——资源索引里确实存在缺 size 的条目。
      * 宁可让界面显示不确定态，也不要给一个偏小的分母，那会让进度条冲到 100% 之后
      * 又开始前进。
+     *
+     * ## 必须按 destination 去重
+     *
+     * 资源索引按**名称**组织，而对象按 **hash** 落盘：1.21.1 的索引有 3913 个名称、
+     * 只有 3890 个唯一 hash（23 个重复）。照名称登记会把同一份文件算两次进分母，
+     * 而下载引擎按 destination 串行化、只会完成一次——进度条因此永远差几个百分点，
+     * 表现为「文件都下完了，进度却停在 88%」。
      */
-    let known_total = artifacts
-        .iter()
+    let mut unique: std::collections::HashMap<&std::path::Path, &ArtifactSpec> =
+        std::collections::HashMap::new();
+    for artifact in &artifacts {
+        unique.entry(artifact.destination.as_path()).or_insert(artifact);
+    }
+    let known_total = unique
+        .values()
         .map(|artifact| artifact.size)
         .collect::<Option<Vec<u64>>>()
         .map(|sizes| sizes.iter().sum::<u64>());
     engine
         .task_progress()
-        .register(artifacts.len() as u32, known_total);
+        .register(unique.len() as u32, known_total);
+    /*
+     * 每一批都要留痕：这一批有多少个文件、总量是多少、并发度多大。
+     *
+     * 「装到某个百分比就不动了」这类问题，第一件要确认的事就是「卡在哪一批」。
+     * 没有这条日志，只能看到任务级的最终结果，看不出是第一批库卡住还是第二批
+     * 资源卡住。
+     */
+    crate::launcher_log::log_info(format!(
+        "下载批次：{} 个文件，总量 {}",
+        unique.len(),
+        known_total
+            .map(|bytes| format!("{bytes} 字节"))
+            .unwrap_or_else(|| "未知".to_owned())
+    ));
     /*
      * 并发度由引擎的信号量控制，这里不需要再切一层。
      *
@@ -585,16 +611,60 @@ async fn download_artifacts(
         .settings()
         .max_concurrent_downloads
         .clamp(1, download_engine::MAX_CONCURRENT_DOWNLOADS_LIMIT) as usize;
-    futures_util::stream::iter(artifacts)
+    /*
+     * 用 `collect` 而不是 `try_collect`：先把这一批**全部**跑完再统一判断结果。
+     *
+     * `try_collect` 在第一个错误时就短路返回，但 `buffer_unordered` 里已经在跑的
+     * 那些 future 并不会被取消——它们继续持有 `progress` 克隆与网络连接。于是
+     * 调用方以为这批结束了，而实际上还有十几个下载在后台跑：进度通道关不掉、
+     * 磁盘还在写、界面上的任务卡既不前进也不结束。
+     *
+     * 代价是「有文件失败时也要等其余文件跑完」。这是值得的：失败信息一条都不会
+     * 丢，而且不会留下无人管理的后台下载。真正需要快速中断时走的是取消路径
+     * （`control`），不是这里。
+     */
+    let results = futures_util::stream::iter(artifacts)
         .map(|artifact| {
             let engine = engine.clone();
             let progress = progress.clone();
-            async move { engine.download(&artifact, progress).await }
+            async move {
+                // 带上文件标识：失败时要能说出「是哪个文件」，否则日志只有
+                // 一句「download error」而定位不到具体条目。
+                let label = artifact.label.clone();
+                let id = artifact.id.clone();
+                (id, label, engine.download(&artifact, progress).await)
+            }
         })
         .buffer_unordered(concurrency)
-        .try_collect::<Vec<_>>()
-        .await?;
-    Ok(())
+        .collect::<Vec<_>>()
+        .await;
+    /*
+     * 第一个错误决定报给用户的原因；**所有**错误都写进日志。
+     *
+     * 只报第一个错误是不够的：一次安装里可能同时有十几个文件失败（镜像限流、
+     * 某个条目缺校验值、磁盘被占用），它们的修法各不相同。日志里必须能一次看到
+     * 全部，否则用户按第一条改完再跑一次，又撞上第二条。
+     */
+    let mut first_error = None;
+    let mut failed = 0u32;
+    for (id, label, result) in results {
+        if let Err(error) = result {
+            failed += 1;
+            crate::launcher_log::log_error(format!("下载失败 {label}（{id}）：{error}"));
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    }
+    if failed > 0 {
+        crate::launcher_log::log_error(format!("本批次失败 {failed} 个文件"));
+    } else {
+        crate::launcher_log::log_info("本批次全部完成");
+    }
+    match first_error {
+        Some(error) => Err(error.into()),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn library_allowed(library: &Library) -> bool {

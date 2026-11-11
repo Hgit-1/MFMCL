@@ -549,11 +549,17 @@ export const en: Record<MessageKey, string> = {
   'app.stageVerifying': 'Verifying',
   'app.stageCompleted': 'Completed',
   'app.stageFailed': 'Failed',
-  'app.fileProgressTitle': 'Files downloading',
+  /*
+   * The list keeps the most recent 100 file events, so mid-install it is mostly
+   * files that just finished. Calling it "Files downloading" made a column of
+   * "Completed" rows look like they were still running.
+   */
+  'app.fileProgressTitle': 'File details',
   'app.fileProgressParallel': '{count} in parallel',
   'app.fileProgressUnknownTotal': 'Unknown total',
   'app.taskFilesSummary': '{done}/{total} files',
   'app.taskBytesSummary': '{done} / {total}',
+  'app.taskPausedProcessingHint': 'Pause requested. The current installation step will finish safely, then wait for Resume without restarting.',
   'app.taskPausedHint': 'Paused. Resume to continue; finished files are kept.',
   'app.pauseTask': 'Pause',
   'app.resumeTask': 'Resume',

@@ -1035,11 +1035,9 @@ fn emit(
             })
             .unwrap_or_default();
         /*
-         * 只有「已完成」与「失败」是终态，其余阶段都算在途。
-         *
-         * 用阶段而不是 `received == total` 判断：分段下载的最后一次推送可能正好
-         * 等于总量，但文件还没通过 SHA 校验；把它算成已完成，就会在校验失败时
-         * 留下一条「已完成」的假记录。
+         * 用阶段而不是 `received == total` 判断完成：`Verifying` 的字节已经
+         * 收齐，但尚未通过校验，只计在途字节，不增加已完成文件数。
+         * 只有 `Completed` 增加已完成文件数；`Failed` 撤销该文件的累计。
          */
         let finished = stage == DownloadStage::Completed;
         let failed = stage == DownloadStage::Failed;

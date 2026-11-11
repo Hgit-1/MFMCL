@@ -1,5 +1,5 @@
 //! Installation-scoped controls and persistent, truthful task status.
-use download_engine::{DownloadControl, DownloadProgress, TaskProgress};
+use download_engine::{DownloadControl, DownloadProgress, TaskProgress, TaskProgressSnapshot};
 use launcher_core::{DownloadTask, DownloadTaskState, LauncherStore};
 use serde::Serialize;
 use std::{
@@ -14,6 +14,77 @@ struct ActiveJob {
     task: DownloadTask,
     last_saved: Instant,
 }
+impl ActiveJob {
+    fn apply_snapshot(&mut self, snapshot: TaskProgressSnapshot) {
+        self.task.completed_bytes = snapshot.completed_bytes;
+        self.task.total_bytes = snapshot.total_bytes;
+        self.task.files = Some(snapshot.files);
+        self.task.completed_files = Some(snapshot.completed_files);
+    }
+
+    fn all_files_completed(&self) -> bool {
+        self.task
+            .files
+            .is_some_and(|files| files > 0 && self.task.completed_files.unwrap_or(0) >= files)
+    }
+
+    fn update_progress(&mut self, progress: &DownloadProgress) -> bool {
+        let was_complete = self.all_files_completed();
+        if let Some(snapshot) = progress.task {
+            self.apply_snapshot(snapshot);
+        }
+        self.task.source = Some(progress.source.clone());
+        // A final update cannot depend on another event arriving after the throttle window.
+        (!was_complete && self.all_files_completed())
+            || self.last_saved.elapsed() >= Duration::from_millis(250)
+    }
+
+    fn publish(
+        &mut self,
+        id: &str,
+        store: &LauncherStore,
+        app: &AppHandle,
+        reason: Option<&str>,
+    ) -> Result<(), String> {
+        use launcher_core::launcher_log::{log_error, log_info};
+        self.task.updated_at = chrono::Utc::now().to_rfc3339();
+        if let Err(error) = store.save_download_task(&self.task) {
+            log_error(format!(
+                "任务状态保存失败 task={} instance={id}：{error}",
+                self.task.id
+            ));
+            return Err(error.to_string());
+        }
+        let emitted = app.emit(
+            "installation-task",
+            TaskEvent {
+                instance_id: id.into(),
+                task: self.task.clone(),
+            },
+        );
+        if let Err(error) = &emitted {
+            log_error(format!(
+                "任务事件发送失败 task={} instance={id}：{error}",
+                self.task.id
+            ));
+        }
+        if let Some(reason) = reason {
+            log_info(format!(
+                "任务快照 [{reason}] task={} instance={id} state={:?} files={:?}/{:?} bytes={}/{:?} event={}",
+                self.task.id,
+                self.task.state,
+                self.task.completed_files,
+                self.task.files,
+                self.task.completed_bytes,
+                self.task.total_bytes,
+                emitted.is_ok()
+            ));
+        }
+        self.last_saved = Instant::now();
+        emitted.map_err(|error| error.to_string())
+    }
+}
+
 #[derive(Default)]
 pub struct Downloads(Mutex<HashMap<String, ActiveJob>>);
 
@@ -127,35 +198,8 @@ impl Downloads {
         let Some(job) = jobs.get_mut(id) else {
             return None;
         };
-        /*
-         * 写进任务行的必须是**整体**进度，不是这一条事件里那个文件的进度。
-         *
-         * `progress.received / progress.total` 是当前文件自己的计量：拿它当任务
-         * 进度，用户会看到进度条随着文件切换从 100% 跳回 3%。`progress.task`
-         * 是下载引擎对整次任务的累计（文件数、已完成字节、总量），只有它才是
-         * 「这次安装走到哪了」。
-         *
-         * 拿不到累计值时（旧引擎、或调用方没接 `with_task_progress`）保留上一次
-         * 已知的数值，而不是用一个更小的单文件值把进度条往回拨。
-         */
-        if let Some(snapshot) = progress.task {
-            job.task.completed_bytes = snapshot.completed_bytes;
-            job.task.total_bytes = snapshot.total_bytes;
-            job.task.files = Some(snapshot.files);
-            job.task.completed_files = Some(snapshot.completed_files);
-        }
-        job.task.source = Some(progress.source.clone());
-        if job.last_saved.elapsed() >= Duration::from_millis(250) {
-            job.task.updated_at = chrono::Utc::now().to_rfc3339();
-            let _ = store.save_download_task(&job.task);
-            let _ = app.emit(
-                "installation-task",
-                TaskEvent {
-                    instance_id: id.into(),
-                    task: job.task.clone(),
-                },
-            );
-            job.last_saved = Instant::now();
+        if job.update_progress(progress) {
+            let _ = job.publish(id, store, app, None);
         }
         /*
          * 把任务记录 id 交回调用方，供 `ProgressEvent` 标注归属。
@@ -165,6 +209,24 @@ impl Downloads {
          */
         Some(job.task.id.clone())
     }
+    pub fn flush(
+        &self,
+        id: &str,
+        snapshot: Option<TaskProgressSnapshot>,
+        reason: &str,
+        store: &LauncherStore,
+        app: &AppHandle,
+    ) -> Result<(), String> {
+        let mut jobs = self.0.lock().map_err(|_| "下载任务状态不可用。")?;
+        if let Some(job) = jobs.get_mut(id) {
+            if let Some(snapshot) = snapshot {
+                job.apply_snapshot(snapshot);
+            }
+            job.publish(id, store, app, Some(reason))?;
+        }
+        Ok(())
+    }
+
     pub fn finish(
         &self,
         id: &str,
@@ -181,17 +243,7 @@ impl Downloads {
             } else {
                 DownloadTaskState::Failed
             };
-            job.task.updated_at = chrono::Utc::now().to_rfc3339();
-            store
-                .save_download_task(&job.task)
-                .map_err(|e| e.to_string())?;
-            let _ = app.emit(
-                "installation-task",
-                TaskEvent {
-                    instance_id: id.into(),
-                    task: job.task,
-                },
-            );
+            job.publish(id, store, app, Some("结束"))?;
         }
         Ok(())
     }
@@ -234,6 +286,16 @@ pub fn control_download(
         "cancel" => DownloadTaskState::Cancelled,
         _ => return Err("未知下载操作。".into()),
     };
+    launcher_core::launcher_log::log_info(format!(
+        "任务控制 action={action} task={} instance={instance_id} before={:?} after={:?} files={:?}/{:?} bytes={}/{:?}",
+        job.task.id,
+        job.task.state,
+        state,
+        job.task.completed_files,
+        job.task.files,
+        job.task.completed_bytes,
+        job.task.total_bytes
+    ));
     let mut task = job.task.clone();
     task.state = state;
     task.updated_at = chrono::Utc::now().to_rfc3339();
@@ -244,7 +306,118 @@ pub fn control_download(
         "cancel" => job.control.cancel(),
         _ => unreachable!(),
     }
-    job.task = task.clone();
-    let _ = app.emit("installation-task", TaskEvent { instance_id, task });
-    Ok(())
+    job.task = task;
+    app.emit(
+        "installation-task",
+        TaskEvent {
+            instance_id,
+            task: job.task.clone(),
+        },
+    )
+    .map_err(|error| {
+        launcher_core::launcher_log::log_error(format!(
+            "任务控制事件发送失败 task={}：{error}",
+            job.task.id
+        ));
+        error.to_string()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use download_engine::DownloadStage;
+
+    fn job() -> ActiveJob {
+        ActiveJob {
+            control: DownloadControl::new(),
+            task: DownloadTask {
+                id: "task".into(),
+                instance_id: "instance".into(),
+                label: "NeoForge".into(),
+                source: None,
+                state: DownloadTaskState::Running,
+                completed_bytes: 843,
+                total_bytes: Some(880),
+                files: Some(3963),
+                completed_files: Some(3885),
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            last_saved: Instant::now(),
+        }
+    }
+
+    fn event(done: u32, bytes: u64, stage: DownloadStage) -> DownloadProgress {
+        DownloadProgress {
+            artifact_id: "asset".into(),
+            label: "asset".into(),
+            received: 1,
+            total: Some(1),
+            source: String::new(),
+            stage,
+            task: Some(TaskProgressSnapshot {
+                files: 3963,
+                completed_files: done,
+                completed_bytes: bytes,
+                total_bytes: Some(880),
+            }),
+        }
+    }
+
+    #[test]
+    fn final_completion_bypasses_the_throttle_without_a_followup_event() {
+        let mut job = job();
+        assert!(job.update_progress(&event(3963, 880, DownloadStage::Completed)));
+        assert_eq!(job.task.completed_files, Some(3963));
+        assert_eq!(job.task.completed_bytes, 880);
+        assert!(job.last_saved.elapsed() < Duration::from_millis(250));
+    }
+
+    #[test]
+    fn partial_progress_remains_throttled_but_updates_the_snapshot() {
+        let mut job = job();
+        assert!(!job.update_progress(&event(3886, 844, DownloadStage::Completed)));
+        assert_eq!(job.task.completed_files, Some(3886));
+        assert_eq!(job.task.completed_bytes, 844);
+    }
+
+    #[test]
+    fn verifying_one_file_does_not_finish_the_batch() {
+        let mut job = job();
+        assert!(!job.update_progress(&event(3962, 880, DownloadStage::Verifying)));
+        assert!(!job.all_files_completed());
+    }
+
+    #[test]
+    fn authoritative_boundary_snapshot_replaces_an_older_queued_snapshot() {
+        let mut job = job();
+        job.update_progress(&event(3963, 880, DownloadStage::Completed));
+        job.update_progress(&event(3885, 843, DownloadStage::Completed));
+        job.apply_snapshot(TaskProgressSnapshot {
+            files: 3963,
+            completed_files: 3963,
+            completed_bytes: 880,
+            total_bytes: Some(880),
+        });
+        assert!(job.all_files_completed());
+        assert_eq!(job.task.completed_bytes, 880);
+    }
+
+    #[test]
+    fn flushing_counters_preserves_paused_control_and_task_state() {
+        let mut job = job();
+        job.task.state = DownloadTaskState::Paused;
+        job.control.pause();
+        job.apply_snapshot(TaskProgressSnapshot {
+            files: 3963,
+            completed_files: 3963,
+            completed_bytes: 880,
+            total_bytes: Some(880),
+        });
+        assert_eq!(job.task.state, DownloadTaskState::Paused);
+        assert!(job.control.is_paused());
+        job.control.resume();
+        assert!(!job.control.is_paused());
+    }
 }

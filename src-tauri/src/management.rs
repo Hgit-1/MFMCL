@@ -43,6 +43,7 @@ pub(crate) fn task_progress(
             };
             let _ = app.emit("download-progress", event);
         }
+        let _ = downloads.flush(&id, None, "文件进度通道关闭", &store, &app);
     });
     (tx, task)
 }

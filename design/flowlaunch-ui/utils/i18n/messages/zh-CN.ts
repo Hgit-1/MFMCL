@@ -558,12 +558,20 @@ export const zhCN = {
   'app.stageVerifying': '校验中',
   'app.stageCompleted': '已完成',
   'app.stageFailed': '失败',
-  'app.fileProgressTitle': '正在下载的文件',
+  /*
+   * 文件明细的标题。
+   *
+   * 不写「正在下载的文件」：这个列表按最近事件保留 100 条，任务跑到一半时里面
+   * 大多是刚下完的文件，标题说「正在下载」会让人以为它们还在跑——截图里就出现过
+   * 「正在下载的文件」下面清一色「已完成」。
+   */
+  'app.fileProgressTitle': '文件明细',
   'app.fileProgressParallel': '{count} 个并行',
   'app.fileProgressUnknownTotal': '总量未知',
   /* 任务卡上的文件数/字节数摘要：进度条本身就是整体进度，这里给它一个可读的数字支撑。 */
   'app.taskFilesSummary': '{done}/{total} 个文件',
   'app.taskBytesSummary': '{done} / {total}',
+  'app.taskPausedProcessingHint': '已请求暂停；当前安装步骤会先安全结束，再等待继续，不会从头重跑。',
   'app.taskPausedHint': '已暂停；点继续恢复下载（已下载的部分会保留）。',
   /* 暂停/继续/取消的图标按钮：只给读屏与悬停用，界面上不显示文字。 */
   'app.pauseTask': '暂停',

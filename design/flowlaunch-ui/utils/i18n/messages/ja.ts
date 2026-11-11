@@ -547,11 +547,17 @@ export const ja: Record<MessageKey, string> = {
   'app.stageVerifying': '検証中',
   'app.stageCompleted': '完了',
   'app.stageFailed': '失敗',
-  'app.fileProgressTitle': 'ダウンロード中のファイル',
+  /*
+   * 直近 100 件のイベントを保持するため、インストール途中では「完了」した
+   * ファイルが大半を占める。「ダウンロード中」という見出しだと、完了済みの行が
+   * まだ動いているように見えてしまう。
+   */
+  'app.fileProgressTitle': 'ファイルの詳細',
   'app.fileProgressParallel': '{count} 件を並列処理',
   'app.fileProgressUnknownTotal': '合計サイズ不明',
   'app.taskFilesSummary': '{done}/{total} ファイル',
   'app.taskBytesSummary': '{done} / {total}',
+  'app.taskPausedProcessingHint': '一時停止を要求しました。現在のインストール手順を安全に終えてから再開を待ちます。最初からやり直しません。',
   'app.taskPausedHint': '一時停止中です。再開すると続きから取得します（完了したファイルは保持されます）。',
   'app.pauseTask': '一時停止',
   'app.resumeTask': '再開',

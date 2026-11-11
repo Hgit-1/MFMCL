@@ -1,5 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
+import {
+  ACTIVE_TASK_STATUSES as ACTIVE_TASK_STATUSES_IMPORTED,
+  FINISHED_TASK_STATUSES as FINISHED_TASK_STATUSES_IMPORTED,
+  mergeTaskUpdate,
+  sortTasksForDisplay,
+  taskDisplayStatus,
+} from './taskOrder';
 import { useTheme } from '../hooks/useTheme';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
@@ -307,7 +314,8 @@ const ChevronDownIcon = ({ open }: { open: boolean }) => (
 );
 
 /** 仍在进行中的任务状态。已完成/失败/取消的任务不再计入侧栏徽章。 */
-const ACTIVE_TASK_STATUSES: DownloadTask['status'][] = ['queued', 'downloading', 'verifying', 'installing'];
+const ACTIVE_TASK_STATUSES = ACTIVE_TASK_STATUSES_IMPORTED;
+const FINISHED_TASK_STATUSES = FINISHED_TASK_STATUSES_IMPORTED;
 
 /**
  * 单个任务的文件明细默认显示几行。
@@ -566,6 +574,17 @@ function App() {
   const [recentAccounts, setRecentAccounts] = useState<Account[]>([]);
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [downloadTasks, setDownloadTasks] = useState<DownloadTask[]>([]);
+  /**
+   * 用户刚点了暂停、后端的 `paused` 事件还在路上的那个短暂窗口。
+   *
+   * 用 ref 而不是 state：它只在事件回调里读写，改它不该触发重渲染。
+   *
+   * 为什么需要它：`control_download` 是异步命令，返回之前管道里可能还有几条
+   * `running` 事件。不管它们的话任务卡会在「已暂停」和「下载中」之间闪一下。
+   * 窗口只有 1.5 秒，后端一旦明确回报 `paused` 就立刻清掉——所以它不会像以前
+   * 那样把状态永久钉住，也就不会出现「点了继续却恢复不了」。
+   */
+  const pendingPause = useRef<{ taskId: string; at: number } | null>(null);
   /**
    * 侧栏徽章的数字。
    *
@@ -890,8 +909,15 @@ function App() {
            */
           const finished = payload.task.state !== 'running' && payload.task.state !== 'paused';
           setDownloadTasks(current => {
-            const next = current.filter(task => task.id !== payload.task.id);
-            const updated = [taskToUi(payload.task), ...next];
+            const updated = mergeTaskUpdate(
+              current,
+              taskToUi(payload.task),
+              pendingPause.current,
+            );
+            // 后端已经明确回报了暂停态，本地那个「盖住在途事件」的窗口可以撤了。
+            if (payload.task.state === 'paused' && pendingPause.current?.taskId === payload.task.id) {
+              pendingPause.current = null;
+            }
             if (finished && !updated.some(task => ACTIVE_TASK_STATUSES.includes(task.status) || task.status === 'paused')) {
               // 任务全部结束：这些文件行已经是历史，留着会让人以为还有东西在下。
               setProgress([]);
@@ -1096,6 +1122,8 @@ function App() {
       } catch (error) {
         setToast(errorText(error, repairing ? '修复失败。' : '安装失败。'));
         await refreshInstances();
+      } finally {
+        await refreshDownloadTasks();
       }
     })();
   };
@@ -1326,7 +1354,8 @@ function App() {
    * 停止传输，文件还在往下写。后端的状态会通过 `installation-task` 事件推回来，
    * 所以这里不本地改状态，避免界面领先于真实情况。
    */
-  const setTaskPaused = (taskId: string, paused: boolean) => {    const task = downloadTasks.find(item => item.id === taskId);
+  const setTaskPaused = (taskId: string, paused: boolean) => {
+    const task = downloadTasks.find(item => item.id === taskId);
     if (!task) return;
     if (!task.instanceId) {
       setToast(t(paused ? 'app.pauseFailed' : 'app.resumeFailed'));
@@ -1334,8 +1363,18 @@ function App() {
     }
     void (async () => {
       try {
+        /*
+         * 暂停时记下窗口起点，盖住在途的 `running` 事件；恢复时立刻清掉，
+         * 否则恢复后的第一条 `running` 会被当成「还没生效」而继续显示已暂停。
+         */
+        if (paused) {
+          pendingPause.current = { taskId: task.id, at: Date.now() };
+        } else {
+          pendingPause.current = null;
+        }
         await controlDownload(task.instanceId!, paused ? 'pause' : 'resume');
       } catch (error) {
+        pendingPause.current = null;
         setToast(errorText(error, t(paused ? 'app.pauseFailed' : 'app.resumeFailed')));
       }
     })();
@@ -1670,24 +1709,13 @@ function App() {
    * 反而是噪音，用户并没有主动要求这件事。
    */
   const clearFinishedTasks = async (announce = true) => {
-    /*
-     * 本地先数一遍已结束的条数。
-     *
-     * 不只是为了提示文案：浏览器预览里没有后端，清理命令返回 0，但界面上明明
-     * 摆着「已完成」的卡片。如果只信后端的返回值，用户点清理会看到「没有可清理
-     * 的记录」和一张已完成任务并列——界面在自相矛盾。本地计数在后端返回值缺失
-     * （预览）时兜底，桌面版以后端为准。
-     */
-    const finishedLocal = downloadTasks.filter(task => !ACTIVE_TASK_STATUSES.includes(task.status)).length;
     try {
       const removed = await clearFinishedDownloadTasks();
-      // 已结束的行立刻从内存里去掉：后端已经删了，等下一次读表才消失会闪一下。
-      setDownloadTasks(current => current.filter(task => ACTIVE_TASK_STATUSES.includes(task.status)));
-      if (removed > 0) await refreshDownloadTasks();
-      const cleared = removed > 0 ? removed : finishedLocal;
+      setDownloadTasks(current => current.filter(task => !FINISHED_TASK_STATUSES.includes(task.status)));
+      await refreshDownloadTasks();
       if (announce) {
-        setToast(cleared > 0
-          ? t('app.tasksCleared', { values: { count: cleared } })
+        setToast(removed > 0
+          ? t('app.tasksCleared', { values: { count: removed } })
           : t('app.tasksClearedNone'));
       }
     } catch (error) {
@@ -2446,7 +2474,7 @@ function App() {
                 放一个按了没反应的按钮，用户会以为坏了。
                 清的是记录，不动已下载的文件——文案里要写清楚，否则没人敢点。
               */}
-              {downloadTasks.some(task => !ACTIVE_TASK_STATUSES.includes(task.status)) && (
+              {downloadTasks.some(task => FINISHED_TASK_STATUSES.includes(task.status)) && (
                 <Button variant="ghost" size="sm" onClick={() => { void clearFinishedTasks(); }}>
                   {t('app.clearFinished')}
                 </Button>
@@ -2463,7 +2491,7 @@ function App() {
               </div>
             ) : (
               <div className={styles.taskList}>
-                {downloadTasks.map(task => {
+                {sortTasksForDisplay(downloadTasks).map(task => {
                   /*
                    * 任务卡画的是**整体**进度：`completedBytes / total`。
                    *
@@ -2475,6 +2503,27 @@ function App() {
                   const percent = known ? Math.min(100, Math.round(((task.completedBytes ?? 0) / task.total!) * 100)) : task.progress;
                   const paused = task.status === 'paused';
                   const active = ACTIVE_TASK_STATUSES.includes(task.status);
+                  /*
+                   * 卡片上显示的状态与进度条形态。
+                   *
+                   * `status` 是后端给的，只有 running；`displayStatus` 补上「文件全下完
+                   * 但任务还在跑」这一档——那才是 Forge 打补丁、逐文件比对哈希的阶段。
+                   * 用 `status` 判进度条形态会漏掉它，用 `displayStatus` 判排序又会把
+                   * 派生态写回列表。两者各管一头。
+                   */
+                  const displayStatus = taskDisplayStatus(task);
+                  const verifying = displayStatus === 'verifying';
+                  /*
+                   * 进度条形态：
+                   *   - 总量已知（`known`）→ 实心条按比例；
+                   *   - 总量未知但仍在跑 → 扫光条，表示「在动但不知道还剩多少」；
+                   *   - 校验阶段 → 扫光条 + 100%，表示「字节齐了，在收尾」。
+                   *
+                   * 校验阶段必须走扫光而不是停在满格实心条上：满格 + 100% 看起来已经
+                   * 结束，用户会以为卡死在最后一步。扫光说明「还有事在做」。
+                   */
+                  const sweeping = !paused && active && (verifying || !known);
+                  const percentText = !known && !verifying && active && !paused ? '—' : `${percent}%`;
                   /*
                    * 这个任务的文件行。
                    *
@@ -2493,17 +2542,17 @@ function App() {
                         <div className={styles.taskInfo}>
                           <h3>{task.name}</h3>
                           <div className={styles.taskProgress}>
-                            <div className={`${styles.progressBar} ${!known && active && !paused ? styles.progressIndeterminate : ''}`}>
+                            <div className={`${styles.progressBar} ${sweeping ? styles.progressIndeterminate : ''}`}>
                               <div
-                                className={`${styles.progressFill} ${paused ? styles.progressPaused : ''} ${task.status === 'failed' ? styles.progressFailed : ''}`}
-                                style={!known && active && !paused ? undefined : { width: `${percent}%` }}
+                                className={`${styles.progressFill} ${paused ? styles.progressPaused : ''} ${displayStatus === 'failed' ? styles.progressFailed : ''}`}
+                                style={sweeping ? undefined : { width: `${percent}%` }}
                               />
                             </div>
-                            <span>{known || !active || paused ? `${percent}%` : '—'}</span>
+                            <span>{percentText}</span>
                           </div>
                           <div className={styles.taskMeta}>
                             {/* 状态文字：让侧栏徽章的数字在列表里有对应物。 */}
-                            <span className={styles.taskStatus}>{t(TASK_STATUS_KEYS[task.status])}</span>
+                            <span className={styles.taskStatus}>{t(TASK_STATUS_KEYS[displayStatus])}</span>
                             {/*
                               文件数与字节数：进度条只给出比例，这两个数字回答「还剩多少」。
                               总量未知时不显示字节数——「x / 未知」对下载没有任何帮助。
@@ -2527,7 +2576,11 @@ function App() {
                             不回答就会有人宁可取消重装。
                           */}
                           {paused && (
-                            <span className={styles.taskStatus}>{t('app.taskPausedHint')}</span>
+                            <span className={styles.taskStatus}>{t(
+                              task.files != null && task.files > 0 && (task.completedFiles ?? 0) >= task.files
+                                ? 'app.taskPausedProcessingHint'
+                                : 'app.taskPausedHint',
+                            )}</span>
                           )}
                           {/*
                             实例级的最后一行日志：这是「装完了能不能跑」最直接的证据。

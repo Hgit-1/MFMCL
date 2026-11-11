@@ -1080,7 +1080,7 @@
 .taskProgress span { min-width: 40px; color: var(--color-text-secondary); font-size: var(--text-sm); text-align: right; }
 
 /*
- * 总量未知时的扫光条。
+ * 总量未知、以及「文件已下完正在校验」时的扫光条。
  *
  * 不用「0% 的实心条 + 转圈」：那看起来像卡住。也不假装一个来回填满的假进度：
  * 那会让人以为快好了。这里让轨道本身常亮（低不透明度的强调色），再叠一条来回
@@ -1088,6 +1088,12 @@
  *
  * 之前写成「一个 35% 宽的亮块整条扫过」，截图时经常正好停在屏幕外，看起来像
  * 进度条消失了。轨道常亮就不会出现这个问题。
+ *
+ * ## 校验阶段也用这一条
+ *
+ * 校验时字节已经齐了，实心条会停在满格 100%——那看起来是「已经结束」，用户会
+ * 以为卡死在最后一步。用同一条扫光表达「还有事在做」，比再画一个转圈更省注意力：
+ * 两种「说不准还剩多少」的情况本来就该长得一样。
  */
 .progressIndeterminate {
   position: relative;
@@ -1100,13 +1106,18 @@
   width: 40%;
   border-radius: 3px;
   background: var(--color-primary-500);
-  animation: progressSweep 1.5s var(--ease, ease-in-out) infinite;
+  animation: progressSweep 1.5s ease-in-out infinite;
 }
 
+/*
+ * 扫光从左侧完全移出，扫到右侧完全移出，再从头开始。
+ *
+ * 宽度是 40%，所以位移 250% 才等于「右边缘刚好离开轨道」。用同一个 250% 结束、
+ * 用 -100% 起步，两端都完全在轨道外，循环时不会看到一块停在边上。
+ */
 @keyframes progressSweep {
   0% { transform: translateX(-100%); }
-  50% { transform: translateX(150%); }
-  100% { transform: translateX(calc(250% / 0.4)); }
+  100% { transform: translateX(250%); }
 }
 
 @media (prefers-reduced-motion: reduce) {

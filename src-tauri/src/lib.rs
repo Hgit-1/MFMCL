@@ -14,7 +14,7 @@ mod updates;
 
 use chrono::Utc;
 use download_engine::{
-    DownloadEngine, DownloadProgress, DownloadSettings as EngineDownloadSettings,
+    DownloadEngine, DownloadSettings as EngineDownloadSettings,
     aria2::{Aria2Options, Aria2Session},
 };
 use launcher_core::{
@@ -547,7 +547,16 @@ async fn install_instance(
     store: State<'_, LauncherStore>,
     operations: State<'_, management::Operations>,
     downloads: State<'_, Arc<downloads::Downloads>>,
+    launcher_log: State<'_, launcher_core::launcher_log::LauncherLog>,
 ) -> Result<(), String> {
+    use launcher_core::launcher_log::Level;
+    /*
+     * 安装是最容易「卡住但说不清卡在哪」的一步，所以从这里开始每一步都留痕。
+     *
+     * 之前这条路径一行日志都没有：用户看到进度停在 90%，日志文件里却是空的，
+     * 只能靠猜。日志已经脱敏（`redact_log`），这里可以放心写实例名与错误原文。
+     */
+    launcher_log.write(Level::Info, &format!("开始安装实例 {instance_id}"));
     let _operation = operations.acquire(&instance_id)?;
     let _shared = operations.acquire("shared-game-files")?;
     let instance = store
@@ -556,6 +565,13 @@ async fn install_instance(
         .into_iter()
         .find(|i| i.id == instance_id)
         .ok_or("找不到所选实例。")?;
+    launcher_log.write(
+        Level::Info,
+        &format!(
+            "实例 {}：Minecraft {}，加载器 {}，状态 {:?}",
+            instance.name, instance.game_version, instance.loader, instance.state
+        ),
+    );
     let settings = store.load_settings().map_err(|e| e.to_string())?;
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let mut engine = DownloadEngine::new(EngineDownloadSettings {
@@ -610,22 +626,8 @@ async fn install_instance(
     engine = engine
         .with_control(handle.control)
         .with_task_progress(handle.progress);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DownloadProgress>();
-    let event_app = app.clone();
-    let event_id = instance_id.clone();
-    let event_store = store.inner().clone();
-    let event_downloads = downloads.inner().clone();
-    let progress_task = tauri::async_runtime::spawn(async move {
-        while let Some(progress) = rx.recv().await {
-            let task_id = event_downloads.progress(&event_id, &progress, &event_store, &event_app);
-            let event = crate::downloads::ProgressEvent {
-                task_id: task_id.unwrap_or_default(),
-                instance_id: event_id.clone(),
-                progress,
-            };
-            let _ = event_app.emit("download-progress", event);
-        }
-    });
+    let (tx, mut progress_task) =
+        management::task_progress(&instance_id, &app, store.inner(), downloads.inner());
     let result = install_vanilla(
         &client,
         engine.clone(),
@@ -635,6 +637,33 @@ async fn install_instance(
         Some(tx),
     )
     .await;
+    // Drain before the silent loader phase so a queued older event cannot overwrite the final snapshot.
+    match tokio::time::timeout(std::time::Duration::from_secs(5), &mut progress_task).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => launcher_log.write(
+            Level::Error,
+            &format!("进度转发任务异常 instance={instance_id}：{error}"),
+        ),
+        Err(_) => {
+            progress_task.abort();
+            let _ = progress_task.await;
+            launcher_log.write(
+                Level::Warn,
+                &format!("进度转发超时，已停止转发并读取最终累计 instance={instance_id}"),
+            );
+        }
+    }
+    let _ = downloads.flush(
+        &instance_id,
+        Some(engine.task_progress().snapshot()),
+        if result.is_ok() {
+            "下载阶段结束，进入校验/安装"
+        } else {
+            "下载阶段失败"
+        },
+        &store,
+        &app,
+    );
     let result = match result {
         Ok(_) => {
             /*
@@ -676,14 +705,25 @@ async fn install_instance(
         }
         Err(e) => Err(e.to_string()),
     };
+    let result = match result {
+        Ok(()) => engine
+            .control()
+            .checkpoint()
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error),
+    };
     if result.is_err() {
         let _ = store.set_instance_state(&instance_id, InstanceState::Failed);
     }
-    let _ = progress_task.await;
     if let Some(session) = aria2_session {
         let _ = session.shutdown().await;
     }
     downloads.finish(&instance_id, result.is_ok(), &store, &app)?;
+    match &result {
+        Ok(()) => launcher_log.write(Level::Info, &format!("安装完成 {instance_id}")),
+        Err(error) => launcher_log.write(Level::Error, &format!("安装失败 {instance_id}：{error}")),
+    }
     result
 }
 
@@ -1378,6 +1418,15 @@ pub fn run() {
                 && let Ok(path) = launcher_log_path(app.handle())
             {
                 let _ = launcher_log.enable(&path);
+                /*
+                 * 同时把路径交给进程级出口。
+                 *
+                 * 深层代码（下载引擎、Forge processor）拿不到 Tauri 的托管状态，
+                 * 它们通过 `launcher_core::launcher_log::log_info` 等写入同一份
+                 * 文件。不设这一步，日志里就只有命令层的几行——安装过程发生什么
+                 * 完全看不到。
+                 */
+                launcher_core::launcher_log::set_global_path(&path);
                 launcher_log.write(
                     launcher_core::launcher_log::Level::Info,
                     &format!("MFMCL {} 启动", env!("CARGO_PKG_VERSION")),
