@@ -8,7 +8,9 @@ that can actually install plugins.
 > operating system to warn you the first time you run one. See [Status](#status) for what has and has
 > not been verified.
 
-![The home page, with the Aria seasonal theme enabled](docs/screenshots/home.png)
+![The home page, with the separately installed Aria seasonal theme enabled](docs/screenshots/home.png)
+
+Screenshots may show independently installed plugins; they are not part of the launcher download.
 
 ## Why another launcher
 
@@ -80,7 +82,7 @@ Four ways to add a plugin, in increasing order of what they can do:
 
 | Where it comes from | What it can contain |
 | --- | --- |
-| Bundled with the launcher | Anything the launcher ships |
+| Built into the launcher | Only `launch-logger` and `download-mirror` |
 | Pasted manifest | A description. No files, no script |
 | `.mflp` / `.mfplugin` / `.zip` from disk | Files and artwork, optionally a `main.js` |
 | A plugin source index over HTTPS | The same, fetched and hash-verified |
@@ -92,8 +94,14 @@ downloaded bytes are verified against it first.
 
 The launcher's plugin contract is **declarative**: a plugin can contribute JVM arguments,
 environment variables, a pre-launch command, or a pre-launch backup — and the launcher validates
-each one rather than executing whatever the plugin asks for. That is why Aria with You, the bundled
-seasonal theme, is a manifest plus artwork with no code at all.
+each one rather than executing whatever the plugin asks for. Aria with You is an optional,
+independently installed seasonal artwork package, not a bundled plugin. Only `launch-logger`
+and `download-mirror` are built in; Aria and all other non-built-in plugin bodies and assets
+are excluded from the launcher repository and releases.
+
+Installed packages live in `plugins/<id>/` under the application's data directory. Their artwork
+is read through Tauri's scoped asset protocol. Retained host compatibility code does not preinstall
+a plugin, and the launcher does not automatically load its artwork from `public/plugins/` or a CDN.
 
 **There is no sandbox.** A package may contain a script, which runs inside the launcher's WebView
 and can reach its IPC bridge. The archive defences stop malformed or malicious *archives*; they do
@@ -121,8 +129,8 @@ frontend, or to a log.
 - A command line that shares the same data directory, instances and accounts:
   `mfmcl download -v 1.21.1 --mod-loader neoforge latest --mod jei`. See
   [`docs/CLI.md`](docs/CLI.md).
-- A bundled seasonal theme, *Aria with You*, which changes artwork and accent colour with the date
-  and draws a different pose per page.
+- An optional seasonal theme, *Aria with You*, available only as a separately installed plugin
+  package. It changes artwork and accent colour with the date and draws a different pose per page.
 
 ## Building
 

@@ -267,7 +267,6 @@ fn read_archive(archive: &[u8]) -> Result<(ManifestSummary, Vec<ExtractedFile>)>
     let mut seen: HashSet<String> = HashSet::new();
     let mut files: Vec<ExtractedFile> = Vec::new();
     let mut total: u64 = 0;
-    let mut manifest_bytes: Option<Vec<u8>> = None;
 
     for index in 0..zip.len() {
         let mut entry = zip
@@ -348,37 +347,42 @@ fn read_archive(archive: &[u8]) -> Result<(ManifestSummary, Vec<ExtractedFile>)>
             )));
         }
 
-        // The manifest may be at the root or in a single top-level directory,
-        // which is what GitHub's "Download ZIP" produces. Accepting the wrapped
-        // form saves every user from having to unpack and repack.
-        let name = relative
-            .file_name()
-            .map(|value| value.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if name.eq_ignore_ascii_case("manifest.json") && key.matches('/').count() <= 1 {
-            manifest_bytes = Some(buffer.clone());
-        }
-
         files.push(ExtractedFile {
             path: relative,
             bytes: buffer,
         });
     }
 
-    let manifest_bytes = manifest_bytes.ok_or_else(|| rejected("插件包里没有 manifest.json。"))?;
-    let manifest = parse_manifest(&manifest_bytes)?;
-
-    // If the manifest was nested (GitHub's `repo-main/manifest.json`), strip that
-    // prefix from every file so the installed layout is flat. Without this the
-    // plugin's `main` path would resolve relative to the wrong place.
-    let prefix = files
+    // Choose only from validated paths. A root manifest takes precedence over
+    // asset provenance manifests; without one, exactly one wrapper is allowed.
+    let mut manifest_files: Vec<_> = files
         .iter()
-        .find(|file| {
-            file.path
-                .file_name()
-                .is_some_and(|name| name.eq_ignore_ascii_case("manifest.json"))
+        .filter(|file| {
+            file.path.components().count() <= 2
+                && file
+                    .path
+                    .file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("manifest.json"))
         })
-        .and_then(|file| file.path.parent().map(Path::to_path_buf))
+        .collect();
+    if manifest_files
+        .iter()
+        .any(|file| file.path.components().count() == 1)
+    {
+        manifest_files.retain(|file| file.path.components().count() == 1);
+    }
+    let manifest_file = match manifest_files.as_slice() {
+        [file] => *file,
+        [] => return Err(rejected("插件包里没有 manifest.json。")),
+        _ => return Err(rejected("插件包包含多个插件清单根目录，无法确定安装内容。")),
+    };
+    let manifest = parse_manifest(&manifest_file.bytes)?;
+
+    // Strip only the chosen manifest's wrapper so its relative paths stay valid.
+    let prefix = manifest_file
+        .path
+        .parent()
+        .map(Path::to_path_buf)
         .filter(|parent| !parent.as_os_str().is_empty());
 
     let files = match prefix {
@@ -1012,6 +1016,138 @@ mod tests {
         assert!(root.join("probe").join("manifest.json").is_file());
         assert!(root.join("probe").join("main.js").is_file());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_root_manifest_takes_precedence_over_an_asset_manifest() {
+        let provenance: &[u8] = br#"{"source":"upstream","version":"1.1.0"}"#;
+        let asset: &[u8] = b"synthetic artwork placeholder";
+        for reverse in [false, true] {
+            let root = root();
+            let mut entries = vec![
+                ("manifest.json", MANIFEST),
+                ("assets/manifest.json", provenance),
+                ("assets/portrait.txt", asset),
+            ];
+            if reverse {
+                entries.reverse();
+            }
+            let installed = install_package(&root, &package(&entries)).unwrap();
+            assert_eq!(installed.id, "probe");
+            assert_eq!(installed.version, "1.0.0");
+            let directory = root.join("probe");
+            assert_eq!(
+                std::fs::read(directory.join("manifest.json")).unwrap(),
+                MANIFEST
+            );
+            assert_eq!(
+                std::fs::read(directory.join("assets/manifest.json")).unwrap(),
+                provenance
+            );
+            assert_eq!(
+                std::fs::read(directory.join("assets/portrait.txt")).unwrap(),
+                asset
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn a_wrapped_manifest_ignores_nested_asset_manifests_when_flattening() {
+        let manifest: &[u8] = br#"{"id":"probe","version":"1.1.0","main":"main.js"}"#;
+        let provenance: &[u8] = br#"{"source":"upstream"}"#;
+        let script: &[u8] = b"export {}";
+        let asset: &[u8] = b"synthetic artwork placeholder";
+        for reverse in [false, true] {
+            let root = root();
+            let mut entries = vec![
+                ("repo-main/manifest.json", manifest),
+                ("repo-main/assets/manifest.json", provenance),
+                ("repo-main/assets/portrait.txt", asset),
+                ("repo-main/main.js", script),
+                ("repo-main-other/outside.txt", b"outside"),
+                ("outside.txt", b"outside"),
+            ];
+            if reverse {
+                entries.reverse();
+            }
+            let installed = install_package(&root, &package(&entries)).unwrap();
+            assert_eq!(installed.id, "probe");
+            assert_eq!(installed.version, "1.1.0");
+            let directory = root.join("probe");
+            assert_eq!(
+                std::fs::read(directory.join("manifest.json")).unwrap(),
+                manifest
+            );
+            assert_eq!(std::fs::read(directory.join("main.js")).unwrap(), script);
+            assert_eq!(
+                std::fs::read(directory.join("assets/manifest.json")).unwrap(),
+                provenance
+            );
+            assert_eq!(
+                std::fs::read(directory.join("assets/portrait.txt")).unwrap(),
+                asset
+            );
+            assert!(!directory.join("repo-main").exists());
+            assert!(!directory.join("repo-main-other").exists());
+            assert!(!directory.join("outside.txt").exists());
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn multiple_top_level_plugin_roots_are_refused_without_writing() {
+        let other: &[u8] = br#"{"id":"other","version":"2.0.0"}"#;
+        for reverse in [false, true] {
+            let root = root();
+            let mut entries = vec![
+                ("first/manifest.json", MANIFEST),
+                ("second/manifest.json", other),
+            ];
+            if reverse {
+                entries.reverse();
+            }
+            let error = install_package(&root, &package(&entries)).unwrap_err();
+            assert!(matches!(error, PackageError::Rejected(_)), "got {error}");
+            assert!(
+                error.to_string().contains("多个插件清单根目录"),
+                "got {error}"
+            );
+            assert!(std::fs::read_dir(&root).unwrap().next().is_none());
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn an_invalid_root_manifest_does_not_fall_back_to_a_wrapped_manifest() {
+        let bytes = package(&[
+            ("manifest.json", b"not JSON"),
+            ("repo-main/manifest.json", MANIFEST),
+        ]);
+        let error = read_archive(&bytes).unwrap_err();
+        assert!(matches!(error, PackageError::Manifest(_)), "got {error}");
+    }
+
+    #[test]
+    fn case_variant_plugin_manifests_are_refused() {
+        for (first, second) in [
+            ("manifest.json", "MANIFEST.JSON"),
+            ("repo-main/manifest.json", "repo-main/MANIFEST.JSON"),
+        ] {
+            let bytes = package(&[(first, MANIFEST), (second, MANIFEST)]);
+            let error = read_archive(&bytes).unwrap_err();
+            assert!(matches!(error, PackageError::Rejected(_)), "got {error}");
+        }
+    }
+
+    #[test]
+    fn duplicate_plugin_manifests_are_refused() {
+        for name in ["manifest.json", "repo-main/manifest.json"] {
+            let bytes = package_with_duplicate(name, MANIFEST, MANIFEST, &[]);
+            let error = read_archive(&bytes).unwrap_err();
+            assert!(matches!(error, PackageError::Rejected(_)), "got {error}");
+            assert!(error.to_string().contains("重复条目"), "got {error}");
+        }
     }
 
     #[test]

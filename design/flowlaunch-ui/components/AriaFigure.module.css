@@ -56,6 +56,15 @@
   animation: ariaIn calc(var(--duration-slow) * 1.4) var(--ease-out) both;
 }
 
+/* Light surfaces already separate the artwork; a broad halo makes the transparent area look grey. */
+:global(:root:not([data-theme='dark'])) .figure[data-variant='hero'] {
+  background: none;
+}
+
+:global(:root:not([data-theme='dark'])) .figure[data-variant='hero'] .image {
+  filter: drop-shadow(0 2px 6px rgb(0 0 0 / 6%));
+}
+
 @keyframes ariaIn {
   from { opacity: 0; transform: translateY(10px) scale(.98); }
   to { opacity: 1; transform: none; }

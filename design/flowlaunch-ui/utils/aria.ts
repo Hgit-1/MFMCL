@@ -34,6 +34,7 @@
 // 硬编码成北半球——这个启动器没有地区数据，猜错一次就是整个上半年都错。
 
 import { applyAccent, DEFAULT_ACCENT } from './accent';
+import { isPluginEnabled, type PluginStore } from './plugins';
 
 /** 四季。取值同时是素材文件名的一部分（`aria-spring-hero.webp`）。 */
 export type Season = 'spring' | 'summer' | 'autumn' | 'winter';
@@ -144,63 +145,51 @@ export interface SeasonArt {
   thumb: string;
 }
 
-/**
- * 素材路径。
- *
- * ## 为什么素材在另一个仓库
- *
- * 立绘来自 [mfmcl-aria-with-you](https://github.com/Hgit-1/mfmcl-aria-with-you)，
- * 不再随启动器打包。理由是两个仓库的节奏不同：启动器发版是按功能走，立绘更新
- * 是按季节走；把 7.6 MB 图片钉死在启动器的每次构建里，等于让换一张图也要发一次
- * 启动器版本，也让启动器仓库的体积被美术资产主导。
- *
- * 素材本身是生成出来的（见那个仓库的 `tools/`），可复现、可复核，所以从远端取
- * 与从本地取在信任上没有区别——两侧都不需要人工确认某张图是不是「对的那张」。
- *
- * ## 为什么用 jsDelivr 而不是 raw.githubusercontent.com
- *
- * jsDelivr 走公共 CDN，带长缓存与 `immutable` 语义（下面通过版本号锁定，见
- * `ART_PIN`），换季当天的加载不会因为 GitHub 的 rate limit 或地域性连接问题
- * 失败。raw 域名在国内经常直连不上，而这个启动器的用户主要在中文区。
- *
- * ## 版本锁定而不是 `@main`
- *
- * 指向分支意味着上游一推送，所有用户的界面第二天就变了，且没有回滚点——如果新
- * 一批立绘有问题，启动器这边没有任何办法退回。锁定到一个 tag，换图就是一次
- * 显式的版本号提升，出问题时改回去也是一行。
- */
-const ART_REPO = 'Hgit-1/mfmcl-aria-with-you';
-/**
- * 素材版本。
- *
- * 与插件仓库的 release tag 一致。提升它的唯一理由是素材变了——不是启动器发版。
- */
-const ART_PIN = 'v1.1.0';
+export interface AriaArtwork {
+  /** 后端授予访问权限的已安装包根目录。 */
+  assetBase: string;
+  version: string;
+}
 
-const ART_BASE = `https://cdn.jsdelivr.net/gh/${ART_REPO}@${ART_PIN}/assets`;
+function artworkBase(artwork: AriaArtwork | null | undefined): string | null {
+  const base = artwork?.assetBase?.trim().replace(/\/+$/, '');
+  if (!base) return null;
+  // 只接受桌面后端的本地素材协议，不允许站内 public 路径或第三方网络地址。
+  try {
+    const url = new URL(base);
+    const localAsset = (url.protocol === 'asset:' && url.hostname === 'localhost')
+      || ((url.protocol === 'http:' || url.protocol === 'https:') && url.hostname === 'asset.localhost');
+    if (!localAsset || url.username || url.password || url.port || url.search || url.hash) return null;
+    return `${base}/assets`;
+  } catch {
+    return null;
+  }
+}
 
-export const SEASON_ART: Record<Season, SeasonArt> = {
-  spring: {
-    hero: `${ART_BASE}/aria-spring-hero.webp`,
-    portrait: `${ART_BASE}/aria-spring-portrait.webp`,
-    thumb: `${ART_BASE}/aria-spring-portrait-thumb.webp`,
-  },
-  summer: {
-    hero: `${ART_BASE}/aria-summer-hero.webp`,
-    portrait: `${ART_BASE}/aria-summer-portrait.webp`,
-    thumb: `${ART_BASE}/aria-summer-portrait-thumb.webp`,
-  },
-  autumn: {
-    hero: `${ART_BASE}/aria-autumn-hero.webp`,
-    portrait: `${ART_BASE}/aria-autumn-portrait.webp`,
-    thumb: `${ART_BASE}/aria-autumn-portrait-thumb.webp`,
-  },
-  winter: {
-    hero: `${ART_BASE}/aria-winter-hero.webp`,
-    portrait: `${ART_BASE}/aria-winter-portrait.webp`,
-    thumb: `${ART_BASE}/aria-winter-portrait-thumb.webp`,
-  },
-};
+/** 只认本次会话从后端读取的 installed，不认 custom 清单或外观偏好。 */
+export function installedAriaArtwork(store: PluginStore): AriaArtwork | null {
+  const plugin = store.installed?.find(item => item.id === 'aria-with-you');
+  if (!plugin || !plugin.thirdParty || plugin.builtin || plugin.planned || plugin.incompatible || !plugin.assetBase) return null;
+  const artwork = { assetBase: plugin.assetBase, version: plugin.version };
+  return artworkBase(artwork) ? artwork : null;
+}
+
+export function activeAriaArtwork(store: PluginStore): AriaArtwork | null {
+  const artwork = installedAriaArtwork(store);
+  const plugin = store.installed?.find(item => item.id === 'aria-with-you');
+  return artwork && plugin && isPluginEnabled(plugin, store) ? artwork : null;
+}
+
+/** 不提供素材源时不生成路径，调用方不得渲染空 src。 */
+export function seasonArt(artwork: AriaArtwork | null | undefined, season: Season): SeasonArt | null {
+  const base = artworkBase(artwork);
+  if (!base) return null;
+  return {
+    hero: `${base}/aria-${season}-hero.webp`,
+    portrait: `${base}/aria-${season}-portrait.webp`,
+    thumb: `${base}/aria-${season}-portrait-thumb.webp`,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // 分页动作
@@ -219,7 +208,7 @@ export const SEASON_ART: Record<Season, SeasonArt> = {
  * 穿搭、光线由季节决定。于是每页一张动作模板 × 四季各一份天气，用户看到的是
  * 「同样的姿势，不同的季节」，既满足「每页不同」也满足「随日期变化」。
  *
- * `dashboard` 不在此列：它已经有 `hero` 那张竖幅全身（见 `SEASON_ART`），再叠
+ * `dashboard` 不在此列：它已经有 `hero` 那张竖幅全身（见 `seasonArt`），再叠
  * 一张分页图会变成两个人。
  */
 export type AriaPage = 'library' | 'store' | 'downloads' | 'plugins' | 'instance-detail';
@@ -227,8 +216,14 @@ export type AriaPage = 'library' | 'store' | 'downloads' | 'plugins' | 'instance
 export const ARIA_PAGES: AriaPage[] = ['library', 'store', 'downloads', 'plugins', 'instance-detail'];
 
 /** 页面动作素材的路径。 */
-export function pageArt(page: AriaPage, season: Season): { hero: string; thumb: string } {
-  const base = `${ART_BASE}/pages/aria-${page}-${season}`;
+export function pageArt(
+  artwork: AriaArtwork | null | undefined,
+  page: AriaPage,
+  season: Season,
+): { hero: string; thumb: string } | null {
+  const assets = artworkBase(artwork);
+  if (!assets) return null;
+  const base = `${assets}/pages/aria-${page}-${season}`;
   return { hero: `${base}.webp`, thumb: `${base}-thumb.webp` };
 }
 
@@ -259,7 +254,7 @@ export function pageForContext(context: string): AriaPage | null {
     case 'instance-detail':
       return 'instance-detail';
     default:
-      // `dashboard` 走的是 `SEASON_ART` 那张竖幅全身，不叠分页水印。
+      // `dashboard` 走的是 `seasonArt` 那张竖幅全身，不叠分页水印。
       return null;
   }
 }

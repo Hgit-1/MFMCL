@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { useTheme } from '../hooks/useTheme';
 import { Button } from '../components/Button';
@@ -21,14 +21,14 @@ import type { SkinSetting } from '../components/SkinSection';
 import { LegalNotice } from '../components/LegalNotice';
 import { applyMotionLevel, readMotionLevel } from '../utils/motion';
 import {
-  allPlugins,
-  isPluginEnabled,
+  pluginFromInstalled,
   loadPluginStore,
   savePluginStore,
   updatablePluginCount,
   toPluginStatePayload,
   type PluginStore,
 } from '../utils/plugins';
+import { listInstalledPlugins } from '../utils/pluginInstall';
 import {
   EMPTY_OVERRIDES,
   loadInstanceOverrides,
@@ -69,6 +69,8 @@ import type { GameInstance, Account, AppContext, DownloadTask } from '../types';
 import type { StoreCategory } from '../utils/store/types';
 import { CATEGORY_KEYS } from '../utils/store/types';
 import {
+  activeAriaArtwork,
+  installedAriaArtwork,
   applySeasonTheme,
   pageForContext,
   readAriaSetting,
@@ -673,7 +675,15 @@ function App() {
    */
   const [launchProgress, setLaunchProgress] = useState<{ instanceId: string; stage: string; progress: number } | null>(null);
   const [instanceOverrides, setInstanceOverrides] = useState<OverrideMap>(loadInstanceOverrides);
-  const [pluginStore, setPluginStore] = useState<PluginStore>(loadPluginStore);
+  const [pluginStore, setPluginStore] = useState<PluginStore>(() => {
+    const store = loadPluginStore();
+    return {
+      ...store,
+      enabled: { ...store.enabled, 'aria-with-you': store.enabled['aria-with-you'] ?? readAriaSetting().enabled },
+    };
+  });
+  const initialInstalled = useRef(pluginStore.installed);
+  const [pluginsScanned, setPluginsScanned] = useState(false);
   /**
    * Aria with You 的设置。
    *
@@ -693,28 +703,30 @@ function App() {
    * 季节。这里在挂载时算一次，并用一个每分钟的定时器在跨零点后刷新。
    */
   const [season, setSeason] = useState(() => resolveSeason(readAriaSetting()));
-  /**
-   * 把界面里的插件状态推给后端一次。
-   *
-   * ## 为什么必须有这一步
-   *
-   * 后端 `plugin_state` 表初始是空的，而它对未出现的 id 一律按「启用」处理。前端
-   * 的默认值不是这样：樱花主题、性能监控是 `enabledByDefault: false`。不推送的话，
-   * 首次启动时后端会把它们当成已启用——用户看到「未启用」，启动时却按启用处理。
-   *
-   * 反方向也一样：用户在旧版本里关掉过某个插件，它的状态只在前端的 localStorage 里，
-   * 后端不知道。一次推送让两边对齐，之后每次改动各自再同步。
-   *
-   * 只在桌面版执行：浏览器预览没有后端，`pluginSaveState` 会抛错。
-   */
   useEffect(() => {
-    if (!isDesktopShell()) return;
-    void pluginSaveState(toPluginStatePayload(pluginStore)).catch(() => {
-      // 推送失败不影响界面：用户下次改动任何一项时会再同步一次。
-    });
-    // 只在挂载时推一次；后续变化由 PluginWorkspace 内部同步。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let alive = true;
+    // list_installed grants the asset scope without reconciling or enabling runtime contributions.
+    void listInstalledPlugins()
+      .then(records => {
+        if (!alive) return;
+        const installed = records.map(pluginFromInstalled).filter((plugin): plugin is NonNullable<typeof plugin> => plugin !== null);
+        // A workspace refresh/install/remove that completed later is already authoritative.
+        setPluginStore(current => current.installed !== initialInstalled.current ? current : { ...current, installed });
+      })
+      .catch(() => {
+        // Startup remains fail-closed: loadPluginStore never restores installed records from cache.
+      })
+      .finally(() => { if (alive) setPluginsScanned(true); });
+    return () => { alive = false; };
   }, []);
+
+  useEffect(() => {
+    savePluginStore(pluginStore);
+    if (!pluginsScanned || !isDesktopShell()) return;
+    void pluginSaveState(toPluginStatePayload(pluginStore)).catch(() => {
+      // A later preference change or workspace refresh can retry synchronization.
+    });
+  }, [pluginStore, pluginsScanned]);
   /** 改过但还没重启的插件（见 PluginWorkspace 的同名 prop）。 */
   const [pendingPluginRestart, setPendingPluginRestart] = useState<string[]>([]);
   /**
@@ -1177,8 +1189,15 @@ function App() {
    * 而且插件与全局设置无关，没有「取消」的语义。
    */
   const persistPlugins = (next: PluginStore) => {
-    setPluginStore(next);
-    savePluginStore(next);
+    const merged = {
+      ...next,
+      enabled: {
+        ...next.enabled,
+        'aria-with-you': next.enabled['aria-with-you'] ?? pluginStore.enabled['aria-with-you'] ?? ariaSetting.enabled,
+      },
+    };
+    setPluginStore(merged);
+    savePluginStore(merged);
   };
   /**
    * 保存某个实例的设置覆盖。
@@ -1380,10 +1399,10 @@ function App() {
     return instances[0];
   }, [defaultLaunchId, instances, selectedInstance]);
 
-  /** 插件开启、且当前季节有立绘时，界面上的季节；否则 `null`。 */
-  const ariaSeason = ariaSetting.enabled ? season : null;
-  /** 是否画季节染色层。 */
-  const ariaTint = ariaSetting.enabled && ariaSetting.tintSurfaces;
+  const ariaInstalledArtwork = installedAriaArtwork(pluginStore);
+  const ariaArtwork = activeAriaArtwork(pluginStore);
+  const ariaSeason = ariaArtwork ? season : null;
+  const ariaTint = Boolean(ariaArtwork && ariaSetting.tintSurfaces);
   /**
    * 当前页面专属的动作。
    *
@@ -1399,24 +1418,11 @@ function App() {
    * 立绘就是墙纸；现在换成了按页取图，没生成的页面宁可不画。
    */
   const ariaWatermark = ariaPage ? ariaSeason : null;
-  /**
-   * 素材是否取不到。
-   *
-   * 立绘从远端 CDN 加载（见 `utils/aria.ts`），断网、CDN 被墙、或上游删了某个
-   * tag 时它会加载失败。此时 `AriaFigure` 渲染为空，而内容区仍为它留着一列
-   * 宽度——那会变成一块什么都没有的空白，比没有立绘更像故障。
-   *
-   * 所以失败要能回传到这一层：一旦确认取不到，收回那一列，界面回到「没有插件」
-   * 的样子。只在用户主动启用 Aria 时才可能出现，而且恢复后下次会话自然重试。
-   */
-  const [ariaArtworkFailed, setAriaArtworkFailed] = useState(false);
-  /*
-   * 换页或换季后重新尝试。
-   *
-   * 一次失败往往是单张图的问题（某个 tag 少了一张、当天 CDN 抖动），而不是整个
-   * 素材源都不可用。把失败状态永久粘住，会让用户在换页后明明能取到也不显示了。
-   */
-  useEffect(() => setAriaArtworkFailed(false), [ariaPage, season]);
+  // Keep layout failures scoped to this package revision and page, so updates retry immediately.
+  const ariaArtworkKey = JSON.stringify([ariaArtwork?.assetBase, ariaArtwork?.version, ariaPage, ariaSeason]);
+  const [failedAriaArtworkKey, setFailedAriaArtworkKey] = useState<string | null>(null);
+  const ariaArtworkFailed = failedAriaArtworkKey === ariaArtworkKey;
+  useEffect(() => setFailedAriaArtworkKey(null), [ariaArtworkKey]);
 
   /**
    * Aria 设置的写入入口。
@@ -1456,9 +1462,9 @@ function App() {
    * 否则下一次从设置页打开会与插件页显示的状态矛盾。
    */
   useEffect(() => {
-    const plugin = allPlugins(pluginStore).find(item => item.id === 'aria-with-you');
-    if (!plugin || plugin.planned) return;
-    const wanted = isPluginEnabled(plugin, pluginStore);
+    // Installation availability is not a preference: missing packages must not turn a saved choice off.
+    const wanted = pluginStore.enabled['aria-with-you'];
+    if (typeof wanted !== 'boolean') return;
     setAriaSetting(current => {
       if (current.enabled === wanted) return current;
       const merged = { ...current, enabled: wanted };
@@ -1803,8 +1809,8 @@ function App() {
    * 因为只有这一层知道用户原本用的是哪个（手选的，或从背景取的）。
    */
   useEffect(() => {
-    if (!ariaSetting.enabled) return;
-    const undo = applySeasonTheme(season, resolvedTheme === 'dark', ariaSetting.tintSurfaces);
+    if (!ariaSeason) return;
+    const undo = applySeasonTheme(ariaSeason, resolvedTheme === 'dark', ariaSetting.tintSurfaces);
     return () => {
       undo();
       /*
@@ -1818,7 +1824,7 @@ function App() {
       const auto = autoAccentOf(background, slideIndex);
       applyAccent(background.accentMode === 'auto' && auto ? auto : manual);
     };
-  }, [ariaSetting.enabled, ariaSetting.tintSurfaces, season, resolvedTheme, background, slideIndex, globalPrefs.customAccent]);
+  }, [ariaSeason, ariaSetting.tintSurfaces, resolvedTheme, background, slideIndex, globalPrefs.customAccent]);
 
   if (!eulaAccepted) {
     return (
@@ -2081,7 +2087,7 @@ function App() {
             会展开子项），立绘夹在中间会让它随抽屉开合上下跳。
           */}
           {ariaSeason && ariaSetting.showSidebar && (
-            <AriaFigure key={ariaSeason} season={ariaSeason} variant="sidebar" label="sidebar" />
+            <AriaFigure artwork={ariaArtwork} season={ariaSeason} variant="sidebar" label="sidebar" />
           )}
           <button className={styles.navItem} onClick={toggleTheme} aria-label={t('app.switchTheme')} title={t('app.switchTheme')}>
             {resolvedTheme === 'light' ? <MoonIcon /> : <SunIcon />}
@@ -2148,16 +2154,17 @@ function App() {
 
         两层都由 App 统一渲染，页面切换时不重挂载，立绘不会每换一页闪一下。
       */}
-      {ariaWatermark && <div className={styles.ariaUnderlay} aria-hidden="true" />}
+      {ariaWatermark && !ariaArtworkFailed && <div className={styles.ariaUnderlay} aria-hidden="true" />}
       {ariaWatermark && (
         <div className={styles.ariaWatermarkLayer} aria-hidden="true">
           <AriaFigure
-            key={`${ariaPage}-${ariaWatermark}`}
+            key={ariaArtworkKey}
+            artwork={ariaArtwork}
             season={ariaWatermark}
             variant="watermark"
             label="watermark"
             page={ariaPage}
-            onUnavailable={() => setAriaArtworkFailed(true)}
+            onUnavailable={() => setFailedAriaArtworkKey(ariaArtworkKey)}
           />
         </div>
       )}
@@ -2184,6 +2191,7 @@ function App() {
             iconForLoader={iconForLoader}
             instanceIcons={instanceIcons}
             onIconMissing={forgetInstanceIcon}
+            ariaArtwork={ariaArtwork}
             ariaSeason={ariaSeason && ariaSetting.showHero ? ariaSeason : null}
           />
         )}        {/* 空状态 - 无游戏 */}
@@ -2744,7 +2752,8 @@ function App() {
         /* Aria：与 App 共用同一份 state，改一项立刻反映到主页与侧栏。 */
         ariaSetting={ariaSetting}
         onAriaChange={changeAriaSetting}
-        ariaPluginEnabled={ariaSetting.enabled}
+        ariaPluginEnabled={Boolean(ariaArtwork)}
+        ariaArtwork={ariaInstalledArtwork}
         onNotice={setToast}
         dark={resolvedTheme === 'dark'}
         /*

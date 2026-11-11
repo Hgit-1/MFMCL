@@ -32,7 +32,7 @@ import { MotionSection } from './MotionSection';
 import { readMotionLevel, type MotionLevel } from '../utils/motion';
 import { LauncherLogCard } from './LauncherLogCard';
 import { AriaSection } from './AriaSection';
-import type { AriaSetting } from '../utils/aria';
+import type { AriaArtwork, AriaSetting } from '../utils/aria';
 import { readBackgroundSetting, saveBackgroundSetting, type BackgroundSetting } from '../utils/background';
 import styles from './SettingsPanel.module.css';
 
@@ -85,9 +85,10 @@ type SettingsPanelProps = {
   onAriaChange?: (next: Partial<AriaSetting>) => void;
   /** 插件页那个开关的当前值（与 `ariaSetting.enabled` 同源）。 */
   ariaPluginEnabled?: boolean;
+  ariaArtwork?: AriaArtwork | null;
 };
 
-export function SettingsPanel({ theme, onThemeChange, onClose, instance, initialTab, onJavaRuntimesChange, onGlobalJavaChange, onInstanceJavaChange, onSaveSettings, onBackgroundChange, onNotice, dark, onRerunOnboarding, ariaSetting, onAriaChange, ariaPluginEnabled }: SettingsPanelProps) {
+export function SettingsPanel({ theme, onThemeChange, onClose, instance, initialTab, onJavaRuntimesChange, onGlobalJavaChange, onInstanceJavaChange, onSaveSettings, onBackgroundChange, onNotice, dark, onRerunOnboarding, ariaSetting, onAriaChange, ariaPluginEnabled, ariaArtwork }: SettingsPanelProps) {
   const { t, language } = useI18n();
   const [prefs, setPrefs] = useState<LauncherPrefs>(() => {
     // 从未保存过强调色时，回落到屏幕上实际生效的值，而不是硬编码的默认色。
@@ -626,11 +627,12 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         内置功能放在插件之前，用户看设置页时的顺序才与「哪些是原生的」一致。
         没有传回调时整块不渲染（例如实例设置页复用同一个组件时不需要它）。
       */}
-      {ariaSetting && onAriaChange && (
+      {ariaArtwork && ariaSetting && onAriaChange && (
         <AriaSection
+          artwork={ariaArtwork}
           setting={ariaSetting}
           onChange={onAriaChange}
-          pluginEnabled={ariaPluginEnabled ?? ariaSetting.enabled}
+          pluginEnabled={ariaPluginEnabled === true}
           dark={dark}
         />
       )}

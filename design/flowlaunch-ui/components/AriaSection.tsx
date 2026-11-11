@@ -12,19 +12,22 @@
 // 每一天都显示错季节，而用户很难把「立绘不对」归因到这个问题上。与其猜，不如
 // 给一个明确的开关，并把「现在是自动识别到哪个季节」写在旁边。
 
+import { useState } from 'react';
 import { CalendarDays, Clock, Palette, Sparkles } from 'lucide-react';
 import { useI18n } from '../utils/i18n';
 import {
   SEASONS,
-  SEASON_ART,
+  seasonArt,
   SEASON_LABEL_KEYS,
   nextSeasonChange,
   seasonAt,
+  type AriaArtwork,
   type AriaSetting,
 } from '../utils/aria';
 import styles from './AriaSection.module.css';
 
 interface AriaSectionProps {
+  artwork?: AriaArtwork | null;
   setting: AriaSetting;
   onChange: (next: Partial<AriaSetting>) => void;
   /** 插件总开关。与插件页那个开关是同一个状态，见 App 的说明。 */
@@ -33,8 +36,15 @@ interface AriaSectionProps {
   dark: boolean;
 }
 
-export function AriaSection({ setting, onChange, pluginEnabled, dark }: AriaSectionProps) {
+function SeasonPreview({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return <img src={src} alt="" draggable={false} loading="lazy" onError={() => setFailed(true)} />;
+}
+
+export function AriaSection({ artwork, setting, onChange, pluginEnabled, dark }: AriaSectionProps) {
   const { t, language } = useI18n();
+  const available = Boolean(seasonArt(artwork, setting.fixedSeason));
   const today = new Date();
   const detected = seasonAt(today, setting.southernHemisphere);
   const next = nextSeasonChange(today, setting.southernHemisphere);
@@ -64,7 +74,8 @@ export function AriaSection({ setting, onChange, pluginEnabled, dark }: AriaSect
         <label className={styles.switchRow}>
           <input
             type="checkbox"
-            checked={pluginEnabled}
+            checked={available && pluginEnabled}
+            disabled={!available}
             onChange={event => onChange({ enabled: event.target.checked })}
           />
           <div>
@@ -79,7 +90,7 @@ export function AriaSection({ setting, onChange, pluginEnabled, dark }: AriaSect
         把它们藏起来会让用户以为设置丢了；灰掉并显示原因，用户知道「打开开关
         就能用」。
       */}
-      <fieldset className={styles.body} disabled={!pluginEnabled}>
+      <fieldset className={styles.body} disabled={!available || !pluginEnabled}>
         {/* --- 季节来源 ------------------------------------------------- */}
         <div className={styles.row}>
           <div className={styles.rowCopy}>
@@ -122,20 +133,25 @@ export function AriaSection({ setting, onChange, pluginEnabled, dark }: AriaSect
         ) : (
           /* 固定模式：四个可见按钮，每个带缩略图。 */
           <div className={styles.seasons}>
-            {SEASONS.map(season => (
-              <button
-                key={season}
-                type="button"
-                className={`${styles.season} ${setting.fixedSeason === season ? styles.seasonActive : ''}`}
-                onClick={() => onChange({ fixedSeason: season })}
-                title={t(SEASON_LABEL_KEYS[season])}
-              >
-                <span className={styles.seasonThumb} data-dark={dark ? 'true' : undefined}>
-                  <img src={SEASON_ART[season].thumb} alt="" draggable={false} loading="lazy" />
-                </span>
-                <span>{t(SEASON_LABEL_KEYS[season])}</span>
-              </button>
-            ))}
+            {SEASONS.map(season => {
+              const art = pluginEnabled ? seasonArt(artwork, season) : null;
+              return (
+                <button
+                  key={season}
+                  type="button"
+                  className={`${styles.season} ${setting.fixedSeason === season ? styles.seasonActive : ''}`}
+                  onClick={() => onChange({ fixedSeason: season })}
+                  title={t(SEASON_LABEL_KEYS[season])}
+                >
+                  <span className={styles.seasonThumb} data-dark={dark ? 'true' : undefined}>
+                    {art && (
+                      <SeasonPreview key={`${artwork?.assetBase}-${artwork?.version}-${season}`} src={art.thumb} />
+                    )}
+                  </span>
+                  <span>{t(SEASON_LABEL_KEYS[season])}</span>
+                </button>
+              );
+            })}
           </div>
         )}
 

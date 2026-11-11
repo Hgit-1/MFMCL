@@ -72,10 +72,11 @@ launcher did not have, not just a switch:
    stays the launcher's responsibility rather than the plugin's.
 2. Artwork limits are enforced by `plugin_package.rs` on the whole package (32 MiB extracted,
    8 MiB per entry, 256 entries) and by the thumbnail step, which caps side art at 384 px.
-3. Assets ship inside the `.mflp`; the index pins a SHA-256 and the installer verifies it
-   before unpacking. Redistribution rights remain the author's responsibility, stated in the
-   plugin's `author` field.
-4. It moved out of `PLANNED_PLUGINS` into `BUNDLED_PLUGINS` and can now be disabled.
+3. Assets belong inside the independent `.mflp` under `assets/`; if the source index
+   provides a SHA-256, the installer verifies it before unpacking. A manifest's `author`
+   field is descriptive, not evidence of identity or redistribution rights.
+4. Aria is neither a planned placeholder nor a bundled plugin. Only an independently
+   installed package can appear as installed and be enabled or disabled.
 
 ## Distribution through application stores
 

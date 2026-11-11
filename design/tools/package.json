@@ -7,7 +7,11 @@
     "build": "python3 generate_design.py",
     "validate": "node validate.cjs",
     "scan:width": "node ui-width-scan.cjs",
-    "scan:depth": "node ui-depth-scan.cjs"
+    "scan:depth": "node ui-depth-scan.cjs",
+    "test:plugins": "node plugin-install-regression.cjs",
+    "test:distribution": "node aria-assets-regression.cjs",
+    "test:distribution:fixtures": "node aria-assets-regression.cjs --fixtures-only",
+    "test:aria-assets": "node aria-assets-regression.cjs"
   },
   "devDependencies": {
     "@sketch-hq/sketch-file-format": "6.5.0",
