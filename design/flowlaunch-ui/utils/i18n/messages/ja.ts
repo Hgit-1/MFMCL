@@ -1546,7 +1546,7 @@ export const ja: Record<MessageKey, string> = {
   'plugin.mirrorHelper.name': 'ダウンロードミラー補助',
   'plugin.mirrorHelper.description': '公式が遅いときミラーへ切り替え、完了後に検証します。',
 
-  // --- 予定されている外部プラグイン --------------------------------------
+  // --- 別途インストールするプラグインと予定状態 ---------------------------
   'plugin.ariaWithYou.name': 'Aria with You',
     'plugin.ariaWithYou.description': '実際の日付に合わせて春夏秋冬の Aria 立ち絵を切り替え、ランチャー各所の雰囲気を変えます。季節ごとに服装・ポーズ・小道具が変わります。',
     'plugin.ariaWithYou.status': '実装済み：季節の配色、ホームとサイドバーの立ち絵、任意の色味。立ち絵の表示位置は個別にオフにでき、南半球の切り替えは設定にあります。',
@@ -1557,7 +1557,7 @@ export const ja: Record<MessageKey, string> = {
   'plugin.hookDeclaredOnly': '宣言のみ・現在は実行されません',
 
   // --- サンプルプラグイン（メイン画面では描画しない・整合性のみ保持） ----------------
-  // --- Aria with You（同梱の季節プラグイン）---------------------------------
+  // --- Aria with You（別途インストールする季節プラグイン）-----------------
   'aria.sectionTitle': '季節テーマ',
   'aria.pluginName': 'Aria with You',
   'aria.lead': '日付に合わせて Aria の春夏秋冬の立ち絵と配色を切り替えます。季節ごとに服装・ポーズ・小道具が変わります。',
@@ -1580,7 +1580,7 @@ export const ja: Record<MessageKey, string> = {
   'aria.showWatermarkHint': 'ライブラリ・ストア・ダウンロード・プラグイン・インスタンス詳細ページの右下に出る大きな半身立ち絵です。内容の下に敷かれ、クリックを妨げません。狭い・低いウィンドウでは自動的に隠れます。',
   'aria.tint': '季節の色味',
   'aria.tintHint': '画面の一番下にごく淡い季節色を重ねます。初期値はオフ：雰囲気だけを変え、文字のコントラストには影響しません。',
-  'aria.assetNote': '立ち絵は gpt-image-2.6-sunburst で生成し、プラグインと同梱しています。実行時に通信しません。四季でキャラクター設定は共通で、服装・ポーズ・小道具だけが変わります。',
+  'aria.assetNote': '立ち絵は gpt-image-2.6-sunburst で生成し、別途インストールする独立したプラグインパッケージに含まれます。ランチャーのリポジトリやリリースには同梱しません。素材はインストール済みのローカルプラグインからのみ読み込み、public パスや CDN から自動取得しません。四季でキャラクター設定は共通で、服装・ポーズ・小道具だけが変わります。',
   'aria.seasonSpring': '春',
   'aria.seasonSummer': '夏',
   'aria.seasonAutumn': '秋',

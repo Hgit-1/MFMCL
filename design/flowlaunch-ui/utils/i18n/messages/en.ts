@@ -1548,7 +1548,7 @@ export const en: Record<MessageKey, string> = {
   'plugin.mirrorHelper.name': 'Download mirror helper',
   'plugin.mirrorHelper.description': 'Switches to a mirror when the official source is slow, then verifies the download.',
 
-  // --- Planned third-party plugins ---------------------------------------
+  // --- Independently installed plugins and planned status ----------------
   'plugin.ariaWithYou.name': 'Aria with You',
     'plugin.ariaWithYou.description': 'Switches the Aria artwork between spring, summer, autumn and winter, following the real date. Each season has its own outfit, pose and prop.',
     'plugin.ariaWithYou.status': 'Implemented: seasonal accent colours, home and sidebar artwork, and an optional tint. Each placement can be disabled; a southern-hemisphere switch is in settings.',
@@ -1559,7 +1559,7 @@ export const en: Record<MessageKey, string> = {
   'plugin.hookDeclaredOnly': 'declared only, not triggered yet',
 
   // --- Example plugins (not rendered in the main UI, kept for completeness) ------------
-  // --- Aria with You (bundled seasonal plugin) ---------------------------
+  // --- Aria with You (independently installed seasonal plugin) ------------
   'aria.sectionTitle': 'Seasonal theme',
   'aria.pluginName': 'Aria with You',
   'aria.lead': "Switches Aria's artwork and the accent colour between spring, summer, autumn and winter, following the date. Each season has its own outfit, pose and prop.",
@@ -1582,7 +1582,7 @@ export const en: Record<MessageKey, string> = {
   'aria.showWatermarkHint': 'The large half-body portrait in the bottom-right of the library, store, downloads, plugins and instance detail pages. It sits under the content, never catches clicks, and hides on narrow or short windows.',
   'aria.tint': 'Seasonal tint',
   'aria.tintHint': 'A faint seasonal colour under the interface. Off by default: it changes atmosphere only, never text contrast.',
-  'aria.assetNote': 'Artwork generated with gpt-image-2.6-sunburst and bundled with the plugin; nothing is fetched at runtime. All four seasons share one character design and differ only in outfit, pose and prop.',
+  'aria.assetNote': 'Artwork generated with gpt-image-2.6-sunburst and included in an independent plugin package, not in the launcher repository or releases. Artwork is read only from the installed local plugin, never loaded automatically from public paths or a CDN. All four seasons share one character design and differ only in outfit, pose and prop.',
   'aria.seasonSpring': 'spring',
   'aria.seasonSummer': 'summer',
   'aria.seasonAutumn': 'autumn',

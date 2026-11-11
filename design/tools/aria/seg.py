@@ -10,7 +10,7 @@ wrong file.
 
 ## Why it does not overwrite by default
 
-The artwork that ships already has an alpha channel from the generation endpoint,
+The external plugin artwork may already have an alpha channel from the generation endpoint,
 and it is *good*: `audit.py` measures a negative fringe (the soft edge is darker
 than the interior, not lighter) on every asset, i.e. no white halo on the dark
 theme. A second cutout can still be an improvement — the model draws hair strands
@@ -19,8 +19,14 @@ can also be a regression: a person/object model may clip a thin strand or the
 wisp of hair over the hat brim.
 
 So the default is **compare and report**. `--apply` is the opt-in, and it keeps a
-copy of the previous alpha in `<name>.alpha-prev.png` beside the asset so a
-regression is one rename away from being undone.
+copy of the previous alpha in `.tool-output/seg/aria-<season>-<crop>-alpha-prev.png`
+inside the external assets workspace for rollback.
+
+## Workspace
+
+Set `MFMCL_ARIA_OUT_DIR` to an external plugin assets directory. Inputs stay
+there and reports, cutouts and rollback masks go in its `.tool-output/seg/`.
+Nothing is generated or installed in the launcher repository.
 
 ## Auth
 
@@ -40,15 +46,13 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from paths import artwork_dir
+
 try:
     from PIL import Image
     import numpy as np
 except ImportError:  # pragma: no cover - environment guard
     raise SystemExit("Pillow and numpy are required: pip install pillow numpy")
-
-HERE = Path(__file__).resolve().parent
-ASSET_DIR = HERE.parent.parent / "flowlaunch-ui" / "public" / "plugins" / "aria-with-you"
-OUT_DIR = HERE / "out" / "seg"
 
 ENDPOINT = "https://api.gpt.ge/task/pic/segmentation"
 SEASONS = ("spring", "summer", "autumn", "winter")
@@ -179,6 +183,8 @@ def compare(current: Path, candidate: np.ndarray) -> dict[str, object]:
 
 
 def main(argv: list[str]) -> int:
+    asset_dir = artwork_dir()
+    out_dir = asset_dir / ".tool-output" / "seg"
     key = os.environ.get("MFMCL_ARIA_IMAGE_KEY")
     if not key:
         print("MFMCL_ARIA_IMAGE_KEY is not set", file=sys.stderr)
@@ -188,7 +194,7 @@ def main(argv: list[str]) -> int:
     force = "--force" in argv
     only = {a for a in argv[1:] if not a.startswith("--")}
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     summary: dict[str, object] = {}
     failures: list[str] = []
 
@@ -197,7 +203,7 @@ def main(argv: list[str]) -> int:
             key_name = f"{season}-{crop}"
             if only and key_name not in only and season not in only:
                 continue
-            path = ASSET_DIR / f"aria-{key_name}.webp"
+            path = asset_dir / f"aria-{key_name}.webp"
             if not path.exists():
                 failures.append(f"{key_name}: asset missing")
                 continue
@@ -222,7 +228,7 @@ def main(argv: list[str]) -> int:
                 continue
 
             result = Image.open(io.BytesIO(result_bytes)).convert("RGBA")
-            (OUT_DIR / f"aria-{key_name}-cutout.png").write_bytes(result_bytes)
+            (out_dir / f"aria-{key_name}-cutout.png").write_bytes(result_bytes)
 
             report = compare(path, alpha_only(result))
             summary[key_name] = report
@@ -254,7 +260,7 @@ def main(argv: list[str]) -> int:
             # Keep the current alpha for a one-rename rollback. Only the alpha:
             # the colour channels are the artwork and the cutout keeps them.
             previous = np.array(current.getchannel("A"))
-            Image.fromarray(previous).save(OUT_DIR / f"aria-{key_name}-alpha-prev.png")
+            Image.fromarray(previous).save(out_dir / f"aria-{key_name}-alpha-prev.png")
 
             merged = current.copy()
             merged.putalpha(Image.fromarray(alpha_only(result)))
@@ -263,7 +269,7 @@ def main(argv: list[str]) -> int:
             path.write_bytes(buffer.getvalue())
             print(f"  applied ({len(buffer.getvalue())} bytes)")
 
-    report_path = OUT_DIR / "segmentation.json"
+    report_path = out_dir / "segmentation.json"
     report_path.write_text(
         json.dumps({"applied": apply, "assets": summary}, indent=2, ensure_ascii=False)
         + "\n",
@@ -275,7 +281,7 @@ def main(argv: list[str]) -> int:
         for failure in failures:
             print(f"  {failure}", file=sys.stderr)
     print(f"report: {report_path}")
-    print(f"cutouts: {OUT_DIR}")
+    print(f"cutouts: {out_dir}")
     return 1 if failures else 0
 
 

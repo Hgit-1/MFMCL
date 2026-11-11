@@ -32,6 +32,11 @@ whether a prop is rendered tastefully. Those stay a visual review. The script's
 job is to make sure the reviewer is not asked to notice hair colour drift eight
 times in a row.
 
+## Workspace
+
+Set `MFMCL_ARIA_OUT_DIR` to an external plugin assets directory. Reports and
+contact sheets go in its `.tool-output/audit/`, which `pack.py` excludes.
+
 ## Exit code
 
 0 when no asset fails a hard requirement, 1 when at least one does, so it can be
@@ -41,44 +46,15 @@ wired into CI later without inventing another convention.
 from __future__ import annotations
 
 import json
-import os
-import sys
 from pathlib import Path
+
+from paths import artwork_dir, external_path
 
 try:
     from PIL import Image
     import numpy as np
 except ImportError:  # pragma: no cover - environment guard
     raise SystemExit("Pillow and numpy are required: pip install pillow numpy")
-
-HERE = Path(__file__).resolve().parent
-"""
-素材目录。
-
-与 `gen.py` 一样，必须由 `MFMCL_ARIA_OUT_DIR` 指定：素材已迁到独立的插件仓库
-（[mfmcl-aria-with-you](https://github.com/Hgit-1/mfmcl-aria-with-you)），主仓库的
-`public/plugins/` 已经不存在了。
-"""
-
-
-def resolve_asset_dir() -> Path:
-    configured = os.environ.get("MFMCL_ARIA_OUT_DIR")
-    if configured:
-        return Path(configured)
-    print(
-        "请设置 MFMCL_ARIA_OUT_DIR 指向插件仓库的 assets 目录，例如：\n"
-        "  PowerShell:  $env:MFMCL_ARIA_OUT_DIR='C:\\Users\\you\\Documents\\mfmcl-aria-with-you\\assets'\n"
-        "  bash:        export MFMCL_ARIA_OUT_DIR=~/Documents/mfmcl-aria-with-you/assets",
-        file=sys.stderr,
-    )
-    raise SystemExit(2)
-
-
-ASSET_DIR = resolve_asset_dir()
-# Reports and contact sheets live beside the tool, not in the shipped asset
-# directory: `public/` is what gets bundled into the app, and an audit report has
-# no business being in the binary.
-OUT_DIR = HERE / "out"
 
 SEASONS = ("spring", "summer", "autumn", "winter")
 CROPS = ("hero", "portrait")
@@ -771,6 +747,7 @@ def write_contact_sheet(
     columns: int = 4,
 ) -> None:
     """One row per background, one column per season."""
+    target = external_path(target, "contact sheet output")
     from PIL import ImageDraw
 
     cell_w = 300
@@ -806,8 +783,10 @@ def write_contact_sheet(
 
 
 def audit() -> int:
-    if not ASSET_DIR.is_dir():
-        raise SystemExit(f"asset directory not found: {ASSET_DIR}")
+    asset_dir = artwork_dir()
+    out_dir = asset_dir / ".tool-output" / "audit"
+    if not asset_dir.is_dir():
+        raise SystemExit(f"asset directory not found: {asset_dir}")
 
     report: dict[str, object] = {
         "assets": {},
@@ -823,7 +802,7 @@ def audit() -> int:
 
     for season in SEASONS:
         for crop in CROPS:
-            path = ASSET_DIR / f"aria-{season}-{crop}.webp"
+            path = asset_dir / f"aria-{season}-{crop}.webp"
             if not path.exists():
                 report["checks"].append(f"MISSING {path.name}")
                 continue
@@ -930,15 +909,15 @@ def audit() -> int:
 
     # Contact sheets, so the visual review has something to look at that puts
     # the four seasons in one frame.
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     write_contact_sheet(
-        images, LIGHT_BACKGROUNDS, list(SEASONS), OUT_DIR / "audit-light.png"
+        images, LIGHT_BACKGROUNDS, list(SEASONS), out_dir / "audit-light.png"
     )
     write_contact_sheet(
-        images, DARK_BACKGROUNDS, list(SEASONS), OUT_DIR / "audit-dark.png"
+        images, DARK_BACKGROUNDS, list(SEASONS), out_dir / "audit-dark.png"
     )
 
-    report_path = OUT_DIR / "audit.json"
+    report_path = out_dir / "audit.json"
     report_path.write_text(
         json.dumps(report, indent=2, ensure_ascii=False) + "\n", "utf-8"
     )
@@ -979,7 +958,7 @@ def audit() -> int:
             print(f"  - {note}")
     print()
     print(f"report: {report_path}")
-    print(f"sheets: {OUT_DIR / 'audit-light.png'}, {OUT_DIR / 'audit-dark.png'}")
+    print(f"sheets: {out_dir / 'audit-light.png'}, {out_dir / 'audit-dark.png'}")
     return 1 if checks else 0
 
 

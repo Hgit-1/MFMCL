@@ -18,9 +18,9 @@ run without it.
 
 ## Output
 
-`design/flowlaunch-ui/public/plugins/aria-with-you/` plus `manifest.json`
-describing each file with its SHA-256 and pixel size, so the frontend can verify
-what it loads and the repository records what was generated and with which model.
+`MFMCL_ARIA_OUT_DIR` must point to an assets directory outside the launcher
+repository. Artwork and its generation records belong to the independent plugin
+workspace, not the launcher source tree or release bundle.
 """
 
 from __future__ import annotations
@@ -37,45 +37,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from paths import artwork_dir, external_path
+
 ENDPOINT = "https://api.gpt.ge/v1/images/generations"
 MODEL = os.environ.get("MFMCL_ARIA_IMAGE_MODEL", "gpt-image-2.6-sunburst")
 
 HERE = Path(__file__).resolve().parent
-"""
-素材输出目录。
-
-## 为什么不再默认指向主仓库
-
-立绘不再随启动器打包：它们由 [mfmcl-aria-with-you](https://github.com/Hgit-1/mfmcl-aria-with-you)
-单独发布，启动器运行时从 CDN 取（见 `utils/aria.ts` 的 `ART_BASE`）。默认路径若
-还指向 `public/plugins/`，下次重新生成就会往主仓库里写一份 7.6 MB，然后两份各自
-漂移——这正是这次迁移要消除的。
-
-## 为什么改成必须显式指定
-
-尝试过「按相对路径猜同级的插件仓库」，但那依赖两个仓库怎么摆放：放在
-`Documents/` 下、放进 `MFMCL/` 里、或者克隆到别的盘，猜中的概率都不高，而猜错时
-的错误是「往一个新建的空目录里写 36 张图」，比报错更难发现。
-
-所以改为：有 `MFMCL_ARIA_OUT_DIR` 就用它；没有就打印应该怎么设，然后退出。
-"""
-
-
-def resolve_out_dir() -> Path:
-    configured = os.environ.get("MFMCL_ARIA_OUT_DIR")
-    if configured:
-        return Path(configured)
-    print(
-        "请设置 MFMCL_ARIA_OUT_DIR 指向插件仓库的 assets 目录，例如：\n"
-        "  PowerShell:  $env:MFMCL_ARIA_OUT_DIR='C:\\Users\\you\\Documents\\mfmcl-aria-with-you\\assets'\n"
-        "  bash:        export MFMCL_ARIA_OUT_DIR=~/Documents/mfmcl-aria-with-you/assets\n"
-        "\n素材不再写进启动器仓库（public/plugins/），那里已经没有这个目录。",
-        file=sys.stderr,
-    )
-    raise SystemExit(2)
-
-
-OUT_DIR = resolve_out_dir()
 
 # ---------------------------------------------------------------------------
 # The character
@@ -567,8 +534,8 @@ def derive(bytes_in: bytes) -> tuple[bytes, int, int]:
 
     WebP rather than PNG: these are pastel illustrations with smooth gradients,
     where PNG lands around 1.5-2.5 MB each and WebP with alpha lands under 300 KB
-    for the same picture. Eight of them ship inside the app bundle, so the
-    difference is the difference between shipping the feature and not.
+    for the same picture. They ship only in the independent plugin package,
+    so smaller files reduce that package's download and storage cost.
 
     `alpha_quality=100` is not optional. With the default lossy alpha the
     strongest pixel only reached alpha 254, which leaves a faint translucent film
@@ -721,10 +688,9 @@ def main_pages(argv: list[str]) -> int:
 
     ## Output layout
 
-    `public/plugins/aria-with-you/pages/aria-<page>-<season>.webp` plus a
-    `-thumb.webp` beside it. A separate directory rather than more files in the
-    plugin root: the root already holds the hero/portrait set that the launcher's
-    own layout uses, and mixing 24 more files in makes `ls` useless.
+    `$MFMCL_ARIA_OUT_DIR/pages/aria-<page>-<season>.webp` plus a
+    `-thumb.webp` beside it. This directory belongs to the independently installed
+    plugin, not to the launcher source tree.
 
     ## Cost control
 
@@ -734,15 +700,16 @@ def main_pages(argv: list[str]) -> int:
     the same three-attempt retry as the seasonal set, and a page that fails all
     three is reported by name rather than silently skipped.
     """
+    out_dir = artwork_dir()
     key_env = os.environ.get("MFMCL_ARIA_IMAGE_KEY")
     if not key_env:
         print("MFMCL_ARIA_IMAGE_KEY is not set", file=sys.stderr)
         return 2
 
-    pages_dir = OUT_DIR / "pages"
+    pages_dir = out_dir / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest_path = OUT_DIR / "pages.json"
+    manifest_path = out_dir / "pages.json"
     manifest: dict[str, object] = {"model": MODEL, "assets": {}, "poses": {}}
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text("utf-8"))
@@ -842,6 +809,7 @@ def main_pages(argv: list[str]) -> int:
 
 def write_thumb(source: Path) -> dict[str, object]:
     """Write `<name>-thumb.webp` next to `source` and describe it."""
+    source = external_path(source, "thumbnail source")
     from PIL import Image
 
     image = Image.open(source).convert("RGBA")
@@ -851,7 +819,7 @@ def write_thumb(source: Path) -> dict[str, object]:
     buffer = io.BytesIO()
     image.save(buffer, "WEBP", quality=88, method=6, alpha_quality=100)
     data = buffer.getvalue()
-    target = source.with_name(f"{source.stem}-thumb.webp")
+    target = external_path(source.with_name(f"{source.stem}-thumb.webp"), "thumbnail output")
     target.write_bytes(data)
     return {
         "file": target.name,
@@ -863,13 +831,14 @@ def write_thumb(source: Path) -> dict[str, object]:
 
 
 def main(argv: list[str]) -> int:
+    out_dir = artwork_dir()
     if "MFMCL_ARIA_IMAGE_KEY" not in os.environ:
         print("MFMCL_ARIA_IMAGE_KEY is not set", file=sys.stderr)
         return 2
     only = set(argv[1:]) or None
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest_path = OUT_DIR / "manifest.json"
+    manifest_path = out_dir / "manifest.json"
     manifest: dict[str, object] = {"model": MODEL, "assets": {}}
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text("utf-8"))
@@ -881,7 +850,7 @@ def main(argv: list[str]) -> int:
             key = f"{season}-{crop}"
             if only and key not in only and season not in only:
                 continue
-            target = OUT_DIR / f"aria-{key}.webp"
+            target = out_dir / f"aria-{key}.webp"
             if target.exists() and not os.environ.get("MFMCL_ARIA_FORCE"):
                 print(f"skip {key} (exists)")
                 continue
