@@ -577,7 +577,9 @@ async fn download_artifacts(
     let mut unique: std::collections::HashMap<&std::path::Path, &ArtifactSpec> =
         std::collections::HashMap::new();
     for artifact in &artifacts {
-        unique.entry(artifact.destination.as_path()).or_insert(artifact);
+        unique
+            .entry(artifact.destination.as_path())
+            .or_insert(artifact);
     }
     let known_total = unique
         .values()
