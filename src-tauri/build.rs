@@ -25,6 +25,7 @@
 use std::path::Path;
 
 fn main() {
+    check_distribution();
     println!("cargo:rerun-if-env-changed=MFMCL_MICROSOFT_CLIENT_ID");
     /*
      * CurseForge 默认 key 通过 `option_env!` 编译期注入。不声明这一行的话，
@@ -53,6 +54,29 @@ fn main() {
     }
 
     tauri_build::build()
+}
+
+fn check_distribution() {
+    const POLICY: &str = "../design/flowlaunch-ui/distribution-policy.mjs";
+    println!("cargo:rerun-if-changed={POLICY}");
+    println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUSTOM_PROTOCOL");
+    // Reuse Vite's policy and JSON parser instead of maintaining a second allowlist.
+    // Node is already part of the frontend build toolchain, including offline builds.
+    let mut command = std::process::Command::new("node");
+    command.args([POLICY, "--check-tauri", "."]);
+    if std::env::var_os("CARGO_FEATURE_CUSTOM_PROTOCOL").is_some() {
+        command.arg("--require-dist");
+    }
+    let output = command
+        .output()
+        .expect("distribution gate requires Node.js from the frontend build toolchain on PATH");
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.status.success(),
+        "distribution gate rejected build before Tauri embedding/resource copying: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// 从 `.env` 风格的文本里取出一个键的值。

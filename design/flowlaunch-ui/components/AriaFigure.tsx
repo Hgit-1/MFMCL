@@ -14,13 +14,14 @@
 //   3. **换季后的重载闪烁**。`errored` 状态是为了让缺失素材不显示成一个破图标：
 //      季节切换、素材被清掉时，这里直接不渲染而不是画一个占位方块。
 
-import { useEffect, useState } from 'react';
-import type { AriaPage, Season } from '../utils/aria';
-import { SEASON_ART, SEASON_LABEL_KEYS, pageArt } from '../utils/aria';
+import { useState } from 'react';
+import type { AriaArtwork, AriaPage, Season, SeasonArt } from '../utils/aria';
+import { seasonArt, SEASON_LABEL_KEYS, pageArt } from '../utils/aria';
 import { useI18n } from '../utils/i18n';
 import styles from './AriaFigure.module.css';
 
 interface AriaFigureProps {
+  artwork?: AriaArtwork | null;
   season: Season;
   /**
    * `hero` 是主页的竖幅全身；`sidebar` 是侧栏底部的方形小图；`watermark` 是其余
@@ -43,7 +44,7 @@ interface AriaFigureProps {
    *
    * ## 为什么需要这个回调
    *
-   * 素材现在来自远端（见 `utils/aria.ts` 的 `ART_BASE`），而内容区右侧为立绘
+   * 素材来自已安装包，文件被移除或损坏时可能加载失败。内容区右侧为立绘
    * 留了一列宽度（`--aria-figure-width`）。如果素材加载失败、组件渲染为空，
    * 那一列就变成一块什么都没有的空白——比没有立绘更像故障。
    *
@@ -58,45 +59,22 @@ interface AriaFigureProps {
  * `decoding="async"` 是必要的：立绘是 200–350 KB 的 WebP，同步解码会在换季的
  * 那一帧卡住主线程，表现为打开启动器时界面「停顿一下」。
  *
- * `key={season}` 由父组件负责——没有它，React 会复用同一个 `img` 节点，浏览器
- * 在 `src` 变化时先画旧图再画新图，视觉上是一次闪烁。重挂载则是一次干净的替换。
+ * 包路径或版本变化时重挂载内部图像，清掉上一份素材的失败与回退状态。
  */
-export function AriaFigure({ season, variant, label, page, onUnavailable }: AriaFigureProps) {
+export function AriaFigure(props: AriaFigureProps) {
+  const art = seasonArt(props.artwork, props.season);
+  if (!art) return null;
+  const identity = JSON.stringify([props.artwork?.assetBase, props.artwork?.version, props.season, props.variant, props.page]);
+  return <InstalledAriaFigure key={identity} {...props} art={art} />;
+}
+
+function InstalledAriaFigure({ season, variant, label, page, artwork, onUnavailable, art }: AriaFigureProps & { art: SeasonArt }) {
   const { t } = useI18n();
-  /*
-   * 水印用半身像，分页动作与主页用全身像。
-   *
-   * 水印的容器是内容区右侧一列，半身像在那个宽度下五官仍然清楚；分页动作要
-   * 表达「她在做什么」，剪影必须完整，所以用全身。
-   */
   const [source, setSource] = useState(() =>
-    variant === 'hero'
-      ? SEASON_ART[season].hero
-      : variant === 'sidebar'
-        ? SEASON_ART[season].thumb
-        : SEASON_ART[season].portrait,
+    (page ? pageArt(artwork, page, season)?.hero : undefined)
+      ?? (variant === 'hero' ? art.hero : variant === 'sidebar' ? art.thumb : art.portrait),
   );
   const [failed, setFailed] = useState(false);
-
-  /*
-   * 选图与回退。
-   *
-   * 分页动作先试 `pages/...`，加载失败再退回通用的季节立绘。这条回退只能在
-   * `onError` 里做——HTTP 层面无法预知某个文件是否存在。回退只做一次，否则
-   * 两张都缺时会来回闪烁。
-   */
-  useEffect(() => {
-    setFailed(false);
-    setSource(
-      page
-        ? pageArt(page, season).hero
-        : variant === 'hero'
-          ? SEASON_ART[season].hero
-          : variant === 'sidebar'
-            ? SEASON_ART[season].thumb
-            : SEASON_ART[season].portrait,
-    );
-  }, [season, variant, page]);
 
   if (failed) return null;
 
@@ -116,7 +94,7 @@ export function AriaFigure({ season, variant, label, page, onUnavailable }: Aria
    * 不以「HTTP 能不能取到」预判，因为运行期拿不到文件系统；`onError` 是唯一
    * 可靠的信号。退过一次之后再失败就当作真的没有素材。
    */
-  const fallback = variant === 'sidebar' ? SEASON_ART[season].thumb : SEASON_ART[season].hero;
+  const fallback = variant === 'sidebar' ? art.thumb : art.hero;
   const handleError = () => {
     if (page && source !== fallback) {
       setSource(fallback);

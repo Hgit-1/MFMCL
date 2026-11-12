@@ -45,9 +45,11 @@ Minecraft client update checks re-read the official manifest and version profile
 
 Plugins exist in three trust tiers, and the boundary between them is explicit:
 
-- **Bundled** (`public/plugins/<id>/`, catalogued in `utils/plugins.ts::BUNDLED_PLUGINS`): built and signed with the launcher itself. Aria with You is the only one.
+- **Built-in** (`utils/plugins.ts::BUILTIN_PLUGINS`): only `launch-logger` and `download-mirror`, implemented by the launcher itself. `BUNDLED_PLUGINS` is an empty compatibility export, not a third-party catalogue.
 - **Pasted manifest**: stores a description only. No archive, no script, no files.
-- **Installed package**: a ZIP (`.mflp` / `.mfplugin` / `.zip`) downloaded from an HTTPS source index or picked from disk, extracted under `plugins/<id>/` in the app data directory.
+- **Installed package**: a ZIP (`.mflp` / `.mfplugin` / `.zip`) explicitly installed from an HTTPS source index or picked from disk, extracted under `plugins/<id>/` in the app data directory. Aria with You and every other non-built-in plugin belong here; their manifests, scripts and artwork are not preinstalled or distributed with this repository or its releases.
+
+Host compatibility code, setting labels and artwork resolvers may remain in the launcher, but do not constitute an installed plugin. Local development leftovers under `public/plugins/` are ignored and excluded from the frontend build, not a plugin installation source. No public-path or CDN fallback automatically loads third-party content.
 
 Archive handling lives in Rust (`src-tauri/src/plugin_package.rs`) because it cannot be done safely in the WebView: reading user-chosen bytes, validating entry paths, and writing with a bounded size and atomic swap. It rejects absolute paths, `..` segments, Windows reserved device names, control characters, symlink mode bits, oversized manifests, and archives beyond 32 MiB extracted / 8 MiB per entry / 256 entries / 200:1 compression.
 
@@ -55,7 +57,7 @@ Duplicate entries are detected by scanning the central directory **before** hand
 
 Source indexes are fetched over HTTPS with the scheme re-checked after redirects, a bounded body, and a required `schema` version. An optional `sha256` per entry is verified against the downloaded bytes before anything is extracted. The index is a pointer list, not a grant: the permissions a plugin actually receives come from the manifest inside its own package.
 
-Plugin artwork reaches the webview through Tauri's asset protocol, with the scope granted **per plugin directory** at read time. The whole app data directory is deliberately never in scope, because that would expose the SQLite database to any injected markup.
+Plugin artwork reaches the webview through Tauri's asset protocol, with the scope granted **per plugin directory** at read time. The whole app data directory is deliberately never in scope, because that would expose the SQLite database to any injected markup. Aria's `installedAriaArtwork` requires a package discovered by the backend; `activeAriaArtwork` additionally requires it to be enabled. `seasonArt` and `pageArt` resolve artwork under that package's `assetBase/assets/`, never from a pasted manifest, remembered preference, `public/plugins/` or a remote CDN.
 
 There is no sandbox. A package may contain a `main.js` that runs in the WebView and can reach the IPC bridge; the archive defences above do not constrain a malicious script. The UI states this rather than implying otherwise, and every third-party install ends in a confirmation dialog.
 

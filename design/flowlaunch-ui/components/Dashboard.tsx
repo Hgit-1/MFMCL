@@ -23,7 +23,7 @@
 // 而不是复用后端的 `last_launched_at`——后者每次启动都会变，用户没法「固定」
 // 一个想常玩的实例。
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Play } from 'lucide-react';
 import { Button } from './Button';
 import { InstanceIcon } from './InstanceIcon';
@@ -32,7 +32,7 @@ import { useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
 import type { LoaderIcon as LoaderIconSpec } from '../utils/store/loaders';
 import type { InstanceIconRecord } from '../utils/instanceIcons';
-import type { Season } from '../utils/aria';
+import { seasonArt, type AriaArtwork, type Season } from '../utils/aria';
 import type { Account, GameInstance } from '../types';
 import styles from './Dashboard.module.css';
 
@@ -65,6 +65,7 @@ interface DashboardProps {
    * 三处各读一次 localStorage 会在「用户刚改了固定季节」的那一帧里不一致。
    */
   ariaSeason?: Season | null;
+  ariaArtwork?: AriaArtwork | null;
 }
 
 /** 启动阶段的展示文案。与 App 里的进度条共用同一套键。 */
@@ -90,6 +91,7 @@ export function Dashboard({
   instanceIcons,
   onIconMissing,
   ariaSeason,
+  ariaArtwork,
 }: DashboardProps) {
   const { t } = useI18n();
 
@@ -141,6 +143,12 @@ export function Dashboard({
     return [...instances].sort((a, b) => rank(a) - rank(b));
   }, [instances]);
 
+  const ariaArt = ariaSeason ? seasonArt(ariaArtwork, ariaSeason) : null;
+  const ariaArtworkKey = JSON.stringify([ariaArtwork?.assetBase, ariaArtwork?.version, ariaSeason]);
+  const [failedAriaArtworkKey, setFailedAriaArtworkKey] = useState<string | null>(null);
+  useEffect(() => setFailedAriaArtworkKey(null), [ariaArtworkKey]);
+  const visibleAriaSeason = ariaArt && failedAriaArtworkKey !== ariaArtworkKey ? ariaSeason : null;
+
   if (!target) {
     return (
       <div className={styles.page}>
@@ -163,7 +171,7 @@ export function Dashboard({
   const percent = isLaunching ? Math.round(launching.progress * 100) : 0;
 
   return (
-    <div className={styles.page} data-aria={ariaSeason ?? undefined}>
+    <div className={styles.page} data-aria={visibleAriaSeason ?? undefined}>
       {/*
         实例信息区。PCL2 把版本名写在按钮下方；这里反过来把「要启动的实例」放在
         页面正中：按钮是动作，实例是宾语，读起来是
@@ -210,7 +218,15 @@ export function Dashboard({
           `key` 是必要的：换季时复用同一个节点会让浏览器先画旧图再画新图，
           表现为一次闪烁（见 AriaFigure 的注释）。
         */}
-        {ariaSeason && <AriaFigure key={ariaSeason} season={ariaSeason} variant="hero" label="home" />}
+        {ariaSeason && ariaArt && (
+          <AriaFigure
+            artwork={ariaArtwork}
+            season={ariaSeason}
+            variant="hero"
+            label="home"
+            onUnavailable={() => setFailedAriaArtworkKey(ariaArtworkKey)}
+          />
+        )}
       </div>
 
       {/*

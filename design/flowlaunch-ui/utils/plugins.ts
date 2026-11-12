@@ -85,17 +85,7 @@ export interface LauncherPlugin {
   enabledByDefault: boolean;
   /** 内置插件不能被移除；手动安装的可以。 */
   builtin: boolean;
-  /**
-   * 随包分发的第三方插件（`BUNDLED_PLUGINS`）。
-   *
-   * 与 `builtin` 的区别只在「谁写的」：内置是启动器自带功能的表现层，随包插件是
-   * 第三方作品、只是素材与清单一起发了出来。两者都**不能移除**——移除一张随包
-   * 卡片没有意义，因为它并没有被「安装」到别处，下一次启动又会回来；用户想关掉
-   * 它有的是开关。
-   *
-   * 与 `planned` 一样是只读字段：外部清单自称 `bundled` 只会骗到一个「移除」按钮
-   * 的可见性，但那正好是它不该有的东西。
-   */
+  /** 旧版展示字段；外部清单不能声明，第三方包始终可以移除。 */
   bundled?: boolean;
   /**
    * 第三方来源标记：从插件包或插件源安装的插件。
@@ -105,12 +95,7 @@ export interface LauncherPlugin {
    * 过」，界面据此展示第三方提示与权限清单。清单不能自己声明它为 `false`。
    */
   thirdParty?: boolean;
-  /**
-   * 该插件素材的可访问前缀（由后端按平台给出）。
-   *
-   * 只有从包安装的插件才有：它的图片在磁盘上的包目录里，不在 `public/`。随包
-   * 分发的插件（如 Aria）用的是 `/plugins/<id>/` 这样的站内路径，不需要它。
-   */
+  /** 仅由后端的已安装包记录提供，指向磁盘包根目录，不接受清单中的 URL。 */
   assetBase?: string;
   /**
    * 计划中的插件：清单已公布，但启动器还没有实现对应能力。
@@ -322,68 +307,8 @@ export const BUILTIN_PLUGINS: LauncherPlugin[] = [
   },
 ];
 
-/**
- * 「已经实现的第三方插件」。
- *
- * 与 `BUILTIN_PLUGINS` 分开的原因不是语义上的洁癖，而是**安装形态**不同：
- * 内置插件的清单与实现都随启动器编译；这一组由第三方维护，清单与素材随包
- * 分发（`public/plugins/<id>/`），启动器只负责解释它声明的能力。
- *
- * ## 为什么它们可以出现在这份文件里
- *
- * `plugins.ts` 是前端的插件目录，不是「内置清单」。用户安装的插件也走同一个
- * `custom` 通道，只是由用户粘贴清单；这一组是随包预置的 `custom` 条目——首次
- * 运行时写进存档，之后与普通插件完全一样（可禁用、可移除、状态持久化）。
- *
- * ## 与 `planned` 的区别
- *
- * `PLANNED_PLUGINS` 里的条目**拨不动开关**，因为它们声明的能力启动器还没实现。
- * 一旦某项能力被实现（`EXECUTING_HOOKS` 里加上了对应的时机），那个插件就该
- * 从 `PLANNED_PLUGINS` 挪到 `BUNDLED_PLUGINS`——这正是 Aria with You 走的路：
- * `theme` / `background` / `sidebar` 三个时机现在真的会触发（见 `App.tsx`
- * 的 `ariaSeason` 与 `applySeasonTheme`）。
- */
-export const BUNDLED_PLUGINS: LauncherPlugin[] = [
-  {
-    id: 'aria-with-you',
-    name: loc('plugin.ariaWithYou.name'),
-    version: '1.0.0',
-    author: 'Aria Project',
-    description: loc('plugin.ariaWithYou.description'),
-    glyph: 'palette',
-    accent: '#E39BD4',
-    /*
-     * 三个时机，全部已实现：
-     *   - `theme`：按季节调整强调色（经 `applyAccent`，对比度仍受既有规则保护）；
-     *   - `background`：季节染色层 + 主页/侧栏立绘；
-     *   - `sidebar`：侧栏底部的小立绘。
-     */
-    hooks: ['theme', 'background', 'sidebar'],
-    /*
-     * 三个权限，与实现一致：
-     *   - `theme`：写 `--color-primary-*` 与 `--aria-tint-*`；
-     *   - `uiSlot`：在侧栏与主页插入立绘；
-     *   - `storage`：记住季节模式、半球、显示位置。
-     *
-     * 不要 `network`：立绘随包分发，运行时不联网。也不要 `filesystem`：不碰游戏文件。
-     * 这两条现在可以在代码里核对——`utils/aria.ts` 不发出任何请求，也不读任何
-     * 游戏目录。
-     */
-    permissions: ['theme', 'uiSlot', 'storage'],
-    /*
-     * 默认关闭。
-     *
-     * 它是一个显眼的视觉改动（整页配色 + 两张立绘），不该在用户第一次打开启动器
-     * 时就替他决定。开着插件页那条「已启用」提示，用户能自己找到它。
-     */
-    enabledByDefault: false,
-    builtin: false,
-    /* 随包分发：素材在 `public/plugins/aria-with-you/`，不可以从插件页移除。 */
-    bundled: true,
-    status: loc('plugin.ariaWithYou.status'),
-    statusTone: 'info',
-  },
-];
+/** 第三方插件必须独立安装；保留空导出供旧调用方兼容，不参与已安装列表。 */
+export const BUNDLED_PLUGINS: LauncherPlugin[] = [];
 
 /**
  * 计划中的外置插件。
@@ -404,22 +329,7 @@ export const BUNDLED_PLUGINS: LauncherPlugin[] = [
  * 另建一种「预告」结构，是为了让卡片渲染只有一条路径：将来实现之后，只需要把
  * 条目挪进 `custom`（用户安装了它），`planned` 一去掉，其余代码不用改。
  */
-export const PLANNED_PLUGINS: LauncherPlugin[] = [
-  /*
-   * 当前为空。
-   *
-   * 这里曾经只有一项（Aria with You），它已经实现了，条目挪到了上面的
-   * `BUNDLED_PLUGINS`。保留这个空数组而不是删掉它，是因为下面所有渲染与同步
-   * 路径都按「这个列表可能非空」写过（`allPlugins`、`prunePluginStore`、
-   * `toPluginStatePayload`、插件页的筛选与计数）——删掉数组会让那些分支变成
-   * 死代码，而它们在下一次有插件进入计划状态时立刻又需要。
-   *
-   * 准入规则没变：一项能力没有实现、连一个能被指出的触发点都没有时，插件只能
-   * 出现在这里，开关必须是灰的。判断标准与 `BUILTIN_PLUGINS` 的准入规则同源，
-   * 理由相反——那边要求「能指出一行读这个开关的代码」，这边要求「能指出一行
-   * 会因为开关而运行的代码」。
-   */
-];
+export const PLANNED_PLUGINS: LauncherPlugin[] = [];
 
 // ---------------------------------------------------------------------------
 // 归一化与持久化
@@ -630,28 +540,8 @@ export function loadPluginStore(): PluginStore {
     const custom = Array.isArray(parsed.custom)
       ? parsed.custom.map(normalizePlugin).filter((plugin): plugin is LauncherPlugin => plugin !== null)
       : [];
-    /*
-     * 磁盘插件的缓存。
-     *
-     * 它随时会被 `reloadPlugins()` 用磁盘真值整体替换，所以这里宁可读漏也不要
-     * 读错：`pluginFromInstalled` 会补上缺失的展示字段，而一个缓存里残留的
-     * 已删除插件会在启动后的第一次 reload 中被清掉。首次渲染用缓存是为了避免
-     * 「启动瞬间插件页是空的」，不是为了让它当权威。
-     */
-    const installed = Array.isArray(parsed.installed)
-      ? parsed.installed
-          .map(entry =>
-            isPlainObject(entry)
-              ? pluginFromInstalled({
-                  id: typeof entry.id === 'string' ? entry.id : '',
-                  version: typeof entry.version === 'string' ? entry.version : '',
-                  manifest: entry.manifest,
-                  assetBase: typeof entry.assetBase === 'string' ? entry.assetBase : undefined,
-                })
-              : null,
-          )
-          .filter((plugin): plugin is LauncherPlugin => plugin !== null)
-      : [];
+    // 缓存不授予安装身份或素材访问权限；启动后必须由后端重新扫描磁盘。
+    const installed: LauncherPlugin[] = [];
     const enabled: Record<string, boolean> = {};
     if (isPlainObject(parsed.enabled)) {
       Object.entries(parsed.enabled).forEach(([id, value]) => {
@@ -676,7 +566,8 @@ export function loadPluginStore(): PluginStore {
         if (typeof value === 'string') acknowledgedUpdates[id] = value;
       });
     }
-    return prunePluginStore({ custom, installed, enabled, options, acknowledgedUpdates });
+    // 扫描前不能按空的 installed 清掉偏好，否则每次启动都会丢失独立插件的开关。
+    return { custom, installed, enabled, options, acknowledgedUpdates };
   } catch {
     return EMPTY_PLUGIN_STORE;
   }
@@ -689,7 +580,7 @@ export function savePluginStore(store: PluginStore): void {
 }
 
 /**
- * 全部插件：内置 → 随包 → 从包安装 → 手动粘贴 → 计划中。
+ * 全部插件：内置 → 从包安装 → 手动粘贴 → 计划中。
  *
  * 排序即信任顺序：越靠前越是启动器自己能负责的东西。这不是装饰——用户扫列表时
  * 第一眼看到的是最可信的一组，而要装什么外部代码时，它总在下面。
@@ -705,33 +596,15 @@ export function allPlugins(store: PluginStore): LauncherPlugin[] {
     if (!accepted || !plugin.updateAvailable) return plugin;
     return { ...plugin, version: accepted, updateAvailable: undefined };
   });
-  /*
-   * 随包分发的第三方插件。
-   *
-   * 它们与用户自己安装的插件同处 `custom` 通道（可以被禁用、被移除），区别只在
-   * 来源：清单与素材随包分发，不需要用户粘贴。所以这里把它们插在「内置」与
-   * 「用户自装」之间——按「谁提供的」排序，越靠前越是启动器自带的东西。
-   *
-   * 同名时以随包条目为准：用户不会想在自己的 `custom` 里再放一份 Aria。
-   */
-  const bundledIds = new Set(BUNDLED_PLUGINS.map(plugin => plugin.id));
-  const custom = store.custom.filter(plugin => !bundledIds.has(plugin.id));
-  /*
-   * 从插件包装进磁盘的那些。
-   *
-   * 与 `custom` 分开放（见 `PluginStore.installed` 的说明），在这里合并时按 id
-   * 去重，随包与内置优先：一个包不能用 `aria-with-you` 这个 id 顶掉随包插件，
-   * 那会让「随包插件不可移除」这条规则失效。
-   */
-  const claimed = new Set([...builtin.map(item => item.id), ...bundledIds]);
-  const installed = (store.installed ?? []).filter(plugin => !claimed.has(plugin.id));
-  /*
-   * 计划中的条目排在最后。
-   *
-   * 排序即优先级：列表顶部是用户现在能用的东西，底部才是「以后会有」。把预告混在
-   * 前面会让人第一眼看到一张拨不动的卡片。
-   */
-  return [...builtin, ...BUNDLED_PLUGINS, ...installed, ...custom, ...PLANNED_PLUGINS];
+  const claimed = new Set(builtin.map(item => item.id));
+  const unique = (plugin: LauncherPlugin) => {
+    if (claimed.has(plugin.id)) return false;
+    claimed.add(plugin.id);
+    return true;
+  };
+  const installed = (store.installed ?? []).filter(unique);
+  const custom = store.custom.filter(unique);
+  return [...builtin, ...installed, ...custom, ...PLANNED_PLUGINS.filter(unique)];
 }
 
 /** 插件当前是否启用。不兼容的插件永远视为未启用。 */
@@ -774,7 +647,6 @@ export function installedPluginCount(store: PluginStore): number {
 export function prunePluginStore(store: PluginStore): PluginStore {
   const known = new Set([
     ...BUILTIN_PLUGINS.map(plugin => plugin.id),
-    ...BUNDLED_PLUGINS.map(plugin => plugin.id),
     // 已装到磁盘的插件也是「已知」的：它们的开关状态必须活下来，否则每次刷新
     // 都会把用户刚打开的开关重置成默认值。
     ...(store.installed ?? []).map(plugin => plugin.id),
@@ -869,7 +741,7 @@ export function toPluginStatePayload(store: PluginStore): PluginStatePayload {
    *
    * 来源不同，贡献的执行方式相同。两者都在用户可移除的范围内。
    */
-  for (const plugin of [...(store.installed ?? []), ...store.custom]) {
+  for (const plugin of allPlugins(store)) {
     /*
      * 计划中的插件不发给后端。
      *
@@ -878,7 +750,7 @@ export function toPluginStatePayload(store: PluginStore): PluginStatePayload {
      * 贡献，而那些贡献恰恰是我们还没验证过的。前端的置灰只是显示，真正的边界在
      * 这里：压根不发出去。
      */
-    if (plugin.planned) continue;
+    if (plugin.builtin || plugin.planned) continue;
     custom.push({
       id: plugin.id,
       version: plugin.version,
@@ -898,5 +770,9 @@ export function toPluginStatePayload(store: PluginStore): PluginStatePayload {
    * 计划中的插件不在 `store.enabled` 里（开关是禁用的，永远写不进去），所以这里
    * 不需要额外过滤；上面的 `custom` 那一层才是真正的边界。
    */
-  return { custom, enabled: { ...store.enabled } };
+  const enabled = { ...store.enabled };
+  for (const plugin of allPlugins(store)) {
+    if (!plugin.planned) enabled[plugin.id] = isPluginEnabled(plugin, store);
+  }
+  return { custom, enabled };
 }

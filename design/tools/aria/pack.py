@@ -8,20 +8,19 @@ archive root. Everything else is free-form as long as the manifest points at it.
 That single constraint is what makes a package inspectable: unzip it in a file
 manager and the first thing you see is the manifest.
 
-## Why `-X` and a fixed timestamp
+## Why a fixed timestamp
 
-`zip` stores modification times per entry, so packing the same directory twice
-produces different bytes and a different SHA-256. A source index pins a hash, and
-a hash that changes on every build is a hash nobody can verify. `-X` drops the
-extra attributes and the mtime is pinned via `SOURCE_DATE_EPOCH`, so the same
-inputs give the same archive — and therefore the same pin.
+ZIP entries use a fixed timestamp and permissions, without filesystem-specific
+extra attributes, so identical inputs give the same archive and SHA-256.
 
 ## Usage
 
-    python design/tools/aria/pack.py --source <plugin dir> --out <file.mflp>
+    python design/tools/aria/pack.py --source <external artwork dir> --out <external file.mflp>
 
-The default source is the Aria asset directory, because that is the one plugin
-this repository ships.
+Both arguments are required and must resolve outside the launcher repository.
+`--source` is the external artwork directory (hero/portrait files and `pages/`),
+not the plugin root. Artwork is archived under `assets/` beside `manifest.json`.
+The launcher does not ship Aria or any other non-built-in plugin.
 """
 
 from __future__ import annotations
@@ -34,8 +33,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-DEFAULT_SOURCE = HERE.parent.parent / "flowlaunch-ui" / "public" / "plugins" / "aria-with-you"
+from paths import external_path, external_tree
 
 # Files that are build output rather than plugin content.
 #
@@ -53,6 +51,7 @@ def collect(source: Path) -> list[Path]:
     not a build artefact. `pages.json` (the generation record for those) is not,
     for the same reason as `manifest.json`.
     """
+    source = external_tree(source, "--source")
     files: list[Path] = []
     for path in sorted(source.rglob("*")):
         if not path.is_file():
@@ -77,18 +76,10 @@ def build_manifest(source: Path) -> dict[str, object]:
     return {
         "id": "aria-with-you",
         "version": "1.0.0",
-        "name": {
-            "zh-CN": "Aria with You",
-            "en": "Aria with You",
-            "ja": "Aria with You",
-        },
-        "description": {
-            "zh-CN": "按真实日期切换春夏秋冬的 Aria 立绘与配色。四季各有不同的穿搭、动作与道具。",
-            "en": "Switches Aria's artwork and the accent colour between spring, summer, autumn and winter, following the date.",
-            "ja": "日付に合わせて Aria の春夏秋冬の立ち絵と配色を切り替えます。",
-        },
+        "name": {"key": "plugin.ariaWithYou.name"},
+        "description": {"key": "plugin.ariaWithYou.description"},
         "author": "Aria Project",
-        "version_note": "Artwork generated with gpt-image-2.6-sunburst; bundled, never fetched at runtime.",
+        "version_note": "Artwork generated with gpt-image-2.6-sunburst; included only in the independent plugin package, never fetched at runtime.",
         "glyph": "palette",
         "accent": "#E39BD4",
         "hooks": ["theme", "background", "sidebar"],
@@ -98,9 +89,8 @@ def build_manifest(source: Path) -> dict[str, object]:
         # leaving the user to wonder. Aria is pure presentation.
         "contributions": [],
         "assets": {
-            # The prefix the frontend should load artwork from. The installer
-            # rewrites it to the plugin's asset base after extraction.
-            "base": ".",
+            # Relative to the installed package root, matching assetBase/assets.
+            "base": "assets",
             "seasons": {
                 season: {
                     "hero": f"aria-{season}-hero.webp",
@@ -124,6 +114,12 @@ def build_manifest(source: Path) -> dict[str, object]:
 
 
 def write_archive(source: Path, out: Path, manifest: dict[str, object]) -> dict[str, object]:
+    source = external_tree(source, "--source")
+    out = external_path(out, "--out")
+    if not source.is_dir():
+        raise ValueError(f"source directory not found: {source}")
+    if out.is_relative_to(source):
+        raise ValueError("--out must not be inside --source")
     files = collect(source)
     out.parent.mkdir(parents=True, exist_ok=True)
     # Pinned timestamp: see the module docstring.
@@ -139,7 +135,7 @@ def write_archive(source: Path, out: Path, manifest: dict[str, object]) -> dict[
 
         add("manifest.json", (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
         for relative in files:
-            add(relative.as_posix(), (source / relative).read_bytes())
+            add(f"assets/{relative.as_posix()}", (source / relative).read_bytes())
 
     data = out.read_bytes()
     return {
@@ -153,19 +149,19 @@ def write_archive(source: Path, out: Path, manifest: dict[str, object]) -> dict[
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
-    parser.add_argument("--out", type=Path)
+    parser.add_argument("--source", type=Path, required=True, help="external artwork directory")
+    parser.add_argument("--out", type=Path, required=True, help="external .mflp destination")
     parser.add_argument("--version", default="1.0.0")
     args = parser.parse_args(argv[1:])
 
-    if not args.source.is_dir():
-        print(f"source directory not found: {args.source}", file=sys.stderr)
-        return 2
-
-    manifest = build_manifest(args.source)
-    manifest["version"] = args.version
-    out = args.out or (args.source.parent / f"aria-with-you-{args.version}.mflp")
-    summary = write_archive(args.source, out, manifest)
+    try:
+        source = external_tree(args.source, "--source")
+        out = external_path(args.out, "--out")
+        manifest = build_manifest(source)
+        manifest["version"] = args.version
+        summary = write_archive(source, out, manifest)
+    except (OSError, RuntimeError, ValueError) as error:
+        parser.error(str(error))
 
     print(json.dumps(summary, indent=2))
     print(f"\npackage: {out}")

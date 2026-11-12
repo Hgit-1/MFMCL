@@ -47,10 +47,29 @@ Thumbs.db
 .vscode/
 .audit/
 
-# Aria artwork pipeline output. `out/` holds generated contact sheets, the
-# audit report, segmentation previews and previous-alpha backups. All of it is
-# reproducible from `audit.py`, `seg.py` and the assets themselves, and together
-# it is ~15 MB of derived PNGs — the kind of thing that makes a repository
-# uncloneable without being any part of the product. The scripts and the shipped
-# `.webp` assets under `public/plugins/` are source and stay tracked.
+# Third-party plugin payloads are local installations, never repository/release inputs.
+plugins/
+plugin-packages/
+third-party-plugins/
+*.[mM][fF][lL][pP]
+*.[mM][fF][pP][lL][uU][gG][iI][nN]
+*.[zZ][iI][pP]
+*.7[zZ]
+*.[rR][aA][rR]
+*.[tT][aA][rR]
+*.[tT][gG][zZ]
+*.[gG][zZ]
+*.[bB][zZ]2
+*.[xX][zZ]
+
+# New public/resource roots require an explicit distribution-policy review.
+/design/flowlaunch-ui/public/*
+!/design/flowlaunch-ui/public/favicon.svg
+!/design/flowlaunch-ui/public/textures/
+!/design/flowlaunch-ui/public/demo-avatars/
+/src-tauri/resources/*
+!/src-tauri/resources/aria2-manifest.json
+!/src-tauri/resources/aria2/
+
+# Local Aria artwork pipeline output is not shipped.
 design/tools/aria/out/
