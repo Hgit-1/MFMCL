@@ -8,10 +8,16 @@
     "validate": "node validate.cjs",
     "scan:width": "node ui-width-scan.cjs",
     "scan:depth": "node ui-depth-scan.cjs",
+    "test:recovery": "node workspace-recovery-regression.cjs",
+    "test:java": "node java-preferences-regression.cjs",
+    "test:i18n": "node i18n-critical-regression.cjs",
+    "test:interaction": "node interaction-regression.cjs",
+    "test:theme": "node theme-regression.cjs",
     "test:plugins": "node plugin-install-regression.cjs",
     "test:distribution": "node aria-assets-regression.cjs",
     "test:distribution:fixtures": "node aria-assets-regression.cjs --fixtures-only",
-    "test:aria-assets": "node aria-assets-regression.cjs"
+    "test:aria-assets": "node aria-assets-regression.cjs",
+    "test:tasks": "node task-order-regression.cjs"
   },
   "devDependencies": {
     "@sketch-hq/sketch-file-format": "6.5.0",

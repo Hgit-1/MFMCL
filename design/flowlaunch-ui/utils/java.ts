@@ -19,14 +19,25 @@
 //     forced - use one specific runtime from the list
 //              (PCL: "使用指定的 Java" + Configs.JavaForced).
 //
-// The requirement analysis below follows PCL's GetJavaRequirement, simplified to
-// the vanilla and loader rules that the launcher can evaluate without reading
-// the version JSON.
+// Requirement analysis below is a browser-preview estimate. Desktop selection
+// reads the installed metadata through select_instance_java; launch sends the
+// full persisted rule to the same backend rather than treating this estimate as
+// an executable-path decision.
 
 import type { GameInstance } from '../types';
 import { loc, renderLocalized, type Localized } from './i18n/localized';
 import { translate, type Language } from './i18n';
 import { PREVIEW_DATA } from './preview';
+import { isDesktopShell } from './native';
+
+let confirmedJavaList: JavaRuntime[] = [];
+let confirmedInstanceRules: Record<string, InstanceJavaSetting> = {};
+
+export function cacheJavaPreferences(rules: Record<string, InstanceJavaSetting>, runtimes?: JavaRuntime[]): void {
+  confirmedInstanceRules = Object.fromEntries(Object.entries(rules).map(([id, rule]) => [id, { ...rule }]));
+  if (runtimes) confirmedJavaList = runtimes.map(runtime => ({ ...runtime }));
+}
+
 
 export interface JavaRuntime {
   path: string;
@@ -61,11 +72,14 @@ function isRuntime(value: unknown): value is JavaRuntime {
   return typeof runtime.path === 'string'
     && runtime.path.length > 0
     && typeof runtime.majorVersion === 'number'
-    && Number.isFinite(runtime.majorVersion);
+    && Number.isInteger(runtime.majorVersion)
+    && runtime.majorVersion > 0
+    && typeof runtime.versionText === 'string';
 }
 
 /** Load the global Java list. Dev preview seeds the sample list; production starts empty. */
 export function loadJavaList(): JavaRuntime[] {
+  if (isDesktopShell()) return confirmedJavaList.map(runtime => ({ ...runtime }));
   try {
     const raw = localStorage.getItem(JAVA_LIST_KEY);
     if (raw === null) {
@@ -84,6 +98,10 @@ export function loadJavaList(): JavaRuntime[] {
 }
 
 export function saveJavaList(list: JavaRuntime[]): void {
+  if (isDesktopShell()) {
+    confirmedJavaList = list.map(runtime => ({ ...runtime }));
+    return;
+  }
   try { localStorage.setItem(JAVA_LIST_KEY, JSON.stringify(list)); } catch { /* storage full or blocked */ }
 }
 
@@ -99,7 +117,73 @@ export interface InstanceJavaSetting {
   path: string;
 }
 
+export interface JavaSelectionRequest extends InstanceJavaSetting {
+  orderedPaths?: string[];
+  globalPath?: string | null;
+}
+
+export interface NativeJavaSelection {
+  requirement: Pick<JavaRequirement, 'minMajor' | 'maxMajor'> & { component: string };
+  runtime: JavaRuntime | null;
+  canAutoInstall: boolean;
+}
+
+export function javaSelectionRequest(
+  setting: InstanceJavaSetting, runtimes: JavaRuntime[], globalPath = '',
+): JavaSelectionRequest {
+  return { ...javaRuleForPersistence(setting), orderedPaths: runtimes.map(runtime => runtime.path), globalPath };
+}
+
+export interface JavaPreferences {
+  orderedPaths: string[];
+  instanceRules: Record<string, InstanceJavaSetting>;
+  legacyMigrated: boolean;
+}
+
+export interface JavaPreferencesUpdate {
+  orderedPaths?: string[];
+  instanceId?: string;
+  rule?: InstanceJavaSetting;
+}
+
+/** Read-only migration input. Malformed legacy data must not become a confirmed Auto rule. */
+export function readLegacyJavaPreferences(): JavaPreferences {
+  const read = (key: string, fallback: string): unknown => {
+    const text = localStorage.getItem(key) ?? fallback;
+    if (text.length > 2 * 1024 * 1024) throw new Error('Java preferences are too large');
+    return JSON.parse(text);
+  };
+  const list = read(JAVA_LIST_KEY, '[]');
+  const rules = read(INSTANCE_JAVA_KEY, '{}');
+  if (!Array.isArray(list) || list.length > 256 || list.some(value => !isRuntime(value))) {
+    throw new Error('Invalid legacy Java candidates');
+  }
+  if (!rules || typeof rules !== 'object' || Array.isArray(rules)) throw new Error('Invalid legacy Java rules');
+  const instanceRules = Object.fromEntries(Object.entries(rules).map(([id, value]) => {
+    if (typeof value !== 'string') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid legacy Java rule');
+      const rule = value as Partial<InstanceJavaSetting>;
+      if (!['auto', 'range', 'folder', 'forced'].includes(rule.mode ?? '')
+        || ['range', 'folder', 'path'].some(key => key in rule && typeof rule[key as keyof InstanceJavaSetting] !== 'string')) {
+        throw new Error('Invalid legacy Java rule');
+      }
+    }
+    return [id, javaRuleForPersistence(normalizeInstanceJavaSetting(value))];
+  }));
+  return { orderedPaths: list.map(runtime => (runtime as JavaRuntime).path), instanceRules, legacyMigrated: false };
+}
+
 export const DEFAULT_INSTANCE_JAVA: InstanceJavaSetting = { mode: 'auto', range: '', folder: '', path: '' };
+
+/** Hidden fields are drafts for another mode, never part of the persisted rule. */
+export function javaRuleForPersistence(setting: InstanceJavaSetting): InstanceJavaSetting {
+  return {
+    mode: setting.mode,
+    range: setting.mode === 'range' ? setting.range : '',
+    folder: setting.mode === 'folder' ? setting.folder : '',
+    path: setting.mode === 'forced' ? setting.path : '',
+  };
+}
 
 /**
  * Accept both the current record format and the legacy shape where the stored
@@ -123,6 +207,7 @@ export function normalizeInstanceJavaSetting(raw: unknown): InstanceJavaSetting 
 }
 
 export function loadInstanceJavaSettings(): Record<string, InstanceJavaSetting> {
+  if (isDesktopShell()) return Object.fromEntries(Object.entries(confirmedInstanceRules).map(([id, rule]) => [id, { ...rule }]));
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(INSTANCE_JAVA_KEY) || '{}');
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
@@ -135,6 +220,10 @@ export function loadInstanceJavaSettings(): Record<string, InstanceJavaSetting> 
 }
 
 export function saveInstanceJavaSettings(settings: Record<string, InstanceJavaSetting>): void {
+  if (isDesktopShell()) {
+    cacheJavaPreferences(settings);
+    return;
+  }
   try { localStorage.setItem(INSTANCE_JAVA_KEY, JSON.stringify(settings)); } catch { /* storage full or blocked */ }
 }
 
@@ -160,7 +249,7 @@ function compareVersion(left: JavaVersion, right: JavaVersion): number {
 function toVersion(text: string): JavaVersion | null {
   const parts = text.trim().split('.');
   if (parts.length === 0 || parts.length > 3) return null;
-  if (parts.some(part => !/^\d+$/.test(part))) return null;
+  if (parts.some(part => !/^\d+$/.test(part) || !Number.isSafeInteger(Number(part)) || Number(part) > 0xffffffff) || Number(parts[0]) === 0) return null;
   return { major: Number(parts[0]), minor: Number(parts[1] ?? 0), patch: Number(parts[2] ?? 0) };
 }
 
@@ -189,6 +278,12 @@ function toVersion(text: string): JavaVersion | null {
  * 任何一侧解析失败都返回带具体位置说明的错误，而不是笼统的「格式错误」：
  * 用户需要知道是哪一边写错了。
  */
+function friendlyUpper(text: string, bound: JavaVersion): Pick<JavaRange, 'max' | 'maxInclusive'> {
+  return text.includes('.')
+    ? { max: bound, maxInclusive: true }
+    : { max: { major: bound.major + 1, minor: 0, patch: 0 }, maxInclusive: false };
+}
+
 export function parseFriendlyRange(text: string): JavaRange | { error: Localized } {
   const trimmed = text.trim();
   if (!trimmed) return { error: loc('java.rangeMissing') };
@@ -222,7 +317,7 @@ export function parseFriendlyRange(text: string): JavaRange | { error: Localized
       case '>':
         return { min: bound, minInclusive: false, max: null, maxInclusive: false };
       case '<=':
-        return { min: null, minInclusive: false, max: bound, maxInclusive: true };
+        return { min: null, minInclusive: false, ...friendlyUpper(value, bound) };
       default:
         return { min: null, minInclusive: false, max: bound, maxInclusive: false };
     }
@@ -235,7 +330,7 @@ export function parseFriendlyRange(text: string): JavaRange | { error: Localized
     if (!bound) return { error: loc('java.rangeBadValue', { value: suffix[1] }) };
     return suffix[2] === '+'
       ? { min: bound, minInclusive: true, max: null, maxInclusive: false }
-      : { min: null, minInclusive: false, max: bound, maxInclusive: true };
+      : { min: null, minInclusive: false, ...friendlyUpper(suffix[1], bound) };
   }
 
   // 2c) 区间写法：`17-21`、`17 ~ 21`、`17 到 21`
@@ -246,7 +341,7 @@ export function parseFriendlyRange(text: string): JavaRange | { error: Localized
     if (!min) return { error: loc('java.rangeBadLower', { value: between[1] }) };
     if (!max) return { error: loc('java.rangeBadUpper', { value: between[2] }) };
     if (compareVersion(min, max) > 0) return { error: loc('java.rangeInverted') };
-    return { min, minInclusive: true, max, maxInclusive: true };
+    return { min, minInclusive: true, ...friendlyUpper(between[2], max) };
   }
 
   // 2d) 单个版本号：`21`、`17.0.2`
@@ -282,7 +377,7 @@ export function parseJavaRange(text: string): JavaRange | { error: Localized } {
   const max = right ? toVersion(right) : null;
   if (left && !min) return { error: loc('java.rangeBadLower', { value: left }) };
   if (right && !max) return { error: loc('java.rangeBadUpper', { value: right }) };
-  if (min && max && compareVersion(min, max) > 0) return { error: loc('java.rangeInverted') };
+  if (min && max && (compareVersion(min, max) > 0 || (compareVersion(min, max) === 0 && !(trimmed.startsWith('[') && trimmed.endsWith(']'))))) return { error: loc('java.rangeInverted') };
   return {
     min,
     minInclusive: trimmed.startsWith('['),
@@ -337,10 +432,14 @@ export function describeJavaRange(range: JavaRange, language: Language): string 
     return renderLocalized(language, loc('java.rangeAtLeast', { value: show(range.min) }));
   }
   if (!range.min && range.max) {
-    return renderLocalized(language, loc('java.rangeAtMost', { value: show(range.max) }));
+    const upper = !range.maxInclusive && range.max.minor === 0 && range.max.patch === 0
+      ? { ...range.max, major: range.max.major - 1 } : range.max;
+    return renderLocalized(language, loc('java.rangeAtMost', { value: show(upper) }));
   }
   if (range.min && range.max) {
-    return renderLocalized(language, loc('java.rangeBetween', { from: show(range.min), to: show(range.max) }));
+    const upper = !range.maxInclusive && range.max.minor === 0 && range.max.patch === 0
+      ? { ...range.max, major: range.max.major - 1 } : range.max;
+    return renderLocalized(language, loc('java.rangeBetween', { from: show(range.min), to: show(upper) }));
   }
   return renderLocalized(language, loc('java.rangeAny'));
 }
@@ -374,13 +473,10 @@ export function rangeContains(range: JavaRange, version: JavaVersion): boolean {
 
 /** Read a runtime's numeric version from its `java -version` text, falling back to the major version. */
 export function runtimeVersion(runtime: JavaRuntime): JavaVersion {
-  const candidates = runtime.versionText.match(/\d+\.\d+(?:\.\d+)?/g) ?? [];
-  for (const candidate of candidates) {
-    const version = toVersion(candidate);
-    // Skip build numbers such as "8u432" remnants or a stray "1.8.0_432" segment set.
-    if (version && version.major >= 5 && version.major <= 60) return version;
-  }
-  return { major: runtime.majorVersion, minor: 0, patch: 0 };
+  const legacy = /1\.(\d+)\.\d+_(\d+)/.exec(runtime.versionText);
+  if (legacy) return { major: Number(legacy[1]), minor: 0, patch: Number(legacy[2]) };
+  const match = /(?:version\s+"?|openjdk\s+)(\d+(?:\.\d+){0,2})/.exec(runtime.versionText);
+  return (match && toVersion(match[1])) || { major: runtime.majorVersion, minor: 0, patch: 0 };
 }
 
 export function formatRuntime(runtime: JavaRuntime): string {
@@ -470,7 +566,9 @@ export function javaRequirementFor(instance: Pick<GameInstance, 'version' | 'loa
     notes.push(loc('java.reqMcOld'));
   }
 
-  if (loader === 'fabric' || loader === 'quilt') {
+  if (loader === 'cleanroom') minMajor = Math.max(minMajor, compareLoaderVersion(loaderVersion, '0.7.0') >= 0 ? 25 : 21);
+  if (loader === 'liteloader') maxMajor = Math.min(maxMajor ?? 9, 9);
+  if (loader === 'fabric' || loader === 'quilt' || loader === 'legacyfabric') {
     if (version.known && version.minor >= 18) {
       minMajor = Math.max(minMajor, 17);
       notes.push(loc('java.reqFabric118'));
@@ -588,7 +686,7 @@ export function resolveJava({ setting, requirement, runtimes, globalPath = '', l
       return { runtime: null, tone: 'warn', message: loc('java.forcedMissing') };
     }
     if (!isJavaCompatible(runtime, requirement)) {
-      return { runtime, tone: 'warn', message: loc('java.forcedIncompatible', { runtime: formatRuntime(runtime), requirement: renderRequirement(requirement, language) }) };
+      return { runtime: null, tone: 'error', message: loc('java.forcedIncompatible', { runtime: formatRuntime(runtime), requirement: renderRequirement(requirement, language) }) };
     }
     return { runtime, tone: 'ok', message: loc('java.willUse', { runtime: formatRuntime(runtime) }) };
   }
@@ -597,7 +695,8 @@ export function resolveJava({ setting, requirement, runtimes, globalPath = '', l
     if (!setting.folder.trim()) {
       return { runtime: null, tone: 'warn', message: loc('java.noFolder') };
     }
-    const runtime = runtimes.find(item => item.path.startsWith(setting.folder.trim())) ?? null;
+    const folder = setting.folder.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    const runtime = runtimes.find(item => item.path.replace(/\\/g, '/').startsWith(`${folder}/`) && isJavaCompatible(item, requirement)) ?? null;
     if (!runtime) {
       return { runtime: null, tone: 'warn', message: loc('java.folderEmpty') };
     }
@@ -616,7 +715,10 @@ export function resolveJava({ setting, requirement, runtimes, globalPath = '', l
     if ('error' in parsed) {
       return { runtime: null, tone: 'error', message: loc('java.rangeInvalidMessage', { message: renderLocalized(language, parsed.error) }) };
     }
-    const runtime = runtimes.find(item => rangeContains(parsed, runtimeVersion(item))) ?? null;
+    const ordered = globalPath
+      ? [...runtimes.filter(item => item.path === globalPath), ...runtimes.filter(item => item.path !== globalPath)]
+      : runtimes;
+    const runtime = ordered.find(item => isJavaCompatible(item, requirement) && rangeContains(parsed, runtimeVersion(item))) ?? null;
     if (!runtime) {
       return { runtime: null, tone: 'warn', message: loc('java.rangeNoMatch', { range: formatJavaRange(parsed) }) };
     }

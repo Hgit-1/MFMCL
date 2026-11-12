@@ -18,7 +18,7 @@
 // 驱动（`utils/accent.ts`），文字与背景色的对比度仍由原有规则保证——否则一张
 // 深色照片会把界面变成一片深色，用户再也读不清按钮上的字。
 
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { Image as ImageIcon, Layers, Loader2, MonitorPlay, RotateCcw, Trash2, Upload, Video } from 'lucide-react';
 import { useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
@@ -70,6 +70,13 @@ export function BackgroundSection({ setting, onChange, onNotice, dark }: Backgro
   const [busy, setBusy] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+  // Imports decode asynchronously; only media changes invalidate them. Other
+  // edits (including auto/manual) must be merged from the latest setting.
+  const latest = useRef(setting);
+  latest.current = setting;
+  const importRevision = useRef(0);
+  const importing = useRef(false);
+  useLayoutEffect(() => () => { importRevision.current += 1; }, []);
 
   /*
    * 缩略图。
@@ -82,18 +89,30 @@ export function BackgroundSection({ setting, onChange, onNotice, dark }: Backgro
   const thumbUrls = useMediaUrls(setting.images.map(image => image.id));
   const videoPreview = useMediaUrl(setting.mode === 'video' ? 'video' : null, setting.video?.id ?? null);
 
-  const patch = (next: Partial<BackgroundSetting>) => onChange({ ...setting, ...next });
+  const patch = (next: Partial<BackgroundSetting>) => {
+    if ('mode' in next || 'images' in next || 'video' in next) importRevision.current += 1;
+    const merged = { ...latest.current, ...next };
+    latest.current = merged;
+    onChange(merged);
+  };
 
   /** 选图片：追加到已有的列表，超出的部分如实报告被拒。 */
   const pickImages = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+    if (!files || files.length === 0 || importing.current) return;
     const list = Array.from(files);
+    const revision = ++importRevision.current;
+    importing.current = true;
     setBusy(true);
     try {
-      const remaining = Math.max(0, MAX_SLIDESHOW_IMAGES - setting.images.length);
+      const remaining = Math.max(0, MAX_SLIDESHOW_IMAGES - latest.current.images.length);
       const result = await importImages(list, remaining);
+      if (revision !== importRevision.current) {
+        await Promise.all(result.accepted.map(image => removeImage(image.id)));
+        return;
+      }
       if (result.accepted.length > 0) {
-        const images = [...setting.images, ...result.accepted];
+        const current = latest.current;
+        const images = [...current.images, ...result.accepted];
         /*
          * 首次加图时自动切到「单张」。
          *
@@ -101,33 +120,45 @@ export function BackgroundSection({ setting, onChange, onNotice, dark }: Backgro
          * 模式按钮是多余的一步；而如果他已经选了轮播，就保持轮播不动——追加
          * 第二张图时自动退化成单张是错的。
          */
-        const mode: BackgroundMode = setting.mode === 'slideshow' || setting.mode === 'video'
-          ? setting.mode
+        const mode: BackgroundMode = current.mode === 'slideshow' || current.mode === 'video'
+          ? current.mode
           : images.length > 1 ? 'slideshow' : 'single';
         patch({ images, mode });
       }
       reportRejected(result.rejected);
     } finally {
-      setBusy(false);
-      if (imageInputRef.current) imageInputRef.current.value = '';
+      importing.current = false;
+      if (imageInputRef.current) {
+        setBusy(false);
+        imageInputRef.current.value = '';
+      }
     }
   };
 
   const pickVideo = async (file: File | undefined) => {
-    if (!file) return;
+    if (!file || importing.current) return;
+    const revision = ++importRevision.current;
+    importing.current = true;
     setBusy(true);
     try {
       const result = await importVideo(file);
+      if (revision !== importRevision.current) {
+        if (result.video) await removeVideo(result.video.id);
+        return;
+      }
       if (!result.video) {
         onNotice(reasonText(result.reason ?? 'decode'));
         return;
       }
-      // 换视频时把旧的删掉，否则每换一次就留下一份几十 MB 的垃圾。
-      if (setting.video && setting.video.id !== result.video.id) void removeVideo(setting.video.id);
+      const current = latest.current;
+      if (current.video && current.video.id !== result.video.id) void removeVideo(current.video.id);
       patch({ video: result.video, mode: 'video' });
     } finally {
-      setBusy(false);
-      if (videoInputRef.current) videoInputRef.current.value = '';
+      importing.current = false;
+      if (videoInputRef.current) {
+        setBusy(false);
+        videoInputRef.current.value = '';
+      }
     }
   };
 

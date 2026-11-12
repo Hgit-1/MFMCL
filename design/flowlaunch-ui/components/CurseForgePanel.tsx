@@ -12,7 +12,7 @@
 // key 由后端存进系统凭据库，这个组件只查询「有没有设置」。输入框里的值只在点
 // 「保存」时上传一次，之后立刻从组件状态里清掉——不在内存里留一份不必要的副本。
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, RefreshCw, Search } from 'lucide-react';
 import { Button } from './Button';
 import { CurseForgeKeyCard } from './CurseForgeKeyCard';
@@ -68,6 +68,13 @@ export function CurseForgePanel({ kind, instance, language, onNotice, onChanged 
   const [versions, setVersions] = useState<CurseForgeVersion[]>([]);
   const [versionsState, setVersionsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [installing, setInstalling] = useState('');
+  const searchSeq = useRef(0);
+  const versionsSeq = useRef(0);
+  const boundVersions = useRef<CurseForgeVersion[]>([]);
+  const scope = `${kind}:${instance?.id}:${instance?.version}:${instance?.loader}`;
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
+  useEffect(() => () => { searchSeq.current++; versionsSeq.current++; boundVersions.current = []; }, [scope]);
 
   const locale = language === 'zh-CN' ? 'zh-CN' : language === 'ja' ? 'ja-JP' : 'en-US';
 
@@ -108,6 +115,11 @@ export function CurseForgePanel({ kind, instance, language, onNotice, onChanged 
       setSearchError(t('cf.needInstance'));
       return;
     }
+    const seq = ++searchSeq.current;
+    const requestScope = currentScope.current;
+    versionsSeq.current++;
+    boundVersions.current = [];
+    setExpanded(null);
     setSearchState('loading');
     setSearchError('');
     try {
@@ -119,9 +131,11 @@ export function CurseForgePanel({ kind, instance, language, onNotice, onChanged 
         index: page * PAGE_SIZE,
         pageSize: PAGE_SIZE,
       });
+      if (seq !== searchSeq.current || requestScope !== currentScope.current) return;
       setResults(hits);
       setSearchState('ready');
     } catch (error) {
+      if (seq !== searchSeq.current || requestScope !== currentScope.current) return;
       setResults([]);
       setSearchError(errorText(error, t('cf.searchFailed')));
       setSearchState('error');
@@ -134,22 +148,29 @@ export function CurseForgePanel({ kind, instance, language, onNotice, onChanged 
   }, [index, keyStatus?.configured, runSearch, submitted]);
 
   const openVersions = async (mod: CurseForgeMod) => {
+    const seq = ++versionsSeq.current;
+    const requestScope = currentScope.current;
+    boundVersions.current = [];
     if (expanded === mod.projectId) { setExpanded(null); return; }
     if (!instance) return;
     setExpanded(mod.projectId);
     setVersionsState('loading');
     setVersions([]);
     try {
-      setVersions(await curseforgeFiles(mod.projectId, instance.version, instance.loader));
+      const result = await curseforgeFiles(mod.projectId, instance.version, instance.loader);
+      if (seq !== versionsSeq.current || requestScope !== currentScope.current) return;
+      boundVersions.current = result;
+      setVersions(result);
       setVersionsState('ready');
     } catch (error) {
+      if (seq !== versionsSeq.current || requestScope !== currentScope.current) return;
       setVersionsState('error');
       onNotice(errorText(error, t('cf.versionsFailed')));
     }
   };
 
   const install = async (version: CurseForgeVersion, projectName?: string) => {
-    if (!instance) return;
+    if (!instance || !boundVersions.current.includes(version)) return;
     setInstalling(version.versionId);
     try {
       const name = await curseforgeInstall(instance.id, version, kind, projectName);

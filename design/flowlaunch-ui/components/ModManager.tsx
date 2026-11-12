@@ -12,7 +12,7 @@
 //   - 更新是逐条的：一次只更新一个模组，成功后刷新列表。批量更新会让失败时
 //     难以判断是哪一条坏了，也无法在中途停下。
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Download,
@@ -76,27 +76,54 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
   const [sources, setSources] = useState<IdentifiedMod[] | null>(null);
   const [identifying, setIdentifying] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setState('loading');
+  const scope = useRef({ instanceId: instance.id, revision: 0 });
+  const listRequest = useRef(0);
+  const mutation = useRef<object | null>(null);
+
+  useLayoutEffect(() => {
+    scope.current = { instanceId: instance.id, revision: 0 };
+    mutation.current = null;
+    setFiles([]);
+    setIssues(null);
+    setUpdates(null);
+    setSources(null);
+    setHashConsent(false);
+    setToggling('');
+    setUpdating('');
+    setInspecting(false);
+    setChecking(false);
+    setIdentifying(false);
+    return () => { scope.current = { instanceId: '', revision: 0 }; };
+  }, [instance.id]);
+
+  const refresh = useCallback(async (quiet = false) => {
+    const owner = scope.current;
+    const request = ++listRequest.current;
+    if (!quiet) setState('loading');
     setLoadError('');
     try {
-      setFiles(await listMods(instance.id));
+      const found = await listMods(instance.id);
+      if (scope.current !== owner || listRequest.current !== request) return;
+      setFiles(found);
       setState('ready');
     } catch (error) {
-      setLoadError(errorText(error, '无法读取模组列表。'));
+      if (scope.current !== owner || listRequest.current !== request) return;
+      setLoadError(errorText(error, ''));
       setState('error');
     }
   }, [instance.id]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  // 切换实例时清空「检查结果」：那些结果属于上一个实例的文件名，沿用会误导。
-  useEffect(() => {
+  const invalidateReports = () => {
+    scope.current.revision += 1;
     setIssues(null);
     setUpdates(null);
-    setHashConsent(false);
     setSources(null);
-  }, [instance.id]);
+    setInspecting(false);
+    setChecking(false);
+    setIdentifying(false);
+  };
 
   const enabledCount = useMemo(() => files.filter(file => file.enabled).length, [files]);
 
@@ -141,6 +168,10 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
    * 多加一次确认只会让人放弃这个功能。
    */
   const runIdentify = async () => {
+    if (mutation.current || identifying) return;
+    const owner = scope.current;
+    const revision = owner.revision;
+    const fresh = () => scope.current === owner && owner.revision === revision;
     setIdentifying(true);
     try {
       /*
@@ -151,6 +182,7 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
        * 「没有 key 就识别不了」，而这条现在不成立了。
        */
       const found = await curseforgeIdentifyMods(instance.id);
+      if (!fresh()) return;
       setSources(found);
       onNotice(
         found.length === 0
@@ -158,41 +190,58 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
           : t('mods.identifyCount', { count: found.length }),
       );
     } catch (error) {
-      onNotice(errorText(error, '无法识别模组来源。'));
+      if (fresh()) onNotice(errorText(error, t('mods.identifyFailed')));
     } finally {
-      setIdentifying(false);
+      if (fresh()) setIdentifying(false);
     }
   };
 
   const toggle = async (file: ModFile) => {
+    if (mutation.current || !files.includes(file)) return;
+    const owner = scope.current;
+    const operation = {};
+    mutation.current = operation;
     setToggling(file.fileName);
+    invalidateReports();
     try {
       await setModEnabled(instance.id, file.fileName, !file.enabled);
-      // 本地先翻转，避免整表刷新造成的闪烁；随后再对齐一次后端。
-      setFiles(current => current.map(item =>
-        item.fileName === file.fileName ? { ...item, enabled: !item.enabled } : item));
+      if (scope.current !== owner) return;
+      // Renaming changes the backend key; never leave an actionable row with the old name.
+      await refresh(true);
       onChanged();
     } catch (error) {
-      onNotice(errorText(error, '无法切换模组状态。'));
+      if (scope.current === owner) onNotice(errorText(error, t('mods.toggleFailed')));
     } finally {
-      setToggling('');
+      if (mutation.current === operation) {
+        mutation.current = null;
+        setToggling('');
+      }
     }
   };
 
   const runInspect = async () => {
+    if (mutation.current || inspecting) return;
+    const owner = scope.current;
+    const revision = owner.revision;
+    const fresh = () => scope.current === owner && owner.revision === revision;
     setInspecting(true);
     try {
       const found = await inspectMods(instance.id);
+      if (!fresh()) return;
       setIssues(found);
       onNotice(found.length === 0 ? t('mods.noIssues') : t('mods.issueCount', { count: found.length }));
     } catch (error) {
-      onNotice(errorText(error, '无法检查模组问题。'));
+      if (fresh()) onNotice(errorText(error, t('mods.inspectFailed')));
     } finally {
-      setInspecting(false);
+      if (fresh()) setInspecting(false);
     }
   };
 
   const runUpdateCheck = async () => {
+    if (mutation.current || checking) return;
+    const owner = scope.current;
+    const revision = owner.revision;
+    const fresh = () => scope.current === owner && owner.revision === revision;
     if (!hashConsent) {
       setHashConsent(true);
       // 第一次点击只做披露，不发起请求。第二次点击才真正查询。
@@ -201,32 +250,38 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
     setChecking(true);
     try {
       const reports = await checkModUpdates(instance.id);
+      if (!fresh()) return;
       setUpdates(reports);
       const available = reports.filter(report => report.status.kind === 'updateAvailable').length;
       onNotice(available === 0 ? t('mods.allUpToDate') : t('mods.updateCount', { count: available }));
     } catch (error) {
-      onNotice(errorText(error, '无法检查模组更新。'));
+      if (fresh()) onNotice(errorText(error, t('mods.checkUpdatesFailed')));
     } finally {
-      setChecking(false);
+      if (fresh()) setChecking(false);
     }
   };
 
   const applyUpdate = async (fileName: string) => {
     const entry = updateByFile.get(fileName);
-    if (!entry || entry.kind !== 'updateAvailable') return;
+    if (mutation.current || !entry || entry.kind !== 'updateAvailable') return;
+    const owner = scope.current;
+    const operation = {};
+    mutation.current = operation;
     setUpdating(fileName);
+    invalidateReports();
     try {
-      const path = await updateMod(instance.id, entry.update);
+      await updateMod(instance.id, entry.update);
+      if (scope.current !== owner) return;
       onNotice(t('mods.updated', { values: { name: entry.update.newFileName } }));
-      void path;
-      await refresh();
-      // 更新后旧的检查结果已失效，清掉避免把「还有更新」挂在已升级的文件上。
-      setUpdates(current => current?.filter(report => report.fileName !== fileName) ?? null);
+      await refresh(true);
       onChanged();
     } catch (error) {
-      onNotice(errorText(error, '更新模组失败。'));
+      if (scope.current === owner) onNotice(errorText(error, t('mods.updateFailed')));
     } finally {
-      setUpdating('');
+      if (mutation.current === operation) {
+        mutation.current = null;
+        setUpdating('');
+      }
     }
   };
 
@@ -238,7 +293,7 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
     return (
       <div className={styles.empty} role="alert">
         <AlertTriangle size={20} />
-        <p>{loadError}</p>
+        <p>{loadError || t('mods.listReadFailed')}</p>
         <Button size="sm" variant="ghost" icon={<RefreshCw size={13} />} onClick={() => void refresh()}>
           {t('common.retry')}
         </Button>
@@ -329,7 +384,7 @@ export function ModManager({ instance, onNotice, onChanged }: ModManagerProps) {
                 type="button"
                 className={styles.toggle}
                 onClick={() => void toggle(file)}
-                disabled={toggling === file.fileName}
+                disabled={toggling !== '' || updating !== ''}
                 aria-pressed={file.enabled}
                 aria-label={file.enabled ? t('mods.disable') : t('mods.enable')}
                 title={file.enabled ? t('mods.disable') : t('mods.enable')}

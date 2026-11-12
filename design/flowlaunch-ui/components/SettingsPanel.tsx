@@ -1,28 +1,36 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { Activity, Download, Gamepad2, HardDrive, Palette, RotateCcw, Search, Settings2, ShieldCheck, SlidersHorizontal, Terminal, X } from 'lucide-react';
 import type { GameInstance } from '../types';
-import { applyAccent as applyAccentRamp } from '../utils/accent';
+import { manualAccent } from '../utils/accent';
 import { Button } from './Button';
 import { JavaSettingsSection } from './JavaSettingsSection';
 import { MemorySection } from './MemorySection';
 import { NumberStepper } from './NumberStepper';
-import { DEFAULT_PREFS, SETTINGS_STORAGE_KEY, readPrefs, type LauncherPrefs, type ThemeMode } from '../utils/launcherPrefs';
+import { copyPrefs, DEFAULT_PREFS, prefsEqual, readPrefs, savePrefs, type LauncherPrefs, type ThemeMode } from '../utils/launcherPrefs';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 import { LanguageSection } from './LanguageSection';
 import { SkinSection } from './SkinSection';
 import { useI18n } from '../utils/i18n';
-import { aria2Status, errorText, type Aria2Availability } from '../utils/native';
+import { aria2Status, errorText, pickDirectory, type Aria2Availability } from '../utils/native';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
 import { loc, type Localized } from '../utils/i18n/localized';
 import {
   DEFAULT_INSTANCE_JAVA,
+  JAVA_LIST_KEY,
   loadInstanceJavaSettings,
   loadJavaList,
+  javaRuleForPersistence,
+  previewJavaRuntimes,
   saveInstanceJavaSettings,
   saveJavaList,
   sortDiscovered,
   type InstanceJavaSetting,
   type JavaRuntime,
 } from '../utils/java';
+import { getJavaRuleDraft, loadPersistedJavaState, localizeJavaPreferenceError, saveJavaSettingsDraft } from '../utils/javaNative';
+import type { JavaPreferencesUpdate } from '../utils/java';
+import type { LauncherSettings } from '../utils/native';
+import { isDesktopShell } from '../utils/native';
 import { detectJavaRuntimes, importJavaRuntime, revealJavaFolder } from '../utils/javaBridge';
 import { LauncherUpdateCard } from './LauncherUpdateCard';
 import { BackgroundSection } from './BackgroundSection';
@@ -48,20 +56,59 @@ const tabs: { id: TabId; labelKey: MessageKey; captionKey: MessageKey; icon: Rea
   { id: 'advanced', labelKey: 'settings.tab.advanced', captionKey: 'settings.tab.advancedCaption', icon: <SlidersHorizontal /> },
 ];
 
-function applyAccent(color: string) {
-  applyAccentRamp(color);
+function SettingsField({ label, description, children, disabled }: { label: string; description: string; children: React.ReactNode; disabled: boolean }) {
+  const id = useId();
+  const labelId = `${id}-label`;
+  const descriptionId = `${id}-description`;
+  let controlIndex = 0;
+  const connectControls = (content: React.ReactNode): React.ReactNode => React.Children.map(content, child => {
+    if (!React.isValidElement<Record<string, unknown>>(child)) return child;
+    if (typeof child.type !== 'string' && child.type !== React.Fragment) return child;
+    const props = child.props;
+    if (typeof child.type === 'string' && ['input', 'select', 'textarea'].includes(child.type)) {
+      const controlId = props.id ?? `${id}-control-${controlIndex++}`;
+      return React.cloneElement(child, {
+        id: controlId,
+        disabled: disabled || props.disabled,
+        'aria-labelledby': props['aria-labelledby'] ?? (props['aria-label'] ? undefined : labelId),
+        'aria-describedby': [props['aria-describedby'], descriptionId].filter(Boolean).join(' '),
+      });
+    }
+    return props.children ? React.cloneElement(child, { children: connectControls(props.children as React.ReactNode) }) : child;
+  });
+  return <div className={styles.field}>
+    <div className={styles.rowCopy}><strong id={labelId}>{label}</strong><span id={descriptionId}>{description}</span></div>
+    <div className={styles.control} role="group" aria-labelledby={labelId} aria-describedby={descriptionId}>{connectControls(children)}</div>
+  </div>;
 }
+
+function SettingsToggle({ label, description, checked, onChange, disabled }: { label: string; description: string; checked: boolean; onChange: (value: boolean) => void; disabled: boolean }) {
+  const id = useId();
+  return <div className={styles.row}>
+    <div className={styles.rowCopy}><strong id={`${id}-label`}>{label}</strong><span id={`${id}-description`}>{description}</span></div>
+    <button type="button" role="switch" aria-checked={checked} aria-labelledby={`${id}-label`} aria-describedby={`${id}-description`} disabled={disabled} className={`${styles.switch} ${checked ? styles.switchOn : ''}`} onClick={() => onChange(!checked)}><i /></button>
+  </div>;
+}
+
 type SettingsPanelProps = {
   theme: ThemeMode;
   onThemeChange: (theme: ThemeMode) => void;
+  /** null releases the draft; App resolves it beneath seasonal/background colours. */
+  onAccentPreview?: (accent: string | null) => void;
   onClose: () => void;
   instance?: GameInstance;
   initialTab?: TabId;
+  /** 父级最后一次经后端确认的快照；只在本次面板打开时建立草稿。 */
+  initialPrefs?: LauncherPrefs;
+  initialJavaRuntimes?: JavaRuntime[];
+  initialInstanceJavaSetting?: InstanceJavaSetting;
   onJavaRuntimesChange?: (runtimes: JavaRuntime[]) => void;
   onGlobalJavaChange?: (path: string) => void;
   onInstanceJavaChange?: (instanceId: string, setting: InstanceJavaSetting) => void;
   /** 把界面偏好交给上层写入后端 `LauncherSettings`；失败时抛错以阻止「已保存」状态。 */
-  onSaveSettings?: (prefs: LauncherPrefs) => Promise<void>;
+  onSaveSettings?: (prefs: LauncherPrefs) => Promise<LauncherPrefs | void>;
+  /** Notification only: the Java/settings transaction has already committed. */
+  onSettingsCommitted?: (settings: LauncherSettings, prefs: LauncherPrefs) => void;
   /**
    * 背景设置变化。
    *
@@ -88,18 +135,41 @@ type SettingsPanelProps = {
   ariaArtwork?: AriaArtwork | null;
 };
 
-export function SettingsPanel({ theme, onThemeChange, onClose, instance, initialTab, onJavaRuntimesChange, onGlobalJavaChange, onInstanceJavaChange, onSaveSettings, onBackgroundChange, onNotice, dark, onRerunOnboarding, ariaSetting, onAriaChange, ariaPluginEnabled, ariaArtwork }: SettingsPanelProps) {
+export function SettingsPanel({ theme, onThemeChange, onAccentPreview, onClose, instance, initialTab, initialPrefs, initialJavaRuntimes, initialInstanceJavaSetting, onJavaRuntimesChange, onGlobalJavaChange, onInstanceJavaChange, onSaveSettings, onSettingsCommitted, onBackgroundChange, onNotice, dark, onRerunOnboarding, ariaSetting, onAriaChange, ariaPluginEnabled, ariaArtwork }: SettingsPanelProps) {
   const { t, language } = useI18n();
+  const titleId = useId();
   const [prefs, setPrefs] = useState<LauncherPrefs>(() => {
-    // 从未保存过强调色时，回落到屏幕上实际生效的值，而不是硬编码的默认色。
-    const currentAccent = getComputedStyle(document.documentElement).getPropertyValue('--color-primary-500').trim();
-    return { ...readPrefs(currentAccent), theme };
+    if (initialPrefs) return { ...copyPrefs(initialPrefs), theme };
+    return { ...readPrefs(), theme };
   });
-  const [javaRuntimes, setJavaRuntimes] = useState<JavaRuntime[]>(loadJavaList);
+  const [javaRuntimes, setJavaRuntimes] = useState<JavaRuntime[]>(() => {
+    if (initialJavaRuntimes) return initialJavaRuntimes.map(runtime => ({ ...runtime }));
+    if (isDesktopShell()) return loadJavaList();
+    // loadJavaList seeds preview storage when absent; opening a draft must be read-only.
+    try { return localStorage.getItem(JAVA_LIST_KEY) === null ? previewJavaRuntimes() : loadJavaList(); }
+    catch { return previewJavaRuntimes(); }
+  });
   const [instanceJavaSetting, setInstanceJavaSetting] = useState<InstanceJavaSetting>(() => {
+    if (initialInstanceJavaSetting) return { ...initialInstanceJavaSetting };
     const all = loadInstanceJavaSettings();
-    return instance ? all[instance.id] ?? { ...DEFAULT_INSTANCE_JAVA } : { ...DEFAULT_INSTANCE_JAVA };
+    return { ...(instance ? all[instance.id] ?? DEFAULT_INSTANCE_JAVA : DEFAULT_INSTANCE_JAVA) };
   });
+  const [javaRecoveryRequired, setJavaRecoveryRequired] = useState(false);
+  const [confirmed, setConfirmed] = useState(() => ({
+    prefs: copyPrefs(prefs),
+    javaRuntimes: javaRuntimes.map(runtime => ({ ...runtime })),
+    instanceJavaSetting: { ...instanceJavaSetting },
+  }));
+  const dirty = javaRecoveryRequired || !prefsEqual(prefs, confirmed.prefs)
+    || javaRuntimes.length !== confirmed.javaRuntimes.length
+    || javaRuntimes.some((runtime, index) => {
+      const other = confirmed.javaRuntimes[index];
+      return !other || runtime.path !== other.path || runtime.majorVersion !== other.majorVersion || runtime.versionText !== other.versionText;
+    })
+    || (!!instance && (Object.keys(instanceJavaSetting) as (keyof InstanceJavaSetting)[])
+      .some(key => instanceJavaSetting[key] !== confirmed.instanceJavaSetting[key]));
+  const [hasSaved, setHasSaved] = useState(false);
+  const saved = hasSaved && !dirty;
   const [javaBusy, setJavaBusy] = useState(false);
   const [tab, setTab] = useState<TabId>(initialTab ?? (instance ? 'java' : 'general'));
   /**
@@ -148,7 +218,6 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
     bodyRef.current?.scrollTo({ top: 0 });
   }, [tab]);
   const [query, setQuery] = useState('');
-  const [saved, setSaved] = useState(false);
   useEffect(() => {
     let alive = true;
     void aria2Status()
@@ -170,26 +239,64 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
   const dragState = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   // Snapshot the values that are actually persisted. Closing without saving
   // restores them instead of leaving live-preview changes behind.
-  const savedThemeRef = useRef<ThemeMode>(theme);
-  const savedAccentRef = useRef(prefs.customAccent);
-  const accentReadyRef = useRef(false);
+  const savedThemeRef = useRef<ThemeMode>(prefs.theme);
+  useLayoutEffect(() => () => onAccentPreview?.(null), [onAccentPreview]);
+  const savingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const instanceIdRef = useRef(instance?.id);
+  const initialInstanceJavaRef = useRef(initialInstanceJavaSetting);
+  initialInstanceJavaRef.current = initialInstanceJavaSetting;
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const javaStateCallbacks = useRef({ onJavaRuntimesChange, onInstanceJavaChange });
+  javaStateCallbacks.current = { onJavaRuntimesChange, onInstanceJavaChange };
+  const [javaLoaded, setJavaLoaded] = useState(!isDesktopShell());
+  const [javaKnown, setJavaKnown] = useState(!isDesktopShell());
   useEffect(() => {
-    if (!instance) { setInstanceJavaSetting({ ...DEFAULT_INSTANCE_JAVA }); return; }
-    const all = loadInstanceJavaSettings();
-    setInstanceJavaSetting(all[instance.id] ?? { ...DEFAULT_INSTANCE_JAVA });
+    if (!isDesktopShell()) {
+      if (instanceIdRef.current === instance?.id) return;
+      instanceIdRef.current = instance?.id;
+      const all = loadInstanceJavaSettings();
+      const next = { ...(initialInstanceJavaRef.current ?? (instance ? all[instance.id] ?? DEFAULT_INSTANCE_JAVA : DEFAULT_INSTANCE_JAVA)) };
+      setInstanceJavaSetting(next);
+      setConfirmed(current => ({ ...current, instanceJavaSetting: { ...next } }));
+      return;
+    }
+    let active = true;
+    const instanceId = instance?.id;
+    setJavaLoaded(false);
+    void loadPersistedJavaState().then(({ preferences, runtimes }) => {
+      if (!active) return;
+      const rule = instanceId ? preferences.instanceRules[instanceId] ?? { ...DEFAULT_INSTANCE_JAVA } : { ...DEFAULT_INSTANCE_JAVA };
+      const draft = instanceId ? getJavaRuleDraft(instanceId) : undefined;
+      setJavaRuntimes(runtimes);
+      setInstanceJavaSetting(draft?.dirty ? draft.rule : rule);
+      setJavaRecoveryRequired(Boolean(draft?.dirty));
+      setConfirmed(current => ({ ...current, javaRuntimes: runtimes, instanceJavaSetting: rule }));
+      setJavaKnown(true);
+      setJavaLoaded(true);
+      javaStateCallbacks.current.onJavaRuntimesChange?.(runtimes);
+      if (instanceId) javaStateCallbacks.current.onInstanceJavaChange?.(instanceId, rule);
+    }, error => {
+      if (!active) return;
+      /*
+       * A failed read must not lock unrelated settings. The Java list and the current
+       * rule are unknown, so the save below omits both instead of writing defaults
+       * over confirmed values; the Java section stays disabled until a read succeeds.
+       */
+      setJavaKnown(false);
+      setJavaLoaded(true);
+      setSaveError(errorText(error));
+    });
+    return () => { active = false; };
   }, [instance?.id]);
-  useEffect(() => { setPrefs(current => ({ ...current, theme })); }, [theme]);
-  useEffect(() => {
-    // Skip the initial mount: the App already applied the persisted accent
-    // before paint, and applying it again here made Settings look like it
-    // changed the theme as soon as it opened.
-    if (!accentReadyRef.current) { accentReadyRef.current = true; return; }
-    applyAccent(prefs.customAccent);
-  }, [prefs.customAccent]);
   const update = <K extends keyof LauncherPrefs>(key: K, value: LauncherPrefs[K]) => {
-    setPrefs(current => ({ ...current, [key]: value })); setSaved(false);
+    if (savingRef.current) return;
+    setPrefs(current => ({ ...current, [key]: value }));
     if (key === 'theme') onThemeChange(value as ThemeMode);
-    if (key === 'javaPath') onGlobalJavaChange?.(value as string);
+    if (key === 'customAccent') onAccentPreview?.(value as string);
   };
   const openSearchResult = () => {
     const text = query.toLowerCase();
@@ -215,43 +322,53 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
    * 看到失败，而不是看到一个绿色的成功状态。
    */
   const save = async () => {
-    const nextPrefs = { ...prefs };
-    setPrefs(nextPrefs);
-    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(nextPrefs));
-    onJavaRuntimesChange?.(javaRuntimes);
-    onGlobalJavaChange?.(nextPrefs.javaPath);
-    saveJavaList(javaRuntimes);
-    if (instance) {
-      const all = loadInstanceJavaSettings();
-      all[instance.id] = instanceJavaSetting;
-      saveInstanceJavaSettings(all);
-      onInstanceJavaChange?.(instance.id, instanceJavaSetting);
-    }
-
+    if (savingRef.current || javaBusy || !javaLoaded || !dirty || (!isDesktopShell() && !onSaveSettings)) return;
+    const draftPrefs = copyPrefs(prefs);
+    const nextRuntimes = javaRuntimes.map(runtime => ({ ...runtime }));
+    const nextInstanceJava = javaRuleForPersistence(instanceJavaSetting);
+    const instanceId = instance?.id;
+    savingRef.current = true;
     setSaving(true);
+    setSaveError('');
     try {
-      await onSaveSettings?.(nextPrefs);
+      const update: JavaPreferencesUpdate = {
+        ...(javaKnown && (nextRuntimes.length !== confirmed.javaRuntimes.length
+          || nextRuntimes.some((runtime, index) => runtime.path !== confirmed.javaRuntimes[index]?.path))
+          ? { orderedPaths: nextRuntimes.map(runtime => runtime.path) } : {}),
+        ...(javaKnown && instanceId ? { instanceId, rule: nextInstanceJava } : {}),
+      };
+      const committed = isDesktopShell() ? await saveJavaSettingsDraft(draftPrefs, update) : null;
+      const result = committed?.prefs ?? await onSaveSettings?.(draftPrefs);
+      if (committed) onSettingsCommitted?.(committed.settings, committed.prefs);
+      if (!mountedRef.current) return;
+      const nextPrefs = copyPrefs(result ?? draftPrefs);
+      setPrefs(nextPrefs);
+      setInstanceJavaSetting(nextInstanceJava);
+      setJavaRecoveryRequired(false);
+      savePrefs(nextPrefs);
+      saveJavaList(nextRuntimes);
+      if (instanceId) {
+        const all = loadInstanceJavaSettings();
+        all[instanceId] = nextInstanceJava;
+        saveInstanceJavaSettings(all);
+      }
+      onJavaRuntimesChange?.(nextRuntimes);
+      onGlobalJavaChange?.(nextPrefs.javaPath);
+      if (instanceId) onInstanceJavaChange?.(instanceId, nextInstanceJava);
       savedThemeRef.current = nextPrefs.theme;
-      savedAccentRef.current = nextPrefs.customAccent;
-      setSaveError('');
-      setSaved(true);
-      window.setTimeout(() => setSaved(false), 2400);
+      onAccentPreview?.(null);
+      setConfirmed({ prefs: nextPrefs, javaRuntimes: nextRuntimes, instanceJavaSetting: nextInstanceJava });
+      setHasSaved(true);
     } catch (error) {
-      // 保留面板打开，并把后端拒绝的原因显示出来——例如内存超过本机上限。
-      setSaveError(errorText(error, '保存设置失败。'));
+      if (mountedRef.current) setSaveError(errorText(localizeJavaPreferenceError(error, language), t('settings.saveFailed')));
     } finally {
-      setSaving(false);
+      savingRef.current = false;
+      if (mountedRef.current) setSaving(false);
     }
   };
   const close = () => {
-    /*
-     * 关闭时撤销「未保存」的主题与强调色预览。
-     *
-     * 但「跟随背景配色」是个例外：那个强调色不是面板里的临时预览，而是背景带的
-     * 属性，关掉面板它也该继续生效。只在手动配色时才还原到打开面板时的值。
-     */
-    const autoAccentActive = background.accentMode === 'auto';
-    if (!autoAccentActive) applyAccent(savedAccentRef.current);
+    if (savingRef.current) return;
+    onAccentPreview?.(null);
     if (theme !== savedThemeRef.current) onThemeChange(savedThemeRef.current);
     /*
      * 背景本身不回滚：它已经落盘了。
@@ -262,6 +379,8 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
      */
     onClose();
   };
+  const { isTopDialog } = useDialogFocus(panelRef, true, close);
+  const requestClose = () => { if (isTopDialog()) close(); };
   const clampOffset = (value: number, max: number) => Math.max(-max, Math.min(max, value));
   const startDrag = (event: React.PointerEvent<HTMLElement>) => {
     if (event.button !== 0 || (event.target as HTMLElement).closest('button, a, input, select, textarea, [role="button"]')) return;
@@ -295,44 +414,59 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
    * 只重置表单字段，不动背景：背景有自己的「清空」按钮，而且它的素材是几十 MB
    * 的二进制，混进这个按钮里会让「恢复默认」变成一次不可预期的磁盘清理。
    */
-  const reset = () => { setPrefs(DEFAULT_PREFS); onThemeChange(DEFAULT_PREFS.theme); setSaved(false); };
-  const persistRuntimes = (next: JavaRuntime[]) => {
-    setJavaRuntimes(next);
-    saveJavaList(next);
-    onJavaRuntimesChange?.(next);
+  const reset = () => {
+    if (savingRef.current) return;
+    setPrefs({ ...copyPrefs(DEFAULT_PREFS), customAccent: manualAccent(DEFAULT_PREFS) });
+    onThemeChange(DEFAULT_PREFS.theme);
+    onAccentPreview?.(manualAccent(DEFAULT_PREFS));
+  };
+  const changeRuntimes = (next: JavaRuntime[]) => {
+    if (!savingRef.current && mountedRef.current && javaLoaded) setJavaRuntimes(next.map(runtime => ({ ...runtime })));
   };
   const detectJava = async () => {
+    if (savingRef.current || javaBusy) return;
     setJavaBusy(true);
     setJavaStatus(loc('java.detectSearching'));
-    const result = await detectJavaRuntimes();
-    // Keep the user's ordering first; append anything new at the bottom, which is
-    // what PCL2 does after a refresh (new entries must be re-prioritised by hand).
-    const fresh = sortDiscovered(result.runtimes.filter(runtime => !javaRuntimes.some(item => item.path === runtime.path)));
-    const merged = [...javaRuntimes, ...fresh];
-    persistRuntimes(merged);
-    setJavaStatus(result.note);
-    setJavaBusy(false);
+    try {
+      const result = await detectJavaRuntimes();
+      if (!mountedRef.current) return;
+      setJavaRuntimes(current => {
+        const fresh = sortDiscovered(result.runtimes.filter(runtime => !current.some(item => item.path === runtime.path)));
+        return [...current, ...fresh];
+      });
+      setJavaStatus(result.note);
+    } catch (error) {
+      if (mountedRef.current) setJavaStatus(errorText(error));
+    } finally {
+      if (mountedRef.current) setJavaBusy(false);
+    }
   };
   const importJava = async () => {
+    if (savingRef.current || javaBusy) return;
     setJavaBusy(true);
-    const result = await importJavaRuntime(language);
-    if (result.runtime) {
-      // PCL2 inserts an imported Java at the top of the list.
-      persistRuntimes([result.runtime, ...javaRuntimes.filter(item => item.path !== result.runtime!.path)]);
+    try {
+      const result = await importJavaRuntime(language);
+      if (!mountedRef.current) return;
+      const runtime = result.runtime;
+      if (runtime) setJavaRuntimes(current => [runtime, ...current.filter(item => item.path !== runtime.path)]);
+      if (result.note) setJavaStatus(result.note);
+    } catch (error) {
+      if (mountedRef.current) setJavaStatus(errorText(error));
+    } finally {
+      if (mountedRef.current) setJavaBusy(false);
     }
-    if (result.note) setJavaStatus(result.note);
-    setJavaBusy(false);
   };
   const revealJava = async (runtime: JavaRuntime) => {
-    setJavaStatus(await revealJavaFolder(runtime));
+    const status = await revealJavaFolder(runtime);
+    if (mountedRef.current) setJavaStatus(status);
   };
   // 搜索只匹配当前语言的标签与说明；关键词路由由 openSearchResult 负责。
   const visibleTabs = tabs.filter(item => `${t(item.labelKey)} ${t(item.captionKey)}`.toLowerCase().includes(query.toLowerCase()));
-  const toggle = (label: string, description: string, checked: boolean, onChange: (value: boolean) => void) => {
-    return <div className={styles.row} key={label}><div className={styles.rowCopy}><strong>{label}</strong><span>{description}</span></div><button type="button" role="switch" aria-checked={checked} aria-label={label} className={`${styles.switch} ${checked ? styles.switchOn : ''}`} onClick={() => onChange(!checked)}><i /></button></div>;
+  const toggle = (label: string, description: string, checked: boolean, onChange: (value: boolean) => void, disabled = false) => {
+    return <SettingsToggle key={label} label={label} description={description} checked={checked} onChange={onChange} disabled={saving || disabled} />;
   };
   const field = (label: string, description: string, content: React.ReactNode) => {
-    return <div className={styles.field} key={label}><div className={styles.rowCopy}><strong>{label}</strong><span>{description}</span></div><div className={styles.control}>{content}</div></div>;
+    return <SettingsField key={label} label={label} description={description} disabled={saving}>{content}</SettingsField>;
   };
 
   const currentTab = tabs.find(item => item.id === tab);
@@ -381,7 +515,7 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
       <section className={styles.group}>
         <h3>{t('settings.startupBehavior')}</h3>
         {toggle(t('settings.checkUpdates'), t('settings.checkUpdatesHint'), prefs.checkUpdates, v => update('checkUpdates', v))}
-        {toggle(t('settings.closeAfterLaunch'), t('settings.closeAfterLaunchHint'), prefs.closeAfterLaunch, v => update('closeAfterLaunch', v))}
+        {toggle(t('settings.closeAfterLaunch'), t('settings.closeAfterLaunchHint'), false, v => update('closeAfterLaunch', v), true)}
       </section>
       <section className={styles.group}>
         <h3>{t('settings.accessibility')}</h3>
@@ -401,9 +535,9 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         <h3>{t('settings.gameWindow')}</h3>
         {field(t('settings.windowDimensions'), t('settings.windowDimensionsHint'),
           <div className={styles.dimensions}>
-            <input type="number" min="640" max="7680" value={prefs.windowWidth} onChange={e => update('windowWidth', Number(e.target.value))} />
+            <input type="number" aria-label={t('override.widthAria')} min="640" max="7680" value={prefs.windowWidth} onChange={e => update('windowWidth', Number(e.target.value))} />
             <span>×</span>
-            <input type="number" min="360" max="4320" value={prefs.windowHeight} onChange={e => update('windowHeight', Number(e.target.value))} />
+            <input type="number" aria-label={t('override.heightAria')} min="360" max="4320" value={prefs.windowHeight} onChange={e => update('windowHeight', Number(e.target.value))} />
             <small>{t('settings.pixels')}</small>
           </div>)}
         {toggle(t('settings.showLog'), t('settings.showLogHint'), prefs.showGameLog, v => update('showGameLog', v))}
@@ -430,12 +564,12 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         runtimes={javaRuntimes}
         globalPath={prefs.javaPath}
         status={javaStatus}
-        busy={javaBusy}
+        busy={javaBusy || saving || !javaLoaded || !javaKnown}
         instance={instance}
         instanceSetting={instanceJavaSetting}
-        onRuntimesChange={next => { persistRuntimes(next); setSaved(false); }}
-        onGlobalPathChange={path => { update('javaPath', path); setSaved(false); }}
-        onInstanceSettingChange={setting => { setInstanceJavaSetting(setting); setSaved(false); }}
+        onRuntimesChange={changeRuntimes}
+        onGlobalPathChange={path => { if (javaLoaded) update('javaPath', path); }}
+        onInstanceSettingChange={setting => { if (!savingRef.current && javaLoaded) setInstanceJavaSetting({ ...setting }); }}
         onDetect={() => void detectJava()}
         onImport={() => void importJava()}
         onReveal={runtime => void revealJava(runtime)}
@@ -677,7 +811,7 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
                 <button key={color} aria-label={color} className={prefs.customAccent === color ? styles.swatchSelected : ''} style={{ '--swatch': color } as React.CSSProperties} onClick={() => update('customAccent', color)} />
               ))}
             </div>
-            <input type="color" value={prefs.customAccent} onChange={e => update('customAccent', e.target.value)} />
+            <input type="color" value={manualAccent(prefs)} onChange={e => update('customAccent', e.target.value)} />
             <code>{prefs.customAccent.toUpperCase()}</code>
           </div>)}
       </section>
@@ -701,7 +835,7 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         {field(t('settings.gameDir'), t('settings.gameDirHint'),
           <div className={styles.pathControl}>
             <input value={prefs.gameDirectory} onChange={e => update('gameDirectory', e.target.value)} placeholder={t('settings.useLauncherDefault')} />
-            <button onClick={() => setJavaStatus(t('settings.browseUnavailable'))}>{t('settings.browse')}</button>
+            <button onClick={() => { void pickDirectory(t('settings.gameDir')).then(path => { if (path) update('gameDirectory', path); }).catch(error => onNotice?.(errorText(error))); }}>{t('settings.browse')}</button>
           </div>)}
         {field(t('settings.cacheDir'), t('settings.cacheDirHint'),
           <input value={prefs.cacheDirectory} onChange={e => update('cacheDirectory', e.target.value)} placeholder={t('settings.useDefaultDir')} />)}
@@ -746,10 +880,10 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
           它不重置任何已选值——那些值在各自的存储里，引导只是再把它们展示一遍。
         */}
         {field(t('settings.rerunOnboarding'), t('settings.rerunOnboardingHint'),
-          <Button size="sm" variant="ghost" onClick={() => { onClose(); onRerunOnboarding?.(); }}>
+          <Button size="sm" variant="ghost" disabled={saving} onClick={() => { if (savingRef.current || !isTopDialog()) return; close(); onRerunOnboarding?.(); }}>
             {t('settings.rerunOnboardingAction')}
           </Button>)}
-        <button className={styles.reset} onClick={reset}><RotateCcw size={15} />{t('settings.resetSection')}</button>
+        <button className={styles.reset} disabled={saving} onClick={reset}><RotateCcw size={15} />{t('settings.resetSection')}</button>
       </section>
     </>
   );
@@ -763,12 +897,12 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
     advanced: advancedPage,
   };
 
-  return <div ref={panelRef} className={styles.settings} role="dialog" aria-modal="true" aria-label={t('settings.title')} style={{ transform: `translate(calc(-50% + ${dragOffset.x}px), calc(-50% + ${dragOffset.y}px))` }}>
+  return <div ref={panelRef} className={styles.settings} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-busy={saving} tabIndex={-1} style={{ transform: `translate(calc(-50% + ${dragOffset.x}px), calc(-50% + ${dragOffset.y}px))` }}>
     <aside className={styles.rail}>
       <div className={styles.railBrand}><div className={styles.brandMark}>MFL</div><div><b>{t('settings.title')}</b><small>{t('settings.subtitle')}</small></div></div>
       <label className={styles.search}>
         <Search size={15} />
-        <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && openSearchResult()} placeholder={t('settings.searchPlaceholder')} />
+        <input aria-label={t('settings.searchPlaceholder')} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && openSearchResult()} placeholder={t('settings.searchPlaceholder')} />
         <kbd>Enter</kbd>
       </label>
       <nav>
@@ -786,10 +920,10 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
       <header className={styles.header} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onDoubleClick={() => setDragOffset({ x: 0, y: 0 })}>
         <div>
           <div className={styles.eyebrow}>{t('settings.eyebrow')}</div>
-          <h2>{currentTab ? t(currentTab.labelKey) : ''}</h2>
+          <h2 id={titleId}>{currentTab ? t(currentTab.labelKey) : ''}</h2>
           <p>{currentTab ? t(currentTab.captionKey) : ''}</p>
         </div>
-        <button className={styles.close} onClick={close} aria-label={t('settings.closeAria')}><X size={19} /></button>
+        <button className={styles.close} onClick={requestClose} disabled={saving} aria-label={t('settings.closeAria')}><X size={19} /></button>
       </header>
       <div className={styles.body} tabIndex={0} aria-label={t('settings.bodyAria')} ref={bodyRef}>
         {/*
@@ -806,12 +940,12 @@ export function SettingsPanel({ theme, onThemeChange, onClose, instance, initial
         {pages[tab]}
       </div>
       <footer className={styles.footer}>
-        <span className={saved ? styles.saved : ''}>
-          {saving ? t('settings.saving') : saved ? t('settings.saved') : t('settings.unsaved')}
+        <span className={saved ? styles.saved : ''} role="status" aria-live="polite">
+          {saving ? t('settings.saving') : dirty ? t('settings.unsaved') : saved ? t('settings.saved') : t('settings.noChanges')}
         </span>
         <div>
-          <button className={styles.cancel} onClick={close}>{t('settings.closeButton')}</button>
-          <button className={styles.save} onClick={() => void save()} disabled={saving}>
+          <button className={styles.cancel} onClick={requestClose} disabled={saving}>{t('settings.closeButton')}</button>
+          <button className={styles.save} onClick={() => void save()} disabled={saving || javaBusy || !javaLoaded || !dirty || (!isDesktopShell() && !onSaveSettings)}>
             {saved ? t('settings.savedButton') : t('settings.saveButton')}
           </button>
         </div>

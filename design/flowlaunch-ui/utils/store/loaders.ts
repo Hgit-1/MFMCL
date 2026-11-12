@@ -15,7 +15,7 @@
 import type { MessageKey } from '../i18n/messages/zh-CN';
 
 /** 界面认得的五个加载器；与 `types.ts` 的 `GameInstance['loader']` 保持一致。 */
-export type GameInstanceLoader = 'vanilla' | 'fabric' | 'quilt' | 'forge' | 'neoforge';
+export type GameInstanceLoader = 'vanilla' | 'fabric' | 'quilt' | 'forge' | 'neoforge' | 'liteloader' | 'cleanroom' | 'legacyfabric' | 'optifine';
 
 const LOADER_BASE = '/textures/loaders';
 const BLOCK_BASE = '/textures/blocks';
@@ -74,6 +74,10 @@ export const LOADER_ICONS: Record<GameInstanceLoader, LoaderIcon> = {
   // Forge 的深色铁砧在深色主题里需要浅色底板才看得见。
   forge: { src: `${LOADER_BASE}/forge.png`, altKey: 'loader.forge', plate: true },
   neoforge: { src: `${LOADER_BASE}/neoforge.png`, altKey: 'loader.neoforge', pixelated: true },
+  liteloader: { src: `${BLOCK_BASE}/stone.png`, altKey: 'loader.liteloader', pixelated: true },
+  cleanroom: { src: `${BLOCK_BASE}/stone.png`, altKey: 'loader.cleanroom', pixelated: true },
+  legacyfabric: { src: `${BLOCK_BASE}/stone.png`, altKey: 'loader.legacyfabric', pixelated: true },
+  optifine: { src: `${BLOCK_BASE}/stone.png`, altKey: 'loader.optifine', pixelated: true },
 };
 
 /**

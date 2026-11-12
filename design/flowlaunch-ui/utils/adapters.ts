@@ -34,6 +34,10 @@ function normalizeLoader(loader: string): GameInstance['loader'] {
     case 'quilt':
     case 'forge':
     case 'neoforge':
+    case 'liteloader':
+    case 'cleanroom':
+    case 'legacyfabric':
+    case 'optifine':
       return name;
     default:
       return 'vanilla';
@@ -67,8 +71,9 @@ function normalizeState(state: InstanceRecord['state']): GameInstance['status'] 
       return 'installing';
     case 'failed':
       return 'error';
+    case 'not_installed':
     default:
-      return 'ready';
+      return 'not_installed';
   }
 }
 

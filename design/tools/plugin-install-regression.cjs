@@ -89,7 +89,7 @@ async function fixture(browser, options = {}) {
     } else if (options.installed) {
       plugins.savePluginStore({ ...plugins.EMPTY_PLUGIN_STORE, enabled: { [record.id]: false } });
     }
-    localStorage.setItem(prefs.SETTINGS_STORAGE_KEY, JSON.stringify({ ...prefs.DEFAULT_PREFS, theme: 'light', customAccent: '#53b4f6' }));
+    prefs.savePrefs({ ...prefs.DEFAULT_PREFS, theme: 'light', customAccent: '#53b4f6' });
     await native.saveSettings({ ...native.fallbackSettings(), themeMode: 'light', customAccent: '#53b4f6', clearFinishedTasks: false });
     aria.saveAriaSetting({ ...aria.DEFAULT_ARIA, enabled: true, mode: 'fixed', fixedSeason: 'spring' });
     const { default: R } = await import('/node_modules/.vite/deps/react.js');

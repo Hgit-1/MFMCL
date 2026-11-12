@@ -17,7 +17,7 @@
 // 资源包与地图分类后端没有对应命令（既不能搜索也不能安装），所以这两个分类在
 // 界面上明确标注为暂不可用，而不是给一个点了没反应的按钮。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronLeft,
@@ -37,6 +37,7 @@ import { ALL_VERSIONS, VersionPicker } from './VersionPicker';
 import { InstallPlan } from './InstallPlan';
 import { StoreLogo } from './StoreLogo';
 import { blockForVersion, VANILLA_BLOCK } from '../utils/store/blocks';
+import { toGameInstance } from '../utils/adapters';
 import { useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
 import { fitInstanceLabel, kindOfVersion, VERSION_KINDS, VERSION_KIND_KEYS } from '../utils/store/format';
@@ -47,6 +48,8 @@ import {
   formatBytes,
   downloadAndImportModpack,
   importModpack,
+  discardModpackSource,
+  pickPackSupplementFiles,
   curseforgeDownload,
   curseforgeFiles,
   curseforgeInstall,
@@ -71,6 +74,8 @@ import {
   type CurseForgeVersion,
   type ModQuery,
   type PackPreview,
+  type PackResolution,
+  type MissingPackFile,
   type VersionListItem,
 } from '../utils/native';
 import { SETTINGS_STORAGE_KEY, readStoredPrefs } from '../utils/launcherPrefs';
@@ -267,6 +272,61 @@ interface VanillaRow {
   id: string;
   releaseTime: string;
   type: VersionListItem['type'];
+}
+
+type VersionState = 'idle' | 'loading' | 'ready' | 'error';
+
+function useProjectVersions<T>(context: string) {
+  type Request = { projectId: string; context: string; versions: T[] };
+  const active = useRef<Request | null>(null);
+  const currentContext = useRef(context);
+  const [result, setResult] = useState<{
+    request: Request | null; state: VersionState; error: string;
+  }>({ request: null, state: 'idle', error: '' });
+
+  const invalidate = useCallback(() => {
+    active.current = null;
+    setResult({ request: null, state: 'idle', error: '' });
+  }, []);
+
+  useLayoutEffect(() => {
+    currentContext.current = context;
+    invalidate();
+    return () => { active.current = null; };
+  }, [context, invalidate]);
+
+  const open = async (projectId: string, load: () => Promise<T[]>, failure: string) => {
+    if (active.current?.projectId === projectId && active.current.context === context) {
+      invalidate();
+      return;
+    }
+    const request: Request = { projectId, context, versions: [] };
+    active.current = request;
+    setResult({ request, state: 'loading', error: '' });
+    try {
+      const versions = await load();
+      if (active.current !== request || currentContext.current !== context) return;
+      request.versions = versions;
+      setResult({ request, state: 'ready', error: '' });
+    } catch (cause) {
+      if (active.current !== request || currentContext.current !== context) return;
+      setResult({ request, state: 'error', error: errorText(cause, failure) });
+    }
+  };
+
+  // Object identity binds actions to the exact response, not just a reusable version id.
+  const owns = (version: T) => active.current !== null
+    && active.current.context === context
+    && currentContext.current === context
+    && active.current.versions.includes(version);
+  const visible = result.request?.context === context;
+  return {
+    expanded: visible ? result.request!.projectId : null,
+    versions: visible ? result.request!.versions : [],
+    state: visible ? result.state : 'idle' as VersionState,
+    error: visible ? result.error : '',
+    open, owns, invalidate,
+  };
 }
 
 export function StoreWorkspace({
@@ -483,12 +543,6 @@ export function StoreWorkspace({
   const [modHasMore, setModHasMore] = useState(false);
   const [modsState, setModsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [modsError, setModsError] = useState('');
-  /** 当前展开版本列表的模组。同一时刻只展开一个，避免整 page 变成版本墙。 */
-  const [expandedMod, setExpandedMod] = useState<string | null>(null);
-  const [modVersions, setModVersions] = useState<CatalogVersion[]>([]);
-  const [modVersionsState, setModVersionsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  /** 版本列表的失败原因。与 `modsError`（搜索结果横幅）分开，两者互不覆盖。 */
-  const [modVersionsError, setModVersionsError] = useState('');
   const [installing, setInstalling] = useState('');
 
   /*
@@ -593,31 +647,21 @@ export function StoreWorkspace({
   /** CurseForge 的搜索结果与错误，与 Modrinth 分开保存以便各自报错。 */
   const [cfMods, setCfMods] = useState<CurseForgeMod[]>([]);
   const [cfSearchError, setCfSearchError] = useState('');
-  /** 当前展开版本列表的 CurseForge 项目。与 Modrinth 的展开状态互不影响。 */
-  const [expandedCfMod, setExpandedCfMod] = useState<string | null>(null);
-  const [cfVersions, setCfVersions] = useState<CurseForgeVersion[]>([]);
-  const [cfVersionsState, setCfVersionsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  /** 展开失败时的原因（缺少 key、没有目标实例、网络等）。 */
-  const [cfVersionsError, setCfVersionsError] = useState('');
-
   // -------------------------------------------------------------------------
   // 整合包导入
   // -------------------------------------------------------------------------
   const [packPath, setPackPath] = useState('');
   const [packPreview, setPackPreview] = useState<PackPreview | null>(null);
+  const [packMissing, setPackMissing] = useState<MissingPackFile[]>([]);
+  const [packLocalPaths, setPackLocalPaths] = useState<string[]>([]);
+  const packSource = useRef('');
+  const packContentsRef = useRef<HTMLDivElement>(null);
+  const packBusy = useRef(false);
   const [packState, setPackState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [packError, setPackError] = useState('');
   const [importing, setImporting] = useState(false);
 
-  /*
-   * 站内整合包搜索。
-   *
-   * 与本地导入是两条独立路径：这里查 CurseForge 的 `classId=4471`（整合包），
-   * 选中文件后由后端「下载 + 导入」一步完成，前端不接触临时文件。
-   *
-   * 不复用模组页那套搜索状态：整合包不按加载器/版本筛选实例，而且结果区的
-   * 「包内容」属于本地导入，两批数据混在一个 state 里会互相覆盖。
-   */
+  // 翻页与搜索不丢掉待确认来源及补件选择。
   const [packQuery, setPackQuery] = useState('');
   const [packHits, setPackHits] = useState<CurseForgeMod[]>([]);
   /*
@@ -629,10 +673,6 @@ export function StoreWorkspace({
    * 第三个。分开存 + 分栏渲染，代价只是多一个 state。
    */
   const [mrPackHits, setMrPackHits] = useState<CatalogMod[]>([]);
-  /** 当前展开文件列表的 Modrinth 整合包项目 id。 */
-  const [expandedMrPack, setExpandedMrPack] = useState<string | null>(null);
-  const [mrPackVersions, setMrPackVersions] = useState<CatalogVersion[]>([]);
-  const [mrPackVersionsState, setMrPackVersionsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [packSearchState, setPackSearchState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [packSearchError, setPackSearchError] = useState('');
   /*
@@ -645,12 +685,26 @@ export function StoreWorkspace({
   const [packHasMore, setPackHasMore] = useState(false);
   /** 记住上一次实际执行的查询，翻页时复用，避免把输入框的实时内容带进去。 */
   const lastPackQuery = useRef('');
-  /** 当前展开文件列表的整合包项目。 */
-  const [expandedPack, setExpandedPack] = useState<string | null>(null);
-  const [packVersions, setPackVersions] = useState<CurseForgeVersion[]>([]);
-  const [packVersionsState, setPackVersionsState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   /** 正在下载/导入的整合包项目 id，用于禁用按钮。 */
   const [installingPack, setInstallingPack] = useState('');
+
+  const versionContext = JSON.stringify([
+    category, targetInstanceId, target?.version, target?.loader,
+    [...sources].sort(), modVersion, modLoader, modCategory, modSort,
+  ]);
+  const modDetail = useProjectVersions<CatalogVersion>(versionContext);
+  const cfDetail = useProjectVersions<CurseForgeVersion>(versionContext);
+  const mrPackDetail = useProjectVersions<CatalogVersion>(versionContext);
+  const packDetail = useProjectVersions<CurseForgeVersion>(versionContext);
+  const { expanded: expandedMod, versions: modVersions, state: modVersionsState, error: modVersionsError } = modDetail;
+  const { expanded: expandedCfMod, versions: cfVersions, state: cfVersionsState, error: cfVersionsError } = cfDetail;
+  const { expanded: expandedMrPack, versions: mrPackVersions, state: mrPackVersionsState } = mrPackDetail;
+  const { expanded: expandedPack, versions: packVersions, state: packVersionsState } = packDetail;
+  const currentVersionContext = useRef(versionContext);
+  useLayoutEffect(() => {
+    currentVersionContext.current = versionContext;
+    return () => { currentVersionContext.current = ''; };
+  }, [versionContext]);
 
   /*
    * 把目标实例与外壳选中的实例对齐。
@@ -695,10 +749,6 @@ export function StoreWorkspace({
   useEffect(() => {
     setPage(0);
     setModPage(0);
-    setExpandedMod(null);
-    setExpandedCfMod(null);
-    setModVersions([]);
-    setCfVersions([]);
     if (prevCategory.current === category) return;
     prevCategory.current = category;
     setModLoader('');
@@ -760,6 +810,11 @@ export function StoreWorkspace({
      * 也就是「不限版本与加载器」，由用户在版本列表里自己挑。
      */
     // 复用组件层那份判据（同一个表达式，不存在分叉）。
+    modDetail.invalidate();
+    cfDetail.invalidate();
+    const context = versionContext;
+    const seq = ++searchSeq.current;
+    const fresh = () => searchSeq.current === seq && currentVersionContext.current === context;
     if (sources.length === 0) {
       setMods([]);
       setCfMods([]);
@@ -767,13 +822,6 @@ export function StoreWorkspace({
       setModsError(t('store.noSourceSelected'));
       return;
     }
-    /*
-     * 领一个序号。从这里开始的所有写入都要先确认自己仍是最新的一次搜索。
-     */
-    const seq = ++searchSeq.current;
-    /** 本次结果是否还应当写入界面。 */
-    const fresh = () => searchSeq.current === seq;
-
     setModsState('loading');
     setModsError('');
     setCfMods([]);
@@ -943,7 +991,7 @@ export function StoreWorkspace({
      */
     void searchRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [category, targetInstanceId]);
+  }, [category, targetInstanceId, target?.version, target?.loader]);
   /**
    * CurseForge key 状态变化的处理。
    *
@@ -1025,49 +1073,26 @@ export function StoreWorkspace({
   };
 
   const openModVersions = async (mod: CatalogMod) => {
-    if (expandedMod === mod.projectId) { setExpandedMod(null); return; }
-    setExpandedMod(mod.projectId);
-    setModVersionsState('loading');
-    setModVersions([]);
-    setModVersionsError('');
-    try {
-      /*
-       * 直连模式下列出**全部**版本，不按实例过滤。
-       *
-       * `listModVersions` 会用实例的游戏版本与加载器筛；没有实例时它无从筛起，
-       * 而用任何默认值代替都等于静默收窄——用户在界面上看不到「你正在被过滤」。
-       * 直连模式的语义就是「我自己挑」，所以给出完整列表。
-       *
-       * 资源包没有加载器维度，两条路径都透传当前分类的项目类型。
-       */
-      /*
-       * 原版实例也允许列出全部版本，而不是报错。
-       *
-       * 版本清单是公开信息：用户点开一个模组想看它有哪些版本，这件事与「当前实例
-       * 是否装了加载器」无关。之前原版实例会直接收到「在线模组目录需要 Fabric 或
-       * Quilt 实例」，界面又把这个错误丢进搜索横幅——最终表现是卡片展开了但下面
-       * 一片空白，看起来完全没反应。
-       *
-       * 仍然不给「安装」按钮（后端会按实例的加载器再校验一次），只是把版本列出来。
-       */
-      const isVanillaInstance = target !== undefined && target.loader === 'vanilla';
-      setModVersions(await (targetInstanceId && !isVanillaInstance
-        ? listModVersions(targetInstanceId, mod.projectId, projectTypeOf(category))
-        : listProjectVersions(mod.projectId, projectTypeOf(category) === 'modpack' ? 'modpack' : 'mod')));
-      setModVersionsState('ready');
-    } catch (error) {
-      setModVersionsState('error');
-      /*
-       * 只写进版本区的状态，不碰 `modsError`。
-       *
-       * 之前这里复用 `modsError`（搜索结果那条横幅）：一次展开失败会把
-       * 「搜索失败」显示在顶部，而版本区仍然空白——两处都指向不了真正的原因。
-       */
-      setModVersionsError(errorText(error, t('cf.versionsFailed')));
-    }
+    if (!sources.includes('modrinth')) return;
+    await modDetail.open(mod.projectId, async () => {
+      const kind = projectTypeOf(category) ?? 'mod';
+      const overridden = modVersion !== '' || modLoader !== '';
+      const scoped = target && target.loader !== 'vanilla' && !overridden;
+      const versions = await (scoped
+        ? listModVersions(target.id, mod.projectId, kind)
+        : listProjectVersions(mod.projectId, kind));
+      const game = modVersion === ALL_VERSIONS ? '' : (modVersion || target?.version || '');
+      const loader = category === 'mod'
+        ? (modLoader === 'any' ? '' : (modLoader || (target?.loader === 'vanilla' ? '' : target?.loader) || ''))
+        : '';
+      return versions.filter(version =>
+        (!game || version.gameVersions?.includes(game))
+        && (!loader || version.loaders?.includes(loader)));
+    }, t('cf.versionsFailed'));
   };
 
   const installVersion = async (version: CatalogVersion, projectName?: string) => {
+    if (!target || !modDetail.owns(version)) return;
     setInstalling(version.versionId);
     try {
       // 后端会在下载后按清单里的 SHA-1 校验；返回的是安装到的文件路径。
@@ -1113,8 +1138,9 @@ export function StoreWorkspace({
   };
 
   const downloadVersion = async (version: CatalogVersion, projectName?: string) => {
+    if (!modDetail.owns(version)) return;
     const directory = await requireDownloadDirectory();
-    if (!directory) return;
+    if (!directory || !modDetail.owns(version)) return;
     setInstalling(version.versionId);
     try {
       const path = await downloadModVersion(targetInstanceId, version, directory, projectName);
@@ -1130,43 +1156,20 @@ export function StoreWorkspace({
 
   /** 展开/收起某个 CurseForge 项目的文件列表。 */
   const openCfVersions = async (mod: CurseForgeMod) => {
-    if (expandedCfMod === mod.projectId) { setExpandedCfMod(null); return; }
-    setExpandedCfMod(mod.projectId);
-    setCfVersionsState('loading');
-    setCfVersions([]);
-    setCfVersionsError('');
-    /*
-     * 没有目标实例时也要展开，并说明原因。
-     *
-     * 原来这里直接 `return`：按钮点下去毫无反应，用户无法判断是「没反应」还是
-     * 「加载失败」。而 CurseForge 的查询必须带游戏版本与加载器，没有实例就无从
-     * 得知该按什么筛选——所以正确做法不是静默失败，而是把这件事写出来，
-     * 并给一个「去选择实例」的去处。
-     */
-    if (!target) {
-      setCfVersionsState('error');
-      setCfVersionsError(t('cf.needInstance'));
-      return;
-    }
-    try {
-      setCfVersions(await curseforgeFiles(mod.projectId, target.version, target.loader));
-      setCfVersionsState('ready');
-    } catch (error) {
-      /*
-       * 失败原因留在行内，不只弹一条会消失的 toast。
-       *
-       * 缺少/失效 API Key 是最常见的原因，而后端的错误文案已经写清了怎么办
-       * （「请在内容商店里重新填写」）。用 toast 呈现意味着用户读完就没了，
-       * 而列表区是一片空白——看起来像「这个模组没有文件」。
-       */
-      setCfVersionsState('error');
-      setCfVersionsError(errorText(error, t('cf.versionsFailed')));
-    }
+    if (!sources.includes('curseforge')) return;
+    await cfDetail.open(mod.projectId, async () => {
+      if (!target) throw new Error(t('cf.needInstance'));
+      const game = modVersion === ALL_VERSIONS ? '' : (modVersion || target.version);
+      const loader = category === 'mod'
+        ? (modLoader === 'any' ? undefined : (modLoader || target.loader))
+        : undefined;
+      return curseforgeFiles(mod.projectId, game, loader);
+    }, t('cf.versionsFailed'));
   };
 
   /** 安装一个 CurseForge 文件。受限文件由后端拒绝并给出手动下载提示。 */
   const installCfVersion = async (version: CurseForgeVersion, projectName?: string) => {
-    if (!target) return;
+    if (!target || !cfDetail.owns(version)) return;
     setInstalling(version.versionId);
     try {
       const name = await curseforgeInstall(target.id, version, 'mod', projectName);
@@ -1181,9 +1184,9 @@ export function StoreWorkspace({
 
   /** 把 CurseForge 文件直接下载到侧栏选定的目录，不装进实例。 */
   const downloadCfVersion = async (version: CurseForgeVersion, projectName?: string) => {
-    if (!target) return;
+    if (!target || !cfDetail.owns(version)) return;
     const directory = await requireDownloadDirectory();
-    if (!directory) return;
+    if (!directory || !cfDetail.owns(version)) return;
     setInstalling(version.versionId);
     try {
       const path = await curseforgeDownload(target.id, version, 'mod', directory, projectName);
@@ -1248,51 +1251,142 @@ export function StoreWorkspace({
   const goToModPage = (next: number) => {
     if (next < 0) return;
     setModPage(next);
-    setExpandedMod(null);
-    // 展开的版本列表属于上一页的项目，翻页后应当收起。
-    setModVersions([]);
+    modDetail.invalidate();
+    cfDetail.invalidate();
     void runModSearch(submittedQuery, next);
   };
 
-  const pickPack = async () => {
-    const path = await pickFile(t('store.packPickTitle'), [{ name: t('store.packFileFilter'), extensions: ['zip', 'mrpack'] }]);
-    if (!path) return;
-    setPackPath(path);
+  const packPreviewSeq = useRef(0);
+  useEffect(() => () => {
+    ++packPreviewSeq.current;
+    if (packSource.current) void discardModpackSource(packSource.current).catch(() => {});
+  }, []);
+
+  const showPackResolution = (resolution: PackResolution) => {
+    packSource.current = resolution.sourcePath;
+    setPackPath(resolution.sourcePath);
+    setPackPreview(resolution.preview);
+    setPackMissing(resolution.unresolvedFiles);
+    setPackState('ready');
+  };
+
+  const clearPack = () => {
+    packSource.current = '';
+    setPackPath('');
+    setPackPreview(null);
+    setPackMissing([]);
+    setPackLocalPaths([]);
+    setPackError('');
+    setPackState('idle');
+  };
+
+  const cancelPack = async () => {
+    if (packBusy.current) return;
+    packBusy.current = true;
+    try {
+      if (packPath) await discardModpackSource(packPath);
+      ++packPreviewSeq.current;
+      clearPack();
+    } catch (error) {
+      setPackError(errorText(error, t('store.packImportFailed')));
+    } finally {
+      packBusy.current = false;
+    }
+  };
+
+  const pickPack = async (directory = false) => {
+    if (packBusy.current) return;
+    packBusy.current = true;
+    const seq = ++packPreviewSeq.current;
+    try {
+      if (!isDesktopShell()) {
+        onNotice(t('store.directDownloadDesktopOnly'));
+        return;
+      }
+      const path = directory
+        ? await pickDirectory(t('store.packImportFolder'))
+        : await pickFile(t('store.packPickTitle'), [{ name: t('store.packFileFilter'), extensions: ['zip', 'mrpack'] }]);
+      if (!path || seq !== packPreviewSeq.current) return;
+      if (packPath) await discardModpackSource(packPath);
+      clearPack();
+      packSource.current = path;
+      setPackPath(path);
+      setPackState('loading');
+      const resolution = await previewModpack(path);
+      if (seq !== packPreviewSeq.current) return;
+      showPackResolution(resolution);
+    } catch (error) {
+      if (seq !== packPreviewSeq.current) return;
+      setPackError(errorText(error, t('store.packReadFailed')));
+      setPackState('error');
+    } finally {
+      packBusy.current = false;
+    }
+  };
+
+  const selectPackSupplements = async (directory = false) => {
+    if (!packPath || packBusy.current) return;
+    packBusy.current = true;
+    const seq = ++packPreviewSeq.current;
+    try {
+      const paths = directory
+        ? await pickDirectory(t('store.packSelectFolder')).then(path => path ? [path] : null)
+        : await pickPackSupplementFiles(t('store.packSelectFiles'));
+      if (!paths?.length || seq !== packPreviewSeq.current) return;
+      const selected = [...new Set([...packLocalPaths, ...paths])];
+      setPackState('loading');
+      setPackError('');
+      const resolution = await previewModpack(packPath, selected);
+      if (seq !== packPreviewSeq.current) return;
+      setPackLocalPaths(selected);
+      showPackResolution(resolution);
+    } catch (error) {
+      if (seq !== packPreviewSeq.current) return;
+      setPackError(errorText(error, t('store.packReadFailed')));
+      setPackState('error');
+    } finally {
+      packBusy.current = false;
+    }
+  };
+
+  const refreshPack = async () => {
+    if (!packPath || packBusy.current) return;
+    packBusy.current = true;
+    const seq = ++packPreviewSeq.current;
     setPackState('loading');
     setPackError('');
     try {
-      setPackPreview(await previewModpack(path));
-      setPackState('ready');
+      const resolution = await previewModpack(packPath, packLocalPaths);
+      if (seq === packPreviewSeq.current) showPackResolution(resolution);
     } catch (error) {
+      if (seq !== packPreviewSeq.current) return;
       setPackError(errorText(error, t('store.packReadFailed')));
       setPackState('error');
+    } finally {
+      packBusy.current = false;
     }
   };
 
   const doImport = async () => {
-    if (!packPath) return;
+    if (!packPath || packState !== 'ready' || packBusy.current || packMissing.some(file => file.required)) return;
+    packBusy.current = true;
     setImporting(true);
+    setPackError('');
     try {
-      const record = await importModpack(packPath);
+      const record = await importModpack(packPath, packLocalPaths);
+      clearPack();
       onNotice(t('store.packImported', { values: { name: record.name } }));
-      // 导入会创建一个新实例并触发安装任务；刷新后跳到游戏库查看结果。
       onTasksChanged();
-      onCreated({
-        id: record.id,
-        name: record.name,
-        version: record.gameVersion,
-        loader: 'vanilla',
-        javaVersion: '',
-        playTime: 0,
-        modCount: 0,
-        status: 'ready',
-      });
-      setPackPath('');
-      setPackPreview(null);
-      setPackState('idle');
+      onCreated(toGameInstance(record));
     } catch (error) {
-      onNotice(errorText(error, t('store.packImportFailed')));
+      setPackError(errorText(error, t('store.packImportFailed')));
+      try {
+        showPackResolution(await previewModpack(packPath, packLocalPaths));
+      } catch {
+        // Keep the selected source and paths available for another attempt.
+      }
     } finally {
+      packBusy.current = false;
       setImporting(false);
     }
   };
@@ -1307,14 +1401,17 @@ export function StoreWorkspace({
    * 关键词为空时按下载量浏览（后端已支持不传 searchFilter 的浏览模式），
    * 所以进入整合包页可以先点一次搜索看到热门列表，不必先想关键词。
    */
+  const packSearchSeq = useRef(0);
   const runPackSearch = async (pageOverride?: number) => {
+    const seq = ++packSearchSeq.current;
+    const context = versionContext;
     const page = pageOverride ?? 0;
     setPackSearchState('loading');
     setPackSearchError('');
     setPackHits([]);
     setMrPackHits([]);
-    setExpandedPack(null);
-    setExpandedMrPack(null);
+    packDetail.invalidate();
+    mrPackDetail.invalidate();
     setPackPage(page);
 
     // 翻页复用上次的查询条件，而不是读输入框的实时内容：用户可能改了输入框但没点搜索。
@@ -1342,7 +1439,7 @@ export function StoreWorkspace({
             pageSize: PAGE_SIZE,
           })
         : Promise.resolve([] as CurseForgeMod[]),
-      searchModsUnscoped({
+      sources.includes('modrinth') ? searchModsUnscoped({
         query,
         projectType: 'modpack',
         // 不传 gameVersion / loader：整合包自带它们，按实例筛会漏掉大量能装的包。
@@ -1351,8 +1448,9 @@ export function StoreWorkspace({
         // 排序与分页对齐模组页：按下载量，offset 用同一套页码。
         index: 'downloads',
         offset: page * PAGE_SIZE,
-      }),
+      }) : Promise.resolve([] as CatalogMod[]),
     ]);
+    if (packSearchSeq.current !== seq || currentVersionContext.current !== context) return;
 
     const errors: string[] = [];
     if (cfResult.status === 'fulfilled') {
@@ -1380,10 +1478,10 @@ export function StoreWorkspace({
       || (mrResult.status === 'fulfilled' && mrResult.value.length >= PAGE_SIZE);
     setPackHasMore(fullPage && page < 40);
 
-    // 两个来源都失败才算整页失败；只缺一个时另一栏仍然有用。
-    if (errors.length === 2) {
+    const attempted = Number(wantsCf) + Number(sources.includes('modrinth'));
+    if (attempted === 0 || errors.length === attempted) {
       setPackSearchState('error');
-      setPackSearchError(errors.join(' '));
+      setPackSearchError(attempted === 0 ? t('store.noSourceSelected') : errors.join(' '));
       return;
     }
     // 部分失败在各自栏里说明，不把整页标成错误。
@@ -1391,77 +1489,42 @@ export function StoreWorkspace({
     setPackSearchState('ready');
   };
 
-  /*
-   * 进入整合包页就列出一批（按下载量）。
-   *
-   * 之前必须先输入关键词再点「搜索」——而用户往往不知道有哪些整合包，空着搜索框
-   * 就不知道下一步该做什么。模组页早就是「空关键词 = 浏览热门」的行为，两页
-   * 保持一致。
-   *
-   * 依赖只放 `category`：切到整合包页时跑一次。不把 `sources` 放进去是因为
-   * 用户勾选来源后由「搜索」按钮触发重查，自动重跑会把他正在看的列表清空。
-   */
-  const packAutoLoaded = useRef(false);
+  const packSearchRef = useRef(runPackSearch);
+  packSearchRef.current = runPackSearch;
   useEffect(() => {
-    if (category !== 'modpack') { packAutoLoaded.current = false; return; }
-    if (packAutoLoaded.current) return;
-    packAutoLoaded.current = true;
-    void runPackSearch(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [category]);
+    if (category === 'modpack') void packSearchRef.current(0);
+  }, [versionContext]);
 
   /** 展开一个 Modrinth 整合包的文件列表。 */
   const openMrPackVersions = async (hit: CatalogMod) => {
-    if (expandedMrPack === hit.projectId) { setExpandedMrPack(null); return; }
-    setExpandedMrPack(hit.projectId);
-    setMrPackVersionsState('loading');
-    setMrPackVersions([]);
-    try {
-      setMrPackVersions(await listProjectVersions(hit.projectId, 'modpack'));
-      setMrPackVersionsState('ready');
-    } catch (error) {
-      setMrPackVersionsState('error');
-      setPackSearchError(errorText(error, t('store.packVersionsFailed')));
-    }
+    if (!sources.includes('modrinth')) return;
+    await mrPackDetail.open(hit.projectId,
+      () => listProjectVersions(hit.projectId, 'modpack'), t('store.packVersionsFailed'));
   };
 
   /** 下载并导入一个 Modrinth 整合包。 */
-  const installMrPack = async (version: CatalogVersion) => {    setInstallingPack(version.versionId);
+  const installMrPack = async (version: CatalogVersion) => {
+    if (!mrPackDetail.owns(version) || packBusy.current || packPath) return;
+    packBusy.current = true;
+    setInstallingPack(version.versionId);
     try {
       const record = await downloadAndImportModrinthPack(version, targetInstanceId || undefined);
       onNotice(t('store.packImported', { values: { name: record.name } }));
       // 与 CurseForge 那条路径一致：导入会创建实例并触发安装任务，刷新后跳过去看。
       onTasksChanged();
-      onCreated({
-        id: record.id,
-        name: record.name,
-        version: record.gameVersion,
-        loader: 'vanilla',
-        javaVersion: '',
-        playTime: 0,
-        modCount: 0,
-        status: 'ready',
-      });
+      onCreated(toGameInstance(record));
     } catch (error) {
       onNotice(errorText(error, t('store.packDownloadImportFailed')));
     } finally {
+      packBusy.current = false;
       setInstallingPack('');
     }
   };
 
   const openPackVersions = async (hit: CurseForgeMod) => {
-    if (expandedPack === hit.projectId) { setExpandedPack(null); return; }
-    setExpandedPack(hit.projectId);
-    setPackVersionsState('loading');
-    setPackVersions([]);
-    try {
-      // 不传实例的版本/加载器：整合包自带它要用的那套。
-      setPackVersions(await curseforgeFiles(hit.projectId, '', undefined));
-      setPackVersionsState('ready');
-    } catch (error) {
-      setPackVersionsState('error');
-      onNotice(errorText(error, t('cf.versionsFailed')));
-    }
+    if (!sources.includes('curseforge')) return;
+    await packDetail.open(hit.projectId,
+      () => curseforgeFiles(hit.projectId, '', undefined), t('cf.versionsFailed'));
   };
 
   /**
@@ -1471,6 +1534,7 @@ export function StoreWorkspace({
    * （SHA-1 校验 + 不覆盖同名文件），区别只是不进入导入流程。
    */
   const savePack = async (file: CurseForgeVersion, projectName?: string) => {
+    if (!packDetail.owns(file)) return;
     if (!isDesktopShell()) {
       onNotice(t('store.directDownloadDesktopOnly'));
       return;
@@ -1486,7 +1550,7 @@ export function StoreWorkspace({
       return;
     }
     const directory = await pickDirectory(t('store.directDownloadPickTitle'));
-    if (!directory) return;
+    if (!directory || !packDetail.owns(file)) return;
     setInstallingPack(file.versionId);
     try {
       const path = await curseforgeDownload(targetInstanceId, file, 'modpack', directory, projectName);
@@ -1531,31 +1595,30 @@ export function StoreWorkspace({
     });
   }, [packVersions]);
 
-  /**
-   * 下载并导入一个整合包文件。
-   *
-   * 后端负责「下载到临时目录 → 校验 SHA-1 → 按包内声明创建实例 → 下载包内文件」，
-   * 失败会整条回滚。这里只需要提示结果并把新实例交给外层刷新列表。
-   */
+  // 在线包复用确认区，补件和重试不再下载原包。
   const installPack = async (file: CurseForgeVersion) => {
+    if (!packDetail.owns(file) || packBusy.current || packPath) return;
+    packBusy.current = true;
     setInstallingPack(file.versionId);
+    const seq = ++packPreviewSeq.current;
     try {
-      const record = await downloadAndImportModpack(file, targetInstanceId || undefined);
-      onNotice(t('store.packImported', { values: { name: record.name } }));
+      if (packPath) await discardModpackSource(packPath);
+      clearPack();
+      setPackState('loading');
+      const resolution = await downloadAndImportModpack(file, targetInstanceId || undefined);
+      if (seq !== packPreviewSeq.current) {
+        await discardModpackSource(resolution.sourcePath);
+        return;
+      }
+      showPackResolution(resolution);
+      packContentsRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
       onTasksChanged();
-      onCreated({
-        id: record.id,
-        name: record.name,
-        version: record.gameVersion,
-        loader: 'vanilla',
-        javaVersion: '',
-        playTime: 0,
-        modCount: 0,
-        status: 'ready',
-      });
     } catch (error) {
-      onNotice(errorText(error, t('store.packDownloadImportFailed')));
+      if (seq !== packPreviewSeq.current) return;
+      setPackError(errorText(error, t('store.packDownloadImportFailed')));
+      setPackState('error');
     } finally {
+      packBusy.current = false;
       setInstallingPack('');
     }
   };
@@ -1885,9 +1948,9 @@ export function StoreWorkspace({
                   target={installTarget}
                   onClose={() => setInstallTarget(null)}
                   onNotice={onNotice}
-                  onDone={async () => {
-                    setInstallTarget(null);
-                    onTasksChanged();
+                  onChanged={() => onTasksChanged()}
+                  onDone={() => {
+                    setInstallTarget(current => current === installTarget ? null : current);
                   }}
                 />
 
@@ -2577,6 +2640,7 @@ export function StoreWorkspace({
           */}
           {category === 'world' && (
             <CurseForgePanel
+              key={versionContext}
               kind="world"
               instance={instances.find(item => item.id === targetInstanceId)}
               language={language}
@@ -2618,13 +2682,17 @@ export function StoreWorkspace({
                   <Button onClick={() => void runPackSearch()} icon={<Search size={15} />}>
                     {t('store.search')}
                   </Button>
-                  <Button variant="ghost" onClick={() => void pickPack()} icon={<Package size={15} />}>
+                  <Button variant="ghost" disabled={importing || installingPack !== '' || packState === 'loading'} onClick={() => void pickPack()} icon={<Package size={15} />}>
                     {t('store.packImportLocal')}
+                  </Button>
+                  <Button variant="ghost" onClick={() => void pickPack(true)} disabled={importing || installingPack !== '' || packState === 'loading'}>
+                    {t('store.packImportFolder')}
                   </Button>
                   {packPath && (
                     <Button
                       variant="ghost"
-                      onClick={() => { setPackPath(''); setPackPreview(null); setPackState('idle'); setPackError(''); }}
+                      disabled={importing || installingPack !== '' || packState === 'loading'}
+                      onClick={() => void cancelPack()}
                     >
                       {t('common.cancel')}
                     </Button>
@@ -2650,8 +2718,8 @@ export function StoreWorkspace({
                     </span>
                   </div>
 
-                  {packSearchState === 'error' && (
-                    <div className={styles.errorRow} role="alert"><span>{packSearchError}</span></div>
+                  {(packSearchState === 'error' || packVersionsState === 'error' || mrPackVersionsState === 'error') && (
+                    <div className={styles.errorRow} role="alert"><span>{packDetail.error || mrPackDetail.error || packSearchError}</span></div>
                   )}
 
                   {packSearchState === 'ready' && packHits.length === 0 && mrPackHits.length === 0 && (
@@ -2677,7 +2745,7 @@ export function StoreWorkspace({
                           </div>
                           <Button
                             size="sm"
-                            disabled={installingPack !== ''}
+                            disabled={installingPack !== '' || importing || packState === 'loading' || packPath !== ''}
                             onClick={() => void openPackVersions(hit)}
                           >
                             {expandedPack === hit.projectId ? t('cf.collapse') : t('cf.chooseVersion')}
@@ -2737,7 +2805,7 @@ export function StoreWorkspace({
                                       <Button
                                         size="sm"
                                         variant="secondary"
-                                        disabled={file.url === null || installingPack !== ''}
+                                        disabled={file.url === null || installingPack !== '' || importing || packState === 'loading' || packPath !== ''}
                                         title={t('store.directDownloadHint')}
                                         onClick={() => void savePack(file, hit.title)}
                                       >
@@ -2745,7 +2813,7 @@ export function StoreWorkspace({
                                       </Button>
                                       <Button
                                         size="sm"
-                                        disabled={file.url === null || installingPack !== ''}
+                                        disabled={file.url === null || installingPack !== '' || importing || packState === 'loading' || packPath !== ''}
                                         icon={<Download size={13} />}
                                         onClick={() => void installPack(file)}
                                       >
@@ -2793,7 +2861,7 @@ export function StoreWorkspace({
                           </div>
                           <Button
                             size="sm"
-                            disabled={installingPack !== ''}
+                            disabled={installingPack !== '' || importing || packState === 'loading' || packPath !== ''}
                             onClick={() => void openMrPackVersions(hit)}
                           >
                             {expandedMrPack === hit.projectId ? t('cf.collapse') : t('cf.chooseVersion')}
@@ -2834,7 +2902,7 @@ export function StoreWorkspace({
                                 <div className={styles.versionActions}>
                                   <Button
                                     size="sm"
-                                    disabled={installingPack !== ''}
+                                    disabled={installingPack !== '' || importing || packState === 'loading' || packPath !== ''}
                                     icon={<Download size={13} />}
                                     onClick={() => void installMrPack(version)}
                                   >
@@ -2898,14 +2966,21 @@ export function StoreWorkspace({
                 </div>
               )}
 
-              <div className={styles.resultsCard}>
+              <div className={styles.resultsCard} ref={packContentsRef}>
                 <div className={styles.resultsHeader}>
                   <h2>{t('store.packContents')}</h2>
                 </div>
 
-                {packState === 'error' && (
+                {packError && (
                   <div className={styles.errorRow} role="alert">
                     <span>{packError}</span>
+                  </div>
+                )}
+                {packState === 'loading' && <div className={styles.resultsMeta}>{t('store.loading')}</div>}
+                {packPath && !packPreview && packState !== 'loading' && (
+                  <div className={styles.filterActions}>
+                    <Button variant="secondary" onClick={() => void refreshPack()}>{t('common.retry')}</Button>
+                    <Button variant="ghost" onClick={() => void cancelPack()}>{t('common.cancel')}</Button>
                   </div>
                 )}
 
@@ -2937,14 +3012,31 @@ export function StoreWorkspace({
                         })}
                       </span>
                     </div>
+                    {packMissing.filter(file => file.required).map(file => (
+                      <div className={styles.versionRow} key={`${file.projectId}:${file.fileId}`}>
+                        <div className={styles.versionMain}>
+                          <div className={styles.versionTitle}><strong>{file.fileName ?? `fileID ${file.fileId}`}</strong></div>
+                          <span className={styles.versionMeta}>projectID {file.projectId} · fileID {file.fileId} · {file.reason}</span>
+                        </div>
+                        <a href={`https://www.curseforge.com/projects/${file.projectId}/files/${file.fileId}`} target="_blank" rel="noreferrer">{t('cf.manual')}</a>
+                      </div>
+                    ))}
                     <div className={styles.filterActions}>
                       <Button
-                        disabled={importing}
+                        disabled={importing || packState !== 'ready' || packMissing.some(file => file.required)}
                         icon={<Download size={15} />}
                         onClick={() => void doImport()}
                       >
                         {importing ? t('store.loading') : t('store.packConfirmImport')}
                       </Button>
+                      {packMissing.some(file => file.required && file.canSelectLocal) && (
+                        <>
+                          <Button variant="secondary" disabled={importing || packState === 'loading'} onClick={() => void selectPackSupplements()}>{t('store.packSelectFiles')}</Button>
+                          <Button variant="secondary" disabled={importing || packState === 'loading'} onClick={() => void selectPackSupplements(true)}>{t('store.packSelectFolder')}</Button>
+                        </>
+                      )}
+                      {(packMissing.some(file => file.required) || packError) && <Button variant="ghost" disabled={importing || packState === 'loading'} onClick={() => void refreshPack()}>{t('common.retry')}</Button>}
+                      <Button variant="ghost" disabled={importing || packState === 'loading'} onClick={() => void cancelPack()}>{t('common.cancel')}</Button>
                     </div>
                   </>
                 )}

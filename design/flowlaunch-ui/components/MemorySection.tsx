@@ -31,6 +31,7 @@ interface MemorySectionProps {
   mode: 'auto' | 'custom';
   memoryMb: number;
   optimizeMemory: boolean;
+  optimizeAvailable?: boolean;
   /** 当前实例的模组数量，用于自动配置的档位估算。 */
   modCount?: number;
   onModeChange: (mode: 'auto' | 'custom') => void;
@@ -47,7 +48,7 @@ function deviceNote(language: Parameters<typeof renderLocalized>[0], device: Dev
   return device ? renderLocalized(language, device.note) : '';
 }
 
-export function MemorySection({ mode, memoryMb, optimizeMemory, modCount = 0, onModeChange, onMemoryChange, onOptimizeChange }: MemorySectionProps) {
+export function MemorySection({ mode, memoryMb, optimizeMemory, optimizeAvailable = false, modCount = 0, onModeChange, onMemoryChange, onOptimizeChange }: MemorySectionProps) {
   const { t, language } = useI18n();
   const [device, setDevice] = useState<DeviceMemory | null>(null);
   const [editing, setEditing] = useState(false);
@@ -212,6 +213,7 @@ export function MemorySection({ mode, memoryMb, optimizeMemory, modCount = 0, on
         <button
           type="button"
           role="switch"
+          disabled={!optimizeAvailable}
           aria-checked={optimizeMemory}
           aria-label={t('memory.optimize')}
           className={`${styles.switch} ${optimizeMemory ? styles.switchOn : ''}`}

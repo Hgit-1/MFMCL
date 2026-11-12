@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import {
   ACTIVE_TASK_STATUSES as ACTIVE_TASK_STATUSES_IMPORTED,
@@ -19,7 +19,7 @@ import { CreateInstanceDialog } from '../components/CreateInstanceDialog';
 import { PluginWorkspace } from '../components/PluginWorkspace';
 import { LOCALES, useI18n } from '../utils/i18n';
 import type { MessageKey } from '../utils/i18n/messages/zh-CN';
-import { readPrefs, DEFAULT_PREFS, SETTINGS_STORAGE_KEY, type LauncherPrefs } from '../utils/launcherPrefs';
+import { readPrefs, prefsFromSettings, savePrefs, type LauncherPrefs } from '../utils/launcherPrefs';
 import { primeDeviceMemory } from '../utils/memory';
 import { confirmAction } from '../utils/confirm';
 import { isOnboardingPending, markOnboardingComplete, resetOnboarding } from '../utils/onboarding';
@@ -55,7 +55,7 @@ import { Onboarding } from '../components/Onboarding';
 import type { TabId } from '../components/SettingsPanel';
 import { BackgroundLayer } from '../components/BackgroundLayer';
 import { autoAccentOf } from '../components/BackgroundSection';
-import { applyAccent, DEFAULT_ACCENT } from '../utils/accent';
+import { applyAccent, manualAccent, pickAccent } from '../utils/accent';
 import {
   readBackgroundSetting,
   type BackgroundSetting,
@@ -64,14 +64,14 @@ import { iconForLoader } from '../utils/store/loaders';
 import { Image as ImageIcon, Map, Package, Puzzle } from 'lucide-react';
 import {
   DEFAULT_INSTANCE_JAVA,
-  javaRequirementFor,
   loadInstanceJavaSettings,
   loadJavaList,
-  resolveJava,
+  saveJavaList,
   saveInstanceJavaSettings,
   type InstanceJavaSetting,
   type JavaRuntime,
 } from '../utils/java';
+import { flushPendingJavaPreferences, loadJavaPreferences, loadPersistedJavaState, localizeJavaPreferenceError } from '../utils/javaNative';
 import type { GameInstance, Account, AppContext, DownloadTask } from '../types';
 import type { StoreCategory } from '../utils/store/types';
 import { CATEGORY_KEYS } from '../utils/store/types';
@@ -102,13 +102,14 @@ import {
   listInstances,
   listDownloadTasks,
   clearFinishedDownloadTasks,
-  listJavaRuntimes,
   listMods,
   onDownloadProgress,
   onGameLogLine,
   onGameProcess,
   onLaunchProgress,
   onInstallationTask,
+  onJavaRuntimeInstalled,
+  onModpackImportWarnings,
   prefsToSettings,
   pluginSaveState,
   previewFileProgress,
@@ -335,6 +336,7 @@ const TASK_FILES_VISIBLE = 5;
  * 标识符好，也比整条进度条消失好。
  */
 const LAUNCH_STAGE_KEYS: Record<string, MessageKey> = {
+  java_installing: 'app.javaInstalling',
   preparing: 'app.launchStagePreparing',
   authenticating: 'app.launchStageAuthenticating',
   building: 'app.launchStageBuilding',
@@ -391,62 +393,7 @@ function toJavaRuntime(runtime: JavaRuntimeInfo): JavaRuntime {
  * （透明度、标题栏样式等）保持默认值即可，反正没有任何代码会看它们。
  */
 function prefFromSettings(settings: LauncherSettings, current?: LauncherPrefs): LauncherPrefs {
-  return {
-    ...DEFAULT_PREFS,
-    /*
-     * 皮肤只存在前端，后端没有对应字段。
-     *
-     * 这里必须显式保留调用方当前的皮肤，否则每次从后端同步设置都会把它冲回
-     * `DEFAULT_PREFS.skin`——用户上传的皮肤在重启、或随便保存一次设置之后就
-     * 悄悄没了，而界面上看不出任何操作与它的关联。
-     *
-     * 调用方通过 `prefFromSettings(settings, current)` 传入现值；省略时退回默认值
-     * （首次加载，本来就没有可保留的）。
-     */
-    skin: current?.skin ?? DEFAULT_PREFS.skin,
-    theme: settings.themeMode,
-    themePreset: settings.themePreset,
-    customAccent: settings.customAccent,
-    showGameLog: settings.showGameLog,
-    javaPath: settings.javaPath ?? '',
-    memoryMb: settings.memoryMb,
-    memoryMode: settings.memoryMode,
-    windowWidth: settings.windowWidth,
-    windowHeight: settings.windowHeight,
-    extraJvmArgs: settings.extraJvmArgs,
-    gameArgs: settings.gameArgs,
-    preLaunchCommand: settings.preLaunchCommand,
-    fullscreen: settings.fullscreen,
-    /*
-     * 下载目录必须在这里带上：`DEFAULT_PREFS` 里是空串，不映射的话每次从后端
-     * 拉设置都会把用户在设置面板里填的目录冲掉，内容商店侧栏刚选的目录也会
-     * 在下次刷新时消失。
-     */
-    downloadDirectory: settings.downloadDirectory ?? '',
-    /* 引擎路径同样必须映射：`DEFAULT_PREFS` 里是空串，不带上就会在每次刷新时被冲掉。 */
-    llamaServerPath: settings.llamaServerPath ?? '',
-    /*
-     * 游戏根目录与缓存目录同理。
-     *
-     * 这两个字段之前在界面上是可填的，但没有进 `prefsToSettings`，所以填了也不
-     * 会保存——重启后又变回空，看起来像「设置没生效」。现在它们真的写进后端，
-     * 也真的读回来。
-     */
-    gameDirectory: settings.gameRoot ?? '',
-    cacheDirectory: settings.cacheDirectory ?? '',
-    launcherLogEnabled: settings.launcherLogEnabled,
-    clearFinishedTasks: settings.clearFinishedTasks,
-    launcherVisibility: settings.launcherVisibility,
-    downloadSource: settings.download.source,
-    maxConcurrentDownloads: settings.download.maxConcurrentDownloads,
-    connectionsPerFile: settings.download.connectionsPerFile,
-    aria2Enabled: settings.download.aria2Enabled,
-    // 后端拒绝非 normal 优先级与「启动后关闭启动器」，界面固定显示它们唯一允许的值。
-    processPriority: 'normal',
-    closeAfterLaunch: false,
-    checkUpdates: settings.updatePolicy === 'notify',
-    announcementPolicy: settings.updatePolicy,
-  };
+  return prefsFromSettings(settings, current);
 }
 
 /**
@@ -651,6 +598,13 @@ function App() {
    * 保存。这里存一份，在设置面板保存后同步，避免管理页读到一个陈旧的值。
    */
   const [globalPrefs, setGlobalPrefs] = useState<LauncherPrefs>(() => readPrefs());
+  const [accentPreview, setAccentPreview] = useState<string | null>(null);
+  const settingsRevision = useRef(0);
+  const themeRevision = useRef(0);
+  const previewTheme = (next: LauncherPrefs['theme']) => {
+    themeRevision.current += 1;
+    setTheme(next);
+  };
   /** 后端返回的原始设置。保存时必须整份回传，否则未展示的字段会被默认值覆盖。 */
   const [naturalSettings, setNaturalSettings] = useState<LauncherSettings | null>(null);
   /**
@@ -810,14 +764,19 @@ function App() {
    */
   useEffect(() => {
     let cancelled = false;
+    const revision = settingsRevision.current;
+    const initialThemeRevision = themeRevision.current;
     void (async () => {
       const firstError: string[] = [];
 
-      const [records, profiles, settings, runtimes] = await Promise.all([
-        listInstances().catch(error => { firstError.push(errorText(error, '无法读取实例列表。')); return [] as InstanceRecord[]; }),
-        listAccounts().catch(error => { firstError.push(errorText(error, '无法读取账户列表。')); return [] as AccountProfile[]; }),
-        getSettings().catch(error => { firstError.push(errorText(error, '无法读取设置。')); return null as LauncherSettings | null; }),
-        listJavaRuntimes().catch(() => [] as JavaRuntimeInfo[]),
+      const [records, profiles, settings, javaState] = await Promise.all([
+        listInstances().catch(error => { firstError.push(errorText(error, t('app.instancesReadFailed'))); return [] as InstanceRecord[]; }),
+        listAccounts().catch(error => { firstError.push(errorText(error, t('app.accountsReadFailed'))); return [] as AccountProfile[]; }),
+        getSettings().catch(error => { firstError.push(errorText(error, t('app.settingsReadFailed'))); return null as LauncherSettings | null; }),
+        isDesktopShell() ? loadPersistedJavaState().catch(error => {
+          firstError.push(errorText(error, t('app.settingsReadFailed')));
+          return null;
+        }) : Promise.resolve(null),
       ]);
 
       // 模组数与实例并发取；读取失败的实例按 0 处理，不影响列表本身。
@@ -844,13 +803,16 @@ function App() {
       // 后端用 `selected` 标记当前账户；没有选中项时保持未登录状态。
       setCurrentAccount(mappedAccounts.find((_, index) => profiles[index].selected));
 
-      if (settings) {
+      if (settings && settingsRevision.current === revision) {
         setGlobalPrefs(previous => prefFromSettings(settings, previous));
         setGlobalJavaPath(settings.javaPath ?? '');
         setNaturalSettings(settings);
+        if (themeRevision.current === initialThemeRevision) setTheme(settings.themeMode);
       }
-      // Java 列表：后端的探测结果覆盖 localStorage 里的旧快照。
-      setJavaRuntimes(runtimes.map(toJavaRuntime));
+      if (javaState) {
+        setJavaRuntimes(javaState.runtimes);
+        setInstanceJavaSettings(javaState.preferences.instanceRules);
+      }
 
       /*
        * 首屏也要读一次任务列表。
@@ -911,6 +873,17 @@ function App() {
 
     void (async () => {
       const subscriptions = await Promise.all([
+        onJavaRuntimeInstalled(payload => {
+          setJavaRuntimes(current => {
+            const next = [...current.filter(runtime => runtime.path !== payload.path), toJavaRuntime(payload)];
+            saveJavaList(next);
+            return next;
+          });
+        }),
+        onModpackImportWarnings(payload => {
+          const count = payload.filter(file => !file.required).length;
+          if (count) setToast(t('app.optionalFilesSkipped', { values: { count } }));
+        }),
         onInstallationTask(payload => {
           /*
            * 先更新这一条任务，再决定要不要清文件级进度。
@@ -947,6 +920,14 @@ function App() {
            *
            * `taskId` 一并保存：文件行要挂到对应任务卡片的展开区里。没有它就只能
            * 全局混排，并发安装时两个任务的文件会互相穿插。
+           *
+           * ## 这里只写文件行，不改任务级状态
+           *
+           * 下载引擎在写完一个文件后会发一条 `verifying` 事件（比对哈希），那是
+           * 文件级的动作。以前这里顺手把整条任务切成「校验中」，于是只要有任意一个
+           * 文件在校验，任务卡就写「校验中」并一直停在那里——而队列里通常还有几百个
+           * 文件在下载。用户看到「校验中 + 86%」会以为卡死，实际是两条不同层级的
+           * 信息被混成了一条。任务状态只由后端的任务事件决定。
            */
           setProgress(current => {
             const next = current.filter(item => item.artifactId !== payload.artifactId);
@@ -955,7 +936,7 @@ function App() {
         }),
         onGameProcess(payload => {
           setGameStatus(current => ({ ...current, [payload.instanceId]: { status: payload.status, logPath: payload.logPath } }));
-          if (payload.status === 'crashed') setToast('游戏异常退出；可在实例管理中查看日志。');
+          if (payload.status === 'crashed') setToast(t('app.crashedNotice'));
           // 进程结束后实例状态可能已经变化，刷新列表让按钮回到正确状态。
           void refreshInstances();
         }),
@@ -1000,22 +981,21 @@ function App() {
    * 而不是数据损失。
    */
   const applyOnboardingPrefs = (next: LauncherPrefs) => {
-    setGlobalPrefs(next);
-    try {
-      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // 存储被禁用时只在本次会话生效。
-    }
+    settingsRevision.current += 1;
     void (async () => {
       try {
         const base = naturalSettings ?? (await getSettings());
         const merged = prefsToSettings(next, base);
         await saveSettingsNative(merged);
+        const confirmed = prefsFromSettings(merged, next);
+        savePrefs(confirmed);
         setNaturalSettings(merged);
-        setGlobalPrefs(previous => prefFromSettings(merged, previous));
+        setGlobalPrefs(confirmed);
         setGlobalJavaPath(merged.javaPath ?? '');
       } catch (error) {
-        setToast(errorText(error, '无法保存引导里的设置，稍后可在设置页重新调整。'));
+        setToast(errorText(error, t('settings.saveFailed')));
+      } finally {
+        setAccentPreview(null);
       }
     })();
   };
@@ -1038,6 +1018,7 @@ function App() {
     // 用后端返回的 id 精确定位，而不是按名字猜：同名实例是允许的。
     const mapped = toGameInstance(record);
     setSelectedInstance(mapped);
+    setContext('home');
     /*
      * 带加载器的实例建好后，加载器只是被「记下来」了——真正的下载发生在用户点
      * 「安装」的时候（与整合包同一个流程）。这里如实说明，而不是给一个「已安装
@@ -1066,7 +1047,10 @@ function App() {
     try {
       await deleteInstanceNative(instance.id, deleteFiles);
       setPendingDelete(null);
-      if (selectedInstance?.id === instance.id) setSelectedInstance(undefined);
+      if (selectedInstance?.id === instance.id) {
+        setSelectedInstance(undefined);
+        if (context === 'instance-detail') setContext('home');
+      }
       /*
        * 清掉这个实例的自定义图标。
        *
@@ -1079,7 +1063,7 @@ function App() {
       await refreshDownloadTasks();
       setToast(t('instance.deleted', { values: { name: instance.name } }));
     } catch (error) {
-      setToast(errorText(error, '删除实例失败。'));
+      setToast(errorText(error, t('app.deleteFailed')));
       await refreshInstances();
     }
   };
@@ -1113,26 +1097,24 @@ function App() {
     repairing = false,
   ) => {
     if (!isDesktopShell()) {
-      setToast(repairing
-        ? '修复需要桌面应用后端；浏览器里只能预览界面。'
-        : '安装需要桌面应用后端；浏览器里只能预览界面。');
+      setToast(t('native.requiresDesktop'));
       return;
     }
     // 商店里能直接触发安装的是「原版游戏」条目：它对应一个真实的实例安装。
     // Mod / 整合包的安装入口在商店行内，由 StoreWorkspace 直接调后端命令。
     const target = instances.find(item => item.id === targetInstance) ?? selectedInstance;
     if (!target) {
-      setToast('请先创建一个实例，再安装游戏文件。');
+      setToast(t('app.needInstance'));
       return;
     }
     void (async () => {
       try {
-        setToast(repairing ? `正在校验并修复 ${name}…` : `正在安装 ${name}…`);
+        setToast(t(repairing ? 'app.repairing' : 'app.installingNamed', { values: { name } }));
         await installInstanceNative(target.id);
         await refreshInstances();
-        setToast(repairing ? `${name} 已修复完成。` : `${name} 安装完成。`);
+        setToast(t(repairing ? 'app.repaired' : 'app.installed', { values: { name } }));
       } catch (error) {
-        setToast(errorText(error, repairing ? '修复失败。' : '安装失败。'));
+        setToast(errorText(error, repairing ? t('app.repairFailed') : t('app.installFailed')));
         await refreshInstances();
       } finally {
         await refreshDownloadTasks();
@@ -1198,9 +1180,11 @@ function App() {
   }, [context]);
 
   const persistInstanceJava = (instanceId: string, setting: InstanceJavaSetting) => {
-    const next = { ...instanceJavaSettings, [instanceId]: setting };
-    setInstanceJavaSettings(next);
-    saveInstanceJavaSettings(next);
+    setInstanceJavaSettings(current => {
+      const next = { ...current, [instanceId]: setting };
+      saveInstanceJavaSettings(next);
+      return next;
+    });
   };
 
   /**
@@ -1264,7 +1248,7 @@ function App() {
       })
       .catch(error => {
         setInstanceOverrides(previous);
-        setToast(errorText(error, '无法保存实例设置。'));
+        setToast(errorText(error, t('settings.saveFailed')));
       });
   };
 
@@ -1410,14 +1394,14 @@ function App() {
     if (!task) return;
     // 后端按实例定位任务；没有 instanceId 的行无法定位，直接说明而不是静默失败。
     if (!task.instanceId) {
-      setToast('这条任务没有关联实例，无法取消。');
+      setToast(t('app.taskMissingInstance'));
       return;
     }
     void (async () => {
       try {
         await controlDownload(task.instanceId!, 'cancel');
       } catch (error) {
-        setToast(errorText(error, '无法取消此任务。'));
+        setToast(errorText(error, t('app.cancelFailed')));
       }
     })();
   };
@@ -1568,7 +1552,7 @@ function App() {
       const account = currentAccount;
       if (!account) {
         setShowAccountModal(true);
-        setToast('请先添加一个账户。');
+        setToast(t('app.needAccount'));
         return;
       }
       let offlineConfirmed = false;
@@ -1580,31 +1564,14 @@ function App() {
          * `invalid type: map, expected a boolean`。
          */
         offlineConfirmed = await confirmAction(
-          `你正在使用离线档案「${account.username}」启动。\n\n离线档案不验证 Microsoft 游戏授权，通常只能连接允许离线身份的服务器。仍要继续吗？`,
+          t('app.offlineConfirm', { values: { name: account.username } }),
         );
         if (!offlineConfirmed) return;
       }
       try {
-        /*
-         * 实例级 Java 设置在这里解析成唯一路径。
-         *
-         * 后端只有一份 `settings.java_path`（全局值），它没有运行时列表，也不该
-         * 知道「版本范围 / 目录」这些界面侧概念。所以合并放在这里：实例设置优先，
-         * 只有实例是「跟随全局」时才用全局路径。
-         *
-         * 解析不出来时传 null：后端会退回全局值并自行探测，比传一个空串好——
-         * 空串会被当成「用户指定了一个不存在的路径」。
-         */
-        const javaSetting = instanceJavaSettings[instance.id];
-        const resolvedJava = javaSetting && javaSetting.mode !== 'auto'
-          ? resolveJava({
-            setting: javaSetting,
-            requirement: javaRequirementFor(instance),
-            runtimes: javaRuntimes,
-            globalPath: globalPrefs.javaPath,
-          }).runtime?.path ?? null
-          : null;
-        await launchInstanceNative(instance.id, account.id, offlineConfirmed, resolvedJava);
+        await flushPendingJavaPreferences(instance.id);
+        await loadJavaPreferences();
+        await launchInstanceNative(instance.id, account.id, offlineConfirmed, null);
       } catch (error) {
         /*
          * 启动失败要把进度条收掉。
@@ -1613,7 +1580,7 @@ function App() {
          * 那条进度条会一直停在中间，看起来像卡死。这里主动清空，把错误交给 toast。
          */
         setLaunchProgress(null);
-        setToast(errorText(error, '启动失败；请确认此实例已安装完成。'));
+        setToast(errorText(localizeJavaPreferenceError(error, language), t('app.launchFailed')));
       }
     })();
   };
@@ -1621,8 +1588,8 @@ function App() {
   /** 停止游戏进程。需要二次确认：未保存的进度会丢失。 */
   const stopInstance = (instanceId: string) => {
     void (async () => {
-      if (!(await confirmAction('关闭正在运行的 Minecraft 进程？未保存的游戏进度可能会丢失。'))) return;
-      void stopGame(instanceId).catch(error => setToast(errorText(error, '无法关闭游戏进程。')));
+      if (!(await confirmAction(t('app.stopConfirm')))) return;
+      void stopGame(instanceId).catch(error => setToast(errorText(error, t('app.stopFailed'))));
     })();
   };
 
@@ -1679,7 +1646,7 @@ function App() {
       if (!(await confirmAction(t('app.signOutConfirm', { values: { name: account.username } })))) return;
       const other = recentAccounts.find(item => item.id !== account.id);
       if (!other) {
-        setToast('这是唯一的账户；请先添加另一个账户再退出。');
+        setToast(t('app.onlyAccount'));
         return;
       }
       try {
@@ -1690,7 +1657,7 @@ function App() {
         setCurrentAccount(mapped.find((_, index) => profiles[index].selected));
         setToast(t('app.signedOut'));
       } catch (error) {
-        setToast(errorText(error, '切换账户失败。'));
+        setToast(errorText(error, t('app.accountFailed')));
       }
     })();
   };
@@ -1730,28 +1697,44 @@ function App() {
   };
 
   const persistDownloadSource = async (source: string) => {
+    if (source !== 'auto' && source !== 'official' && source !== 'bmclapi' && source !== 'mixed') return;
+    settingsRevision.current += 1;
     const next = { ...globalPrefs, downloadSource: source };
     setGlobalPrefs(next);
     try {
       const base = naturalSettings ?? (await getSettings());
       const merged = prefsToSettings(next, base);
       await saveSettingsNative(merged);
+      const confirmed = prefsFromSettings(merged, next);
+      savePrefs(confirmed);
+      setGlobalPrefs(confirmed);
       setNaturalSettings(merged);
     } catch (error) {
       // 保存失败要回滚显示，否则界面会停在一个后端并不认可的值上。
       setGlobalPrefs(globalPrefs);
-      setToast(errorText(error, '无法保存下载源设置。'));
+      setToast(errorText(error, t('app.downloadSourceFailed')));
     }
   };
 
-  const toggleTheme = () => {    const newTheme = resolvedTheme === 'light' ? 'dark' : 'light';
-    setTheme(newTheme);
-    // 主题模式是后端设置的一部分；写回后端才能让下次启动保持一致。
-    if (naturalSettings) {
-      const next: LauncherSettings = { ...naturalSettings, themeMode: newTheme };
-      setNaturalSettings(next);
-      void saveSettingsNative(next).catch(() => undefined);
-    }
+  const toggleTheme = () => {
+    const nextTheme = resolvedTheme === 'light' ? 'dark' : 'light';
+    const previousTheme = theme;
+    settingsRevision.current += 1;
+    previewTheme(nextTheme);
+    void (async () => {
+      try {
+        const base = naturalSettings ?? await getSettings();
+        const next: LauncherSettings = { ...base, themeMode: nextTheme };
+        await saveSettingsNative(next);
+        const confirmed = prefsFromSettings(next, { ...globalPrefs, theme: nextTheme });
+        savePrefs(confirmed);
+        setGlobalPrefs(confirmed);
+        setNaturalSettings(next);
+      } catch (error) {
+        setTheme(previousTheme);
+        setToast(errorText(error, t('settings.saveFailed')));
+      }
+    })();
   };
 
   /*
@@ -1784,32 +1767,6 @@ function App() {
   }, [background.mode, background.images.length]);
 
   /**
-   * 应用强调色。
-   *
-   * 三种情况：
-   *   1. 跟随背景配色且能取到颜色 → 用背景的颜色；
-   *   2. 跟随背景、有素材但还没算出颜色（图片尚在加载）→ 先不动，避免闪一下默认蓝；
-   *   3. 跟随背景但已经没有素材（用户清空了背景）→ 回落到手动选的强调色。
-   *
-   * 第 3 条不能与第 2 条合并：两者都是「auto 模式下取不到颜色」，但含义相反。
-   * 合并之后清空背景会把上一个视频/图片的强调色永远留在界面上——用户已经删掉了
-   * 那张图，界面却还是它的颜色。
-   *
-   * 依赖里带上 `resolvedTheme`：`applyAccent` 会按主题算文字色，切主题时需要重算。
-   */
-  useEffect(() => {
-    const manual = globalPrefs.customAccent || DEFAULT_ACCENT;
-    const auto = autoAccentOf(background, slideIndex);
-    if (background.accentMode === 'auto') {
-      if (auto) applyAccent(auto);
-      else if (background.mode === 'none') applyAccent(manual);
-      // 否则是「有素材但颜色还没算出来」，保持现状，避免闪一下默认色。
-      return;
-    }
-    applyAccent(manual);
-  }, [background, slideIndex, globalPrefs.customAccent, resolvedTheme]);
-
-  /**
    * 每分钟检查一次季节是否变了。
    *
    * 之所以不是「每分钟重算一次季节」：`resolveSeason` 的返回值在 99.99% 的分钟内
@@ -1830,29 +1787,16 @@ function App() {
     return () => window.clearInterval(timer);
   }, [ariaSetting]);
 
-  /**
-   * 把季节写进界面，并保证关掉插件后界面回到用户原来的配色。
-   *
-   * `applySeasonTheme` 返回的撤销函数只恢复它自己改过的东西；强调色由这里恢复，
-   * 因为只有这一层知道用户原本用的是哪个（手选的，或从背景取的）。
-   */
-  useEffect(() => {
-    if (!ariaSeason) return;
-    const undo = applySeasonTheme(ariaSeason, resolvedTheme === 'dark', ariaSetting.tintSurfaces);
-    return () => {
-      undo();
-      /*
-       * 撤销之后再按原规则重算一次强调色。
-       *
-       * 不重算的话，被撤销的只是 `--color-primary-500` 这一条，而
-       * `--color-primary-600/700`、solid、tonal、文字色都还停留在季节色的推导
-       * 结果上，界面会变成「主色回去了、按钮还是樱粉」的混合状态。
-       */
-      const manual = globalPrefs.customAccent || DEFAULT_ACCENT;
-      const auto = autoAccentOf(background, slideIndex);
-      applyAccent(background.accentMode === 'auto' && auto ? auto : manual);
-    };
-  }, [ariaSeason, ariaSetting.tintSurfaces, resolvedTheme, background, slideIndex, globalPrefs.customAccent]);
+  // One writer for the entire token family: enabled season > background auto >
+  // manual draft/confirmed preset. Cleanup only removes Aria's decoration;
+  // the next setup resolves current state, never a captured accent snapshot.
+  useLayoutEffect(() => {
+    if (ariaSeason) {
+      return applySeasonTheme(ariaSeason, resolvedTheme === 'dark', ariaSetting.tintSurfaces);
+    }
+    const manual = accentPreview ?? manualAccent(globalPrefs);
+    applyAccent(pickAccent(manual, autoAccentOf(background, slideIndex)));
+  }, [ariaSeason, ariaSetting.tintSurfaces, resolvedTheme, background, slideIndex, globalPrefs.customAccent, globalPrefs.themePreset, accentPreview]);
 
   if (!eulaAccepted) {
     return (
@@ -1876,8 +1820,8 @@ function App() {
           onPrefsChange={applyOnboardingPrefs}
           /* 传当前主题而不是让它读 prefs.theme：后者与真正生效的存储不同源。 */
           theme={theme}
-          onThemeChange={setTheme}
-          onAccentChange={applyAccent}
+          onThemeChange={previewTheme}
+          onAccentChange={setAccentPreview}
           runtimes={javaRuntimes}
           onRuntimesChange={setJavaRuntimes}
           dark={resolvedTheme === 'dark'}
@@ -2212,6 +2156,7 @@ function App() {
             launching={launchProgress}
             running={Boolean(dashboardTarget && gameStatus[dashboardTarget.id]?.status === 'running')}
             onLaunch={launchInstance}
+            onInstall={instance => queueStoreDownload(instance.name, 'game', instance.id, instance.status === 'error')}
             onStop={stopInstance}
             onSelectTarget={selectDefaultTarget}
             onCreate={createNewInstance}
@@ -2337,7 +2282,7 @@ function App() {
                       */}
                       {gameStatus[instance.id]?.status === 'running' && (
                         <div className={styles.lastPlayed}>
-                          {gameLogs[instance.id] ?? '游戏进程已启动'}
+                          {gameLogs[instance.id] ?? t('app.gameRunning')}
                         </div>
                       )}
                     </div>
@@ -2475,7 +2420,7 @@ function App() {
               <div>
                 <h1>{t('app.downloads')}</h1>
                 {/* 说明这一页展示的是什么：任务级状态，不是文件级流水。 */}
-                <p>一个任务包含多个文件；下方「正在下载的文件」只显示当前传输的那几个。</p>
+                <p>{t('app.downloadSummary')}</p>
               </div>
               {/*
                 手动清理。只在「确实有已结束的任务」时出现：列表全是进行中的时候
@@ -2601,7 +2546,7 @@ function App() {
                         <div className={styles.taskActions}>
                           {task.instanceId && gameStatus[task.instanceId]?.status === 'running' && (
                             <Button variant="ghost" size="sm" onClick={() => stopInstance(task.instanceId!)}>
-                              关闭游戏
+                              {t('app.closeGame')}
                             </Button>
                           )}
                           {/*
@@ -2788,8 +2733,12 @@ function App() {
 
       {showSettings && <SettingsPanel
         theme={theme}
-        onThemeChange={setTheme}
-        onClose={() => { setShowSettings(false); setSettingsTab(undefined); setGlobalPrefs(readPrefs()); }}
+        onThemeChange={previewTheme}
+        onAccentPreview={setAccentPreview}
+        onClose={() => { setAccentPreview(null); setShowSettings(false); setSettingsTab(undefined); }}
+        initialPrefs={globalPrefs}
+        initialJavaRuntimes={javaRuntimes}
+        initialInstanceJavaSetting={selectedInstance ? instanceJavaSettings[selectedInstance.id] : undefined}
         onRerunOnboarding={() => {
           // 清掉完成标记再显示引导：否则下次启动又会因为「已完成」而跳过。
           resetOnboarding();
@@ -2800,6 +2749,12 @@ function App() {
         onJavaRuntimesChange={setJavaRuntimes}
         onGlobalJavaChange={setGlobalJavaPath}
         onInstanceJavaChange={persistInstanceJava}
+        onSettingsCommitted={(settings, prefs) => {
+          settingsRevision.current += 1;
+          setNaturalSettings(settings);
+          setGlobalPrefs(prefs);
+          setGlobalJavaPath(settings.javaPath ?? '');
+        }}
         /* 背景即时生效：面板里每改一项都立刻反映到这一层之后。 */
         onBackgroundChange={setBackground}
         /* Aria：与 App 共用同一份 state，改一项立刻反映到主页与侧栏。 */
@@ -2815,12 +2770,15 @@ function App() {
           保存成功后同步本地的只读快照，让实例管理页的「跟随全局」显示新值。
         */
         onSaveSettings={async nextPrefs => {
+          settingsRevision.current += 1;
           const base = naturalSettings ?? (await getSettings());
           const next = prefsToSettings(nextPrefs, base);
           await saveSettingsNative(next);
+          const confirmed = prefsFromSettings(next, nextPrefs);
           setNaturalSettings(next);
-          setGlobalPrefs(previous => prefFromSettings(next, previous));
+          setGlobalPrefs(confirmed);
           setGlobalJavaPath(next.javaPath ?? '');
+          return confirmed;
         }}
       />}
 
