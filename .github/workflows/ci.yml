@@ -41,6 +41,15 @@ jobs:
             sleep 1
           done
           node design/tools/interaction-regression.cjs
+      - name: Plugin install regression
+        shell: bash
+        run: |
+          npm run dev > /tmp/mfmcl-vite.log 2>&1 &
+          for attempt in {1..40}; do
+            if curl --silent --fail http://127.0.0.1:5173/ > /dev/null; then break; fi
+            sleep 1
+          done
+          node design/tools/plugin-install-regression.cjs
 
   rust-tests:
     name: Rust tests (${{ matrix.os }})

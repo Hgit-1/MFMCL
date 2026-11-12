@@ -16,10 +16,11 @@
 import { useRef, useState } from 'react';
 import { Download, FolderOpen, Link2, RefreshCw, Store } from 'lucide-react';
 import { useI18n } from '../utils/i18n';
-import { errorText, isDesktopShell } from '../utils/native';
+import { errorText, isDesktopShell, pickFile as pickNativeFile } from '../utils/native';
 import {
   installPluginFromFile,
   installPluginFromUrl,
+  PLUGIN_PACKAGE_EXTENSIONS,
   validateSourceUrl,
   normalizeSourceUrl,
   type InstalledPluginRecord,
@@ -44,49 +45,41 @@ export function PluginImportBar({
   const [url, setUrl] = useState('');
   const [urlOpen, setUrlOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const importLock = useRef(false);
   const desktop = isDesktopShell();
 
-  /**
-   * 打开本机文件选择。
-   *
-   * 用隐藏的 `<input type="file">` 而不是 Tauri 的对话框插件：文件内容要交给
-   * 后端按字节读，而 `<input>` 给出的路径在桌面外壳里是真实路径。走对话框插件
-   * 要多一条 capability 授权，换来的只是「看起来更像原生」——不值。
-   */
-  const pickFile = () => {
+  const pickFile = async () => {
     if (!desktop) {
       onNotice(t('plugin.installInvalid'));
       return;
     }
-    fileRef.current?.click();
-  };
-
-  const installFile = async (file: File) => {
+    if (importLock.current) return;
+    importLock.current = true;
     setBusy(true);
     try {
-      /*
-       * 桌面外壳里 `<input type="file">` 的 `File` 带 `path`，这是 Tauri 注入的。
-       * 浏览器里没有，所以这条分支只在桌面走得到。
-       */
-      const path = (file as File & { path?: string }).path;
-      if (!path) throw new Error(t('plugin.importInvalidUrl'));
+      const path = await pickNativeFile(t('plugin.importPackage'), [{
+        name: t('plugin.importPackage'),
+        extensions: PLUGIN_PACKAGE_EXTENSIONS.map(extension => extension.slice(1)),
+      }]);
+      if (!path) return;
       onInstalled(await installPluginFromFile(path));
     } catch (error) {
       onNotice(errorText(error, t('plugin.installInvalid')));
     } finally {
+      importLock.current = false;
       setBusy(false);
-      if (fileRef.current) fileRef.current.value = '';
     }
   };
 
   const installUrl = async () => {
+    if (importLock.current) return;
     const candidate = normalizeSourceUrl(url);
     const problem = validateSourceUrl(candidate);
     if (problem) {
       onNotice(problem);
       return;
     }
+    importLock.current = true;
     setBusy(true);
     try {
       onInstalled(await installPluginFromUrl(candidate));
@@ -95,23 +88,14 @@ export function PluginImportBar({
     } catch (error) {
       onNotice(errorText(error, t('plugin.installInvalid')));
     } finally {
+      importLock.current = false;
       setBusy(false);
     }
   };
 
   return (
     <div className={styles.importBar}>
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".zip,.mflp,.mfplugin"
-        className={styles.hiddenInput}
-        onChange={event => {
-          const file = event.target.files?.[0];
-          if (file) void installFile(file);
-        }}
-      />
-      <button type="button" className={styles.importAction} onClick={pickFile} disabled={busy}>
+      <button type="button" className={styles.importAction} onClick={() => void pickFile()} disabled={busy}>
         <FolderOpen size={13} /> {t('plugin.importPackage')}
       </button>
       <button
