@@ -7,7 +7,10 @@
 use crate::InstanceRecord;
 use download_engine::{ArtifactSpec, DownloadEngine};
 use serde::{Deserialize, Serialize};
-use std::{path::Path, time::Duration};
+use std::path::Path;
+
+#[path = "catalog_dependencies.rs"]
+pub mod dependencies;
 
 const API: &str = "https://api.modrinth.com/v2";
 const MAX_QUERY: usize = 128;
@@ -64,18 +67,29 @@ pub struct CatalogVersion {
 }
 
 pub fn catalog_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30))
-        .user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION")))
+    catalog_client_with_settings(&crate::DownloadSettings::default())
+}
+
+pub fn catalog_client_with_settings(
+    settings: &crate::DownloadSettings,
+) -> Result<reqwest::Client, String> {
+    settings
+        .to_engine_settings()
+        .configure_metadata_client(
+            reqwest::Client::builder()
+                .https_only(true)
+                .redirect(reqwest::redirect::Policy::none())
+                .user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION"))),
+            &["api.modrinth.com"],
+        )
+        .map_err(|e| e.to_string())?
         .build()
         .map_err(|_| "无法初始化目录客户端。".to_owned())
 }
 
-fn loader_of(instance: &InstanceRecord) -> Result<&'static str, String> {
+fn loader_of(instance: &InstanceRecord) -> Result<&str, String> {
     crate::mod_updates::instance_loader_name(instance)
-        .ok_or_else(|| "在线模组目录需要 Fabric 或 Quilt 实例。".to_owned())
+        .ok_or_else(|| "在线模组目录需要有效的模组加载器实例。".to_owned())
 }
 
 async fn bounded(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
@@ -966,5 +980,245 @@ mod tests {
         let mut instance = fabric_instance();
         instance.loader = "vanilla".into();
         assert_eq!(resolve_loader(None, &instance), None);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod network_tests {
+    use super::*;
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    pub(crate) struct MockProxy {
+        pub(crate) url: String,
+        pub(crate) requests: Arc<Mutex<Vec<String>>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for MockProxy {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    impl MockProxy {
+        pub(crate) async fn new(status: &'static str, body_delay: Duration) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let seen = requests.clone();
+            let task = tokio::spawn(async move {
+                loop {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut bytes = Vec::new();
+                    let mut buffer = [0; 1024];
+                    while !bytes.windows(4).any(|bytes| bytes == b"\r\n\r\n") && bytes.len() < 16384
+                    {
+                        let n = socket.read(&mut buffer).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        bytes.extend_from_slice(&buffer[..n]);
+                    }
+                    if let Some(end) = bytes.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let length = String::from_utf8_lossy(&bytes[..end])
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .and_then(|(_, length)| length.trim().parse::<usize>().ok())
+                            .unwrap_or(0)
+                            .min(16384);
+                        while bytes.len() < end + 4 + length {
+                            let n = socket.read(&mut buffer).await.unwrap_or(0);
+                            if n == 0 {
+                                break;
+                            }
+                            bytes.extend_from_slice(&buffer[..n]);
+                        }
+                    }
+                    seen.lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(&bytes).into_owned());
+                    let headers = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = socket.write_all(headers.as_bytes()).await;
+                    tokio::time::sleep(body_delay).await;
+                    let _ = socket.write_all(b"{}").await;
+                }
+            });
+            Self {
+                url,
+                requests,
+                task,
+            }
+        }
+
+        pub(crate) fn settings(&self, retries: u8) -> crate::DownloadSettings {
+            crate::DownloadSettings {
+                proxy_mode: download_engine::ProxyMode::Http,
+                proxy_url: self.url.clone(),
+                timeout_sec: 2,
+                retries,
+                ..Default::default()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_search_and_versions_use_the_configured_https_proxy() {
+        let proxy = MockProxy::new("502 Bad Gateway", Duration::ZERO).await;
+        let client = catalog_client_with_settings(&proxy.settings(0)).unwrap();
+        assert!(
+            search_mods_unscoped(&client, &ModQuery::default())
+                .await
+                .is_err()
+        );
+        assert!(
+            project_versions(&client, "example", "modpack")
+                .await
+                .is_err()
+        );
+        let requests = proxy.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.starts_with("CONNECT api.modrinth.com:443 HTTP/1.1"))
+        );
+    }
+
+    #[tokio::test]
+    async fn metadata_retry_budget_is_exact_and_limited_to_safe_scoped_reads() {
+        for retries in [0, 1, 3] {
+            for (status, method, host, retryable) in [
+                (
+                    "503 Service Unavailable",
+                    reqwest::Method::GET,
+                    "metadata.test",
+                    true,
+                ),
+                (
+                    "429 Too Many Requests",
+                    reqwest::Method::GET,
+                    "metadata.test",
+                    true,
+                ),
+                (
+                    "408 Request Timeout",
+                    reqwest::Method::GET,
+                    "metadata.test",
+                    true,
+                ),
+                (
+                    "401 Unauthorized",
+                    reqwest::Method::GET,
+                    "metadata.test",
+                    false,
+                ),
+                (
+                    "403 Forbidden",
+                    reqwest::Method::GET,
+                    "metadata.test",
+                    false,
+                ),
+                (
+                    "404 Not Found",
+                    reqwest::Method::GET,
+                    "metadata.test",
+                    false,
+                ),
+                ("302 Found", reqwest::Method::GET, "metadata.test", false),
+                (
+                    "503 Service Unavailable",
+                    reqwest::Method::POST,
+                    "metadata.test",
+                    false,
+                ),
+                (
+                    "503 Service Unavailable",
+                    reqwest::Method::GET,
+                    "outside.test",
+                    false,
+                ),
+            ] {
+                let proxy = MockProxy::new(status, Duration::ZERO).await;
+                let client = proxy
+                    .settings(retries)
+                    .to_engine_settings()
+                    .configure_metadata_client(
+                        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()),
+                        &["metadata.test"],
+                    )
+                    .unwrap()
+                    .build()
+                    .unwrap();
+                let response = client
+                    .request(method, format!("http://{host}/metadata"))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16().to_string(), &status[..3]);
+                assert_eq!(
+                    proxy.requests.lock().unwrap().len(),
+                    if retryable {
+                        usize::from(retries) + 1
+                    } else {
+                        1
+                    },
+                    "{status}, host={host}, retries={retries}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn metadata_timeout_also_bounds_the_response_body() {
+        let proxy = MockProxy::new("200 OK", Duration::from_secs(30)).await;
+        let mut settings = proxy.settings(0).to_engine_settings();
+        settings.timeout_sec = 1;
+        let client = settings
+            .configure_metadata_client(reqwest::Client::builder(), &["metadata.test"])
+            .unwrap()
+            .build()
+            .unwrap();
+        let response = client
+            .get("http://metadata.test/metadata")
+            .send()
+            .await
+            .unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(4), response.bytes())
+            .await
+            .expect("configured timeout must bound body reads")
+            .unwrap_err();
+        assert!(error.is_timeout());
+        assert_eq!(proxy.requests.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn catalog_rejects_invalid_network_settings_without_falling_back() {
+        for settings in [
+            crate::DownloadSettings {
+                timeout_sec: 0,
+                ..Default::default()
+            },
+            crate::DownloadSettings {
+                retries: 11,
+                ..Default::default()
+            },
+            crate::DownloadSettings {
+                proxy_mode: download_engine::ProxyMode::Http,
+                proxy_url: "http://user:secret@proxy.test".into(),
+                ..Default::default()
+            },
+        ] {
+            assert!(catalog_client_with_settings(&settings).is_err());
+        }
     }
 }

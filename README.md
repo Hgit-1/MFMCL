@@ -164,12 +164,24 @@ trip, and the plugin package pipeline end to end — all on Windows, against the
 Install/upgrade/uninstall has not been run on physical machines for all three platforms. The
 Microsoft and Yggdrasil flows are covered by mock services in CI, not by a live account here.
 
-**Not implemented.** OptiFine is explained in the interface but has no one-click install (there is no
-official direct download, and it conflicts with Fabric-style class loaders). Modpack import covers
-the Modrinth format for Vanilla/Fabric/Quilt; CurseForge packs, signed installers, and
-self-replacement of the running binary are also absent (update checks and verified downloads work;
-the swap waits for update signing). Application-store distribution is researched and deliberately
-deferred — [`docs/FUTURE.md`](docs/FUTURE.md) records why.
+**Implemented, pending combination-level live acceptance.** Loader discovery/install now covers
+Fabric, Quilt, modern Forge/NeoForge, Legacy Fabric, LiteLoader, Cleanroom and standalone OptiFine.
+OptiFine uses published official Mirror links (HD U installers with an embedded Wrapper), not a
+synthesized download URL; this host could not reach its official server, so that live path is unverified.
+Pack import covers Modrinth, CurseForge (including validated local supplements), standard MultiMC,
+and HMCL native archives/single-version directories. Portable HMCL settings become instance
+overrides; arbitrary launch programs, external Java paths and unsupported component combinations
+are not imported. Modrinth dependency installation now uses bounded backtracking, while local
+inspection supports version constraints and recursive nested JAR/JarJar metadata with explicit unknown results.
+
+**Still absent.** Signed installers and self-replacement of the running binary (update checks and
+verified downloads work; the swap waits for update signing). Application-store distribution is
+researched and deliberately deferred — [`docs/FUTURE.md`](docs/FUTURE.md) records why.
+
+**Current Windows evidence (2026-11-11).** Real JDK 21 fixture tests passed. An official 1.21.4 install
+verified 4,128 files / 526,105,870 bytes, cancellation/retry, client corruption and missing-resource repair,
+idempotent zero-download retry, and independent local backup restore. It did not launch Minecraft or
+access account credentials. See [`docs/VALIDATION.md`](docs/VALIDATION.md) for commands and limits.
 
 Android, iOS and HarmonyOS are documentation only.
 

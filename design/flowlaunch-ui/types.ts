@@ -28,18 +28,18 @@ export interface GameInstance {
   id: string;
   name: string;
   version: string;
-  loader?: 'forge' | 'neoforge' | 'fabric' | 'quilt' | 'vanilla';
+  loader?: 'forge' | 'neoforge' | 'fabric' | 'quilt' | 'vanilla' | 'liteloader' | 'cleanroom' | 'legacyfabric' | 'optifine';
   loaderVersion?: string;
   javaVersion: string;
   lastPlayed?: Date;
   playTime: number;
   modCount: number;
-  status: 'ready' | 'installing' | 'updating' | 'error';
+  status: 'not_installed' | 'ready' | 'installing' | 'updating' | 'error';
   icon?: string;
   /**
    * 这个实例实际使用的游戏目录。
    *
-   * 来自后端的 `InstanceRecord.gameDir`（默认 `<gameRoot>/shared`）。实例设置页
+   * 来自后端的 `InstanceRecord.gameDir`。实例设置页
    * 用它作为「未覆盖时用哪个目录」的展示值——只显示一个空输入框的话，用户无法
    * 知道默认值到底是什么。
    */

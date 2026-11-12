@@ -46,6 +46,7 @@ interface DashboardProps {
   /** 该实例是否已经在运行（此时按钮改为「关闭游戏」）。 */
   running: boolean;
   onLaunch: (instance: GameInstance) => void;
+  onInstall: (instance: GameInstance) => void;
   onStop: (instanceId: string) => void;
   /** 切换默认启动实例。 */
   onSelectTarget: (instanceId: string) => void;
@@ -70,6 +71,7 @@ interface DashboardProps {
 
 /** 启动阶段的展示文案。与 App 里的进度条共用同一套键。 */
 const STAGE_LABELS: Record<string, MessageKey> = {
+  java_installing: 'app.javaInstalling',
   preparing: 'app.launchStagePreparing',
   authenticating: 'app.launchStageAuthenticating',
   building: 'app.launchStageBuilding',
@@ -83,6 +85,7 @@ export function Dashboard({
   launching,
   running,
   onLaunch,
+  onInstall,
   onStop,
   onSelectTarget,
   onCreate,
@@ -261,7 +264,7 @@ export function Dashboard({
             onChange={event => onSelectTarget(event.target.value)}
           >
             {options.map(instance => (
-              <option key={instance.id} value={instance.id} disabled={instance.status !== 'ready'}>
+              <option key={instance.id} value={instance.id}>
                 {instance.name} · {instance.version}
                 {instance.status === 'error'
                   ? ` · ${t('dashboard.stateBroken')}`
@@ -298,10 +301,13 @@ export function Dashboard({
               className={styles.launchButton}
               icon={isLaunching ? undefined : <Play size={20} />}
               loading={isLaunching}
-              disabled={!canLaunch}
-              onClick={() => onLaunch(target)}
+              disabled={target.status === 'installing' || target.status === 'updating'}
+              onClick={() => canLaunch ? onLaunch(target) : onInstall(target)}
             >
-              {isLaunching ? t('dashboard.launching') : t('app.launch')}
+              {isLaunching ? t('dashboard.launching')
+                : target.status === 'error' ? t('app.repair')
+                : target.status === 'installing' || target.status === 'updating' ? t('app.installing')
+                : canLaunch ? t('app.launch') : t('app.install')}
             </Button>
           )}
         </div>

@@ -48,7 +48,7 @@ export function InstanceMaintenance({ instance, onNotice, onChanged }: InstanceM
    * failed 也要允许：那正是最需要「校验并补全」的状态——上次装到一半失败，
    * 磁盘上留着一堆半成品，补全能把它们补齐。
    */
-  const canRepair = instance.status === 'ready' || instance.status === 'error';
+  const canRepair = instance.status === 'ready' || instance.status === 'error' || instance.status === 'not_installed';
 
   const runRepair = async () => {
     setRepairing(true);

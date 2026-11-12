@@ -180,6 +180,7 @@ pub async fn curseforge_search(
     loader: Option<String>,
     index: Option<u32>,
     page_size: Option<u32>,
+    store: State<'_, LauncherStore>,
 ) -> Result<Vec<CurseForgeMod>, String> {
     /*
      * 没有 key 也能搜：`read_key_for_internal` 返回 None 时走镜像。
@@ -188,7 +189,11 @@ pub async fn curseforge_search(
      * 被要求去注册开发者账号。key 只是「更快、不依赖第三方」的加速项。
      */
     let key = read_key_for_internal().await;
-    curseforge::search(
+    let client = curseforge::metadata_client_with_settings(
+        &store.load_settings().map_err(|e| e.to_string())?.download,
+    )?;
+    curseforge::search_with_client(
+        &client,
         curseforge::Source::from_key(key.as_deref()),
         kind,
         &query,
@@ -205,9 +210,14 @@ pub async fn curseforge_files(
     project_id: String,
     game_version: String,
     loader: Option<String>,
+    store: State<'_, LauncherStore>,
 ) -> Result<Vec<CurseForgeVersion>, String> {
     let key = read_key_for_internal().await;
-    curseforge::files(
+    let client = curseforge::metadata_client_with_settings(
+        &store.load_settings().map_err(|e| e.to_string())?.download,
+    )?;
+    curseforge::files_with_client(
+        &client,
         curseforge::Source::from_key(key.as_deref()),
         &project_id,
         &game_version,
@@ -270,7 +280,11 @@ pub async fn curseforge_identify_mods(
         .split_once('@')
         .map(|(kind, _)| kind)
         .unwrap_or(target.loader.as_str());
-    curseforge::identify_files(
+    let client = curseforge::metadata_client_with_settings(
+        &store.load_settings().map_err(|e| e.to_string())?.download,
+    )?;
+    curseforge::identify_files_with_client(
+        &client,
         curseforge::Source::from_key(key.as_deref()),
         &hashed,
         Some(target.game_version.as_str()),

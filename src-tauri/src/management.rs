@@ -1,10 +1,10 @@
-use download_engine::{DownloadEngine, DownloadProgress, DownloadSettings};
+use download_engine::{DownloadEngine, DownloadProgress};
 use launcher_core::check_client_update as client_update_status_for;
 use launcher_core::{
     ClientUpdateStatus, CreateInstanceInput, InstanceRecord, InstanceState, LauncherStore,
     loaders::{self, LoaderKind, LoaderVersion},
     mod_updates::{self, ModUpdate, ModUpdateReport},
-    modpacks::{self, PackPreview},
+    modpacks::{self, PackResolution},
     mods::{self, ModFile},
 };
 use std::{
@@ -43,12 +43,13 @@ pub(crate) fn task_progress(
             };
             let _ = app.emit("download-progress", event);
         }
+        let _ = downloads.flush(&id, None, "文件进度通道关闭", &store, &app);
     });
     (tx, task)
 }
 
 #[derive(Default)]
-pub struct Operations(pub Arc<Mutex<HashSet<String>>>);
+pub struct Operations(pub Arc<Mutex<HashSet<String>>>, Mutex<HashSet<PathBuf>>);
 pub struct Guard {
     key: String,
     registry: Arc<Mutex<HashSet<String>>>,
@@ -63,6 +64,17 @@ impl Operations {
             key: key.to_owned(),
             registry: self.0.clone(),
         })
+    }
+}
+impl Drop for Operations {
+    fn drop(&mut self) {
+        if let Ok(cached) = self.1.get_mut() {
+            for path in cached.iter() {
+                if let Some(directory) = path.parent() {
+                    let _ = std::fs::remove_dir_all(directory);
+                }
+            }
+        }
     }
 }
 impl Drop for Guard {
@@ -83,21 +95,34 @@ pub(crate) fn instance(store: &LauncherStore, id: &str) -> Result<InstanceRecord
 }
 pub(crate) fn engine(store: &LauncherStore) -> Result<DownloadEngine, String> {
     let settings = store.load_settings().map_err(|e| e.to_string())?;
-    DownloadEngine::new(DownloadSettings {
-        source: settings.download.source,
-        max_concurrent_downloads: settings.download.max_concurrent_downloads,
-        connections_per_file: settings.download.connections_per_file,
-        aria2_enabled: false,
-    })
-    .map_err(|e| e.to_string())
+    let mut download_settings = settings.download.to_engine_settings();
+    download_settings.aria2_enabled = false;
+    DownloadEngine::new(download_settings).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn loader_versions(
     kind: LoaderKind,
     game_version: String,
+    app: AppHandle,
+    store: State<'_, LauncherStore>,
 ) -> Result<Vec<LoaderVersion>, String> {
-    loaders::list_loader_versions(kind, &game_version).await
+    let settings = store.load_settings().map_err(|e| e.to_string())?;
+    /*
+     * 版本清单带磁盘缓存：命中时立刻返回，过期时先返回旧列表再后台刷新。
+     *
+     * 之前每次打开对话框都要重新拉 213 KB 的 maven 元数据，官方源在中文区常见
+     * 网络下还会先超时 20 秒——用户看到的就是「正在加载…」长时间转圈。加载器
+     * 版本一天最多变几次，缓存十分钟的收益远大于它的陈旧风险。
+     */
+    let cache_root = app.path().app_data_dir().ok();
+    loaders::list_loader_versions_cached(
+        kind,
+        &game_version,
+        &settings.download,
+        cache_root.as_deref(),
+    )
+    .await
 }
 #[tauri::command]
 pub async fn install_loader(
@@ -313,19 +338,32 @@ pub async fn delete_instance(
     if !delete_files {
         return Ok(());
     }
-    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let instances_root = root.join("instances");
-    // Canonicalize both paths; refuse anything that escapes the instances root.
-    let instances_real = tokio::fs::canonicalize(&instances_root)
-        .await
-        .map_err(|e| format!("实例目录不可用：{e}"))?;
-    let target_real = tokio::fs::canonicalize(&removed.instance_dir)
-        .await
-        .map_err(|e| format!("实例目录不可用：{e}"))?;
-    if !target_real.starts_with(&instances_real) || target_real == instances_real {
-        // The database row is already removed; files stay untouched.
-        return Err("已删除实例记录；目录不在启动器管理范围内，未删除任何文件。".into());
+    let target_real = match tokio::fs::canonicalize(&removed.instance_dir).await {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("实例目录不可用：{error}")),
+    };
+    let mut roots = vec![
+        app.path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("instances"),
+    ];
+    if let Some(root) = store.load_settings().map_err(|e| e.to_string())?.game_root {
+        roots.push(root.join("instances"));
     }
+    let mut instances_real = None;
+    for root in roots {
+        if let Ok(root) = tokio::fs::canonicalize(root).await {
+            if target_real.parent() == Some(root.as_path()) {
+                instances_real = Some(root);
+                break;
+            }
+        }
+    }
+    let Some(instances_real) = instances_real else {
+        return Err("已删除实例记录；目录不在启动器管理范围内，未删除任何文件。".into());
+    };
     if let Some(game_real) = tokio::fs::canonicalize(&removed.game_dir)
         .await
         .ok()
@@ -350,7 +388,9 @@ pub async fn search_mods(
 ) -> Result<Vec<launcher_core::CatalogMod>, String> {
     let _guard = operations.acquire(&instance_id)?;
     let target = instance(&store, &instance_id)?;
-    let client = launcher_core::catalog::catalog_client()?;
+    let client = launcher_core::catalog::catalog_client_with_settings(
+        &store.load_settings().map_err(|e| e.to_string())?.download,
+    )?;
     launcher_core::catalog::search_mods(&client, &target, &request).await
 }
 
@@ -361,8 +401,11 @@ pub async fn search_mods(
 #[tauri::command]
 pub async fn search_mods_unscoped(
     request: launcher_core::catalog::ModQuery,
+    store: State<'_, LauncherStore>,
 ) -> Result<Vec<launcher_core::CatalogMod>, String> {
-    let client = launcher_core::catalog::catalog_client()?;
+    let client = launcher_core::catalog::catalog_client_with_settings(
+        &store.load_settings().map_err(|e| e.to_string())?.download,
+    )?;
     launcher_core::catalog::search_mods_unscoped(&client, &request).await
 }
 
@@ -375,8 +418,11 @@ pub async fn search_mods_unscoped(
 pub async fn list_project_versions(
     project_id: String,
     project_type: Option<String>,
+    store: State<'_, LauncherStore>,
 ) -> Result<Vec<launcher_core::CatalogVersion>, String> {
-    let client = launcher_core::catalog::catalog_client()?;
+    let client = launcher_core::catalog::catalog_client_with_settings(
+        &store.load_settings().map_err(|e| e.to_string())?.download,
+    )?;
     let kind = project_type.unwrap_or_else(|| "mod".to_owned());
     launcher_core::catalog::project_versions(&client, &project_id, &kind).await
 }
@@ -391,7 +437,9 @@ pub async fn list_mod_versions(
 ) -> Result<Vec<launcher_core::CatalogVersion>, String> {
     let _guard = operations.acquire(&instance_id)?;
     let target = instance(&store, &instance_id)?;
-    let client = launcher_core::catalog::catalog_client()?;
+    let client = launcher_core::catalog::catalog_client_with_settings(
+        &store.load_settings().map_err(|e| e.to_string())?.download,
+    )?;
     let kind = project_type.unwrap_or_default();
     launcher_core::catalog::mod_versions_of(&client, &target, &project_id, &kind).await
 }
@@ -449,6 +497,17 @@ pub async fn install_mod_version(
                 .into(),
         );
     }
+    if !target.loader.starts_with("vanilla") && dir_name == "mods" {
+        let loader = target.loader.split('@').next().unwrap_or("");
+        if !version
+            .game_versions
+            .iter()
+            .any(|v| v == &target.game_version)
+            || !version.loaders.iter().any(|v| v == loader)
+        {
+            return Err("此模组版本与实例不兼容".into());
+        }
+    }
     let label = match dir_name {
         "resourcepacks" => "资源包",
         "shaderpacks" => "光影包",
@@ -478,12 +537,16 @@ pub async fn install_mod_version(
         .with_control(task.control)
         .with_task_progress(task.progress);
     let (tx, progress_task) = task_progress(&instance_id, &app, store.inner(), downloads.inner());
-    let result = launcher_core::catalog::install_mod_version(
-        &version,
-        &target.game_dir.join(dir_name),
-        &engine,
-    )
-    .await;
+    let result = if dir_name == "mods" {
+        launcher_core::catalog::dependencies::install(&target, &version, &engine).await
+    } else {
+        launcher_core::catalog::install_mod_version(
+            &version,
+            &target.game_dir.join(dir_name),
+            &engine,
+        )
+        .await
+    };
     drop(tx);
     let _ = progress_task.await;
     downloads.finish(&instance_id, result.is_ok(), &store, &app)?;
@@ -527,25 +590,46 @@ pub async fn download_mod_version(
 }
 
 #[tauri::command]
-pub fn preview_modpack(path: String) -> Result<PackPreview, String> {
-    modpacks::preview_pack(&PathBuf::from(path))
+pub async fn preview_modpack(
+    path: String,
+    local_paths: Option<Vec<PathBuf>>,
+    store: State<'_, LauncherStore>,
+) -> Result<PackResolution, String> {
+    let key = crate::curseforge::read_key_for_internal().await;
+    let client = launcher_core::curseforge::metadata_client_with_settings(
+        &store.load_settings().map_err(|e| e.to_string())?.download,
+    )?;
+    modpacks::prepare_pack_for_import_with_client(
+        &client,
+        &PathBuf::from(path),
+        &local_paths.unwrap_or_default(),
+        key.as_deref(),
+    )
+    .await
 }
 #[tauri::command]
 pub async fn import_modpack(
     path: String,
+    local_paths: Option<Vec<PathBuf>>,
     app: AppHandle,
     store: State<'_, LauncherStore>,
     operations: State<'_, Operations>,
     downloads: State<'_, Arc<crate::downloads::Downloads>>,
 ) -> Result<InstanceRecord, String> {
-    import_modpack_inner(
-        PathBuf::from(path),
+    let path = PathBuf::from(path);
+    let result = import_modpack_inner(
+        path.clone(),
+        &local_paths.unwrap_or_default(),
         &app,
         store.inner(),
         &operations,
         downloads.inner(),
     )
-    .await
+    .await;
+    if result.is_ok() {
+        let _ = discard_cached_pack(&path, &operations);
+    }
+    result
 }
 
 /// 导入一个已在本地的整合包文件。
@@ -554,58 +638,31 @@ pub async fn import_modpack(
 /// `State` 包装——命令函数之间不能直接互相调用，`State` 只由框架注入。
 async fn import_modpack_inner(
     path: PathBuf,
+    local_paths: &[PathBuf],
     app: &AppHandle,
     store: &LauncherStore,
     operations: &Operations,
     downloads: &Arc<crate::downloads::Downloads>,
 ) -> Result<InstanceRecord, String> {
     let _guard = operations.acquire("modpack-import")?;
-    let prepared = match modpacks::prepare_pack(&path)? {
-        modpacks::PackPreparation::Ready(prepared) => prepared,
-        modpacks::PackPreparation::NeedsOnlineLookup {
-            path: pack_path,
-            manifest,
-        } => {
-            /*
-             * CurseForge 格式：清单只给 fileID，下载地址与哈希必须联网查。
-             *
-             * 这里就地补全，而不是把「待补全」状态抛给前端：补全需要联网，而
-             * 客户端入口的选择（有没有 key）属于后端；让前端拿到 fileID 再去
-             * 另一次 IPC 换地址，等于把一个本该原子的步骤拆成两段，中间任何
-             * 一步失败都会留下半完成状态。
-             *
-             * 没有 key 时走镜像：导入整合包是「打开一个文件」这种再普通不过的
-             * 操作，不该在此之前要求用户去注册开发者账号。
-             */
-            let key = crate::curseforge::read_key_for_internal().await;
-            let ids = manifest.file_ids();
-            let details = launcher_core::curseforge::files_by_ids(
-                launcher_core::curseforge::Source::from_key(key.as_deref()),
-                &ids,
-            )
+    let key = crate::curseforge::read_key_for_internal().await;
+    let client = launcher_core::curseforge::metadata_client_with_settings(
+        &store.load_settings().map_err(|e| e.to_string())?.download,
+    )?;
+    let mut resolution =
+        modpacks::prepare_pack_for_import_with_client(&client, &path, local_paths, key.as_deref())
             .await?;
-            let (files, skipped) = modpacks::curseforge_files_to_pack_files(&manifest, &details);
-            if files.is_empty() {
-                return Err(
-                    "这个整合包里的文件都无法自动下载（可能都被作者限制为第三方分发）。\
-                     请到 CurseForge 网页手动下载。"
-                        .into(),
-                );
-            }
-            if skipped > 0 {
-                // 跳过是允许的（受限文件、无法归类的资源包），但必须让用户知道数量。
-                eprintln!("整合包导入：跳过 {skipped} 个无法自动下载或无法归类的文件");
-            }
-            let index = manifest.to_pack_index(files);
-            modpacks::prepare_from_completed_index(&pack_path, index)?
-        }
-    };
+    if !resolution.unresolved_files.is_empty() {
+        let _ = app.emit("modpack-import-warnings", &resolution.unresolved_files);
+    }
+    modpacks::require_complete_curseforge_files(&resolution.unresolved_files)?;
+    let prepared = resolution.prepared.take().ok_or("整合包尚未补全。")?;
     let preview = prepared.preview().clone();
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     // Construct the engine before creating a persistent instance, so initialization failures leave no row.
     let engine = engine(store)?;
     let target = store
-        .create_instance(
+        .create_isolated_instance(
             &CreateInstanceInput {
                 name: preview.name.chars().take(48).collect(),
                 game_version: preview.minecraft.clone(),
@@ -613,7 +670,13 @@ async fn import_modpack_inner(
             &root,
         )
         .map_err(|e| e.to_string())?;
-    let _instance_guard = operations.acquire(&target.id)?;
+    let _instance_guard = match operations.acquire(&target.id) {
+        Ok(guard) => guard,
+        Err(error) => {
+            let _ = store.discard_uninstalled_instance(&target.id);
+            return Err(error);
+        }
+    };
     let handle = match downloads.start(&target.id, &format!("导入 {}", preview.name), store, app)
     {
         Ok(handle) => handle,
@@ -626,13 +689,7 @@ async fn import_modpack_inner(
         .with_control(handle.control)
         .with_task_progress(handle.progress);
     let (tx, progress_task) = task_progress(&target.id, app, store, downloads);
-    let result = async {
-        modpacks::import_prepared_pack(prepared, &target, &engine, Some(tx)).await?;
-        // The pending request participates in the import transaction, including rollback on write failure.
-        write_pending_loader(&target, &preview.loader)?;
-        Ok::<(), String>(())
-    }
-    .await;
+    let result = import_pack_contents(prepared, &target, &engine, store, Some(tx)).await;
     let _ = progress_task.await;
     let task_saved = downloads.finish(&target.id, result.is_ok(), store, app);
     if let Err(mut error) = result {
@@ -649,19 +706,34 @@ async fn import_modpack_inner(
         }
         return Err(error);
     }
-    task_saved?;
+    // Import has committed; a task-history write failure must not make the UI retry creation.
+    let _ = task_saved;
     Ok(target)
 }
 
-/// 从网络下载一个整合包文件，然后走与本地导入完全相同的流程。
-///
-/// 为什么不直接让前端「先下载到某个目录、再调用 import_modpack」：
-/// 中间文件的位置、校验、失败后的清理都该由后端一次性负责。前端只描述「要哪个
-/// 版本」，不接触临时文件路径，也就不会出现「下载到了但导入路径写错」这种跨 IPC
-/// 的协调问题。
-///
-/// 下载下来的文件按其在服务器上的扩展名命名（`.mrpack` / `.zip`），
-/// `prepare_pack` 依靠容器内容而不是扩展名判断格式，所以命名只影响可读性。
+async fn import_pack_contents(
+    mut prepared: modpacks::PreparedPack,
+    target: &InstanceRecord,
+    engine: &DownloadEngine,
+    store: &LauncherStore,
+    progress: Option<tokio::sync::mpsc::UnboundedSender<DownloadProgress>>,
+) -> Result<(), String> {
+    let loader = prepared.preview().loader.clone();
+    let overrides = prepared.take_imported_overrides();
+    if let Some(overrides) = &overrides {
+        launcher_core::validate_instance_overrides(overrides)?;
+    }
+    modpacks::import_prepared_pack(prepared, target, engine, progress).await?;
+    write_pending_loader(target, &loader)?;
+    if let Some(overrides) = overrides {
+        store
+            .save_instance_overrides(&target.id, &overrides)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 下载并预检整合包。受限依赖等待本地补件，包路径保留到确认或取消。
 #[tauri::command]
 pub async fn download_and_import_modpack(
     instance_hint: Option<String>,
@@ -670,7 +742,7 @@ pub async fn download_and_import_modpack(
     store: State<'_, LauncherStore>,
     operations: State<'_, Operations>,
     downloads: State<'_, Arc<crate::downloads::Downloads>>,
-) -> Result<InstanceRecord, String> {
+) -> Result<PackResolution, String> {
     /*
      * `instance_hint` 只用于给下载任务挂一个可见的归属。
      *
@@ -678,20 +750,17 @@ pub async fn download_and_import_modpack(
      * 需要一个 instance_id 才能出现在下载页。用调用方给的 id 是一个折中：任务
      * 会显示在用户当前正在看的实例下面，导入完成后新实例才出现。
      */
+    let _guard = operations.acquire("modpack-download")?;
     let task_owner = instance_hint.unwrap_or_else(|| "modpack-download".to_owned());
 
     // 文件名与扩展名的校验都在 `download_to` 内部按内容类型完成（整合包允许
     // `.zip`/`.mrpack`），这里不再重复——重复一份规则只会在两处漂移。
 
-    // 下载到一个独立的临时目录：导入成功后整个目录删掉，失败也不留垃圾。
+    // 下载目录归本次待确认来源所有，只有取消、导入成功或退出时清理。
     let staging = std::env::temp_dir().join(format!("mfmcl-pack-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&staging).map_err(|e| format!("无法创建下载目录：{e}"))?;
 
     let result = async {
-        // 下载阶段不获取 operations 锁：真正需要串行化的是导入（创建实例、写文件），
-        // 那是 import_modpack_inner 自己的责任。外层若也去 acquire，同一个 key 会让
-        // 被调用的函数直接报「已有任务在运行」——虽然不会卡死，但功能永远失败。
-        //
         // engine 必须在 downloads.start 之前构造：先 start 后建 engine 的话，一旦
         // engine 失败（设置读取失败、并发数非法），那条下载任务会永远停在 Running，
         // 之后同一个 instance 的下载都会被拒绝。
@@ -720,21 +789,53 @@ pub async fn download_and_import_modpack(
         downloads.finish(&task_owner, downloaded.is_ok(), store.inner(), &app)?;
         let path = downloaded?;
 
-        // 与本地导入共用同一套事务：校验包结构 → 创建实例 → 下载文件 → 失败回滚。
-        import_modpack_inner(
-            path.into(),
-            &app,
-            store.inner(),
-            &operations,
-            downloads.inner(),
+        let key = crate::curseforge::read_key_for_internal().await;
+        let client = launcher_core::curseforge::metadata_client_with_settings(
+            &store.load_settings().map_err(|e| e.to_string())?.download,
+        )?;
+        let resolution = modpacks::prepare_pack_for_import_with_client(
+            &client,
+            &PathBuf::from(&path),
+            &[],
+            key.as_deref(),
         )
-        .await
+        .await?;
+        operations
+            .1
+            .lock()
+            .map_err(|_| "整合包缓存状态不可用。")?
+            .insert(PathBuf::from(path));
+        Ok::<_, String>(resolution)
     }
     .await;
 
-    // 无论成败都清理暂存目录。导入流程已经把需要的文件读进内存/实例目录了。
-    let _ = std::fs::remove_dir_all(&staging);
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
     result
+}
+
+fn discard_cached_pack(path: &std::path::Path, operations: &Operations) -> Result<(), String> {
+    let mut cached = operations.1.lock().map_err(|_| "整合包缓存状态不可用。")?;
+    if cached.contains(path) {
+        let parent = path.parent().ok_or("缓存路径无效。")?;
+        match std::fs::remove_dir_all(parent) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        cached.remove(path);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn discard_modpack_source(
+    path: String,
+    operations: State<'_, Operations>,
+) -> Result<(), String> {
+    let _guard = operations.acquire("modpack-import")?;
+    discard_cached_pack(&PathBuf::from(path), &operations)
 }
 
 /// 列出 Modrinth 项目的**全部**版本（不按实例过滤）。
@@ -745,8 +846,11 @@ pub async fn download_and_import_modpack(
 pub async fn project_versions(
     project_id: String,
     project_type: Option<String>,
+    store: State<'_, LauncherStore>,
 ) -> Result<Vec<launcher_core::CatalogVersion>, String> {
-    let client = launcher_core::catalog::catalog_client()?;
+    let client = launcher_core::catalog::catalog_client_with_settings(
+        &store.load_settings().map_err(|e| e.to_string())?.download,
+    )?;
     let kind = project_type.unwrap_or_else(|| "modpack".to_owned());
     launcher_core::catalog::project_versions(&client, &project_id, &kind).await
 }
@@ -792,6 +896,7 @@ pub async fn download_and_import_modrinth_pack(
 
         import_modpack_inner(
             path.into(),
+            &[],
             &app,
             store.inner(),
             &operations,
@@ -838,7 +943,20 @@ pub fn request_pack_loader(instance: &InstanceRecord, request: &str) -> Result<(
 }
 
 fn write_pending_loader(instance: &InstanceRecord, loader: &str) -> Result<(), String> {
+    if loader != "vanilla" {
+        let (kind, version) = loader.split_once('@').ok_or("加载器标识格式无效。")?;
+        LoaderKind::from_name(kind).ok_or("未识别的加载器。")?;
+        loaders::safe_version(version)?;
+    }
     let directory = &instance.instance_dir;
+    /*
+     * `create_instance` 只挑一个空闲路径并插入数据库行，目录本身还不存在。
+     * 之前这里直接 `symlink_metadata`，于是「新建带加载器的实例」必然失败在
+     * `os error 2`（系统找不到指定的文件）——而且实例记录已经写进去了。
+     * 先建目录，与 `launcher-runtime` 里同一段逻辑保持一致。
+     */
+    std::fs::create_dir_all(directory)
+        .map_err(|e| format!("无法创建实例目录 {}：{e}", directory.display()))?;
     let metadata = std::fs::symlink_metadata(directory).map_err(|e| e.to_string())?;
     if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
         return Err("实例目录不能是符号链接或普通文件。".into());
@@ -967,6 +1085,139 @@ mod pack_tests {
     use super::*;
 
     #[tokio::test]
+    async fn hmcl_import_preferences_are_persisted_only_for_the_new_instance() {
+        use std::io::Write;
+        let root =
+            std::env::temp_dir().join(format!("mfmcl-hmcl-desktop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("hmcl.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (name, bytes) in [
+            ("modpack.json", br#"{"name":"HMCL Native","version":"1","gameVersion":"1.21.4"}"#.as_slice()),
+            ("minecraft/pack.json", br#"{"id":"1.21.4","mainClass":"net.minecraft.client.main.Main","libraries":[]}"#.as_slice()),
+            ("minecraft/hmclversion.cfg", br#"{"usesGlobal":false,"autoMemory":false,"maxMemory":3072,"width":1280,"height":720}"#.as_slice()),
+            ("minecraft/config/test.json", b"{}".as_slice()),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        let modpacks::PackPreparation::Ready(prepared) = modpacks::prepare_pack(&path).unwrap()
+        else {
+            panic!("HMCL must be recognized");
+        };
+        let store = LauncherStore::open(":memory:").unwrap();
+        let global = store.load_settings().unwrap();
+        let target = store
+            .create_isolated_instance(
+                &CreateInstanceInput {
+                    name: "Native".into(),
+                    game_version: "1.21.4".into(),
+                },
+                &root,
+            )
+            .unwrap();
+        import_pack_contents(prepared, &target, &engine(&store).unwrap(), &store, None)
+            .await
+            .unwrap();
+        let overrides = store.load_instance_overrides(&target.id).unwrap();
+        assert_eq!(overrides.memory_mb, Some(3072));
+        assert_eq!(overrides.window_width, Some(1280));
+        assert_eq!(overrides.window_height, Some(720));
+        assert_eq!(
+            serde_json::to_value(store.load_settings().unwrap()).unwrap(),
+            serde_json::to_value(global).unwrap()
+        );
+        assert!(target.game_dir.join("config/test.json").is_file());
+        assert!(!target.game_dir.join("hmclversion.cfg").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelling_cached_pack_never_deletes_user_selected_sources() {
+        let root = std::env::temp_dir().join(format!("mfmcl-pack-cancel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let user_source = root.join("user.zip");
+        std::fs::write(&user_source, b"user").unwrap();
+        let operations = Operations::default();
+        discard_cached_pack(&user_source, &operations).unwrap();
+        assert_eq!(std::fs::read(&user_source).unwrap(), b"user");
+        let staging = root.join("backend-staging");
+        std::fs::create_dir(&staging).unwrap();
+        let cached = staging.join("pack.zip");
+        std::fs::write(&cached, b"cache").unwrap();
+        operations.1.lock().unwrap().insert(cached.clone());
+        discard_cached_pack(&cached, &operations).unwrap();
+        discard_cached_pack(&cached, &operations).unwrap();
+        assert!(!staging.exists());
+        assert!(operations.1.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read(user_source).unwrap(), b"user");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn desktop_default_creation_imports_forge_packs_and_writes_pending_loader() {
+        use std::io::Write;
+        for (kind, version) in [("forge", "54.0.0"), ("neoforge", "21.4.1")] {
+            let root =
+                std::env::temp_dir().join(format!("mfmcl-desktop-pack-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let pack = root.join("test.mrpack");
+            let mut writer = zip::ZipWriter::new(std::fs::File::create(&pack).unwrap());
+            writer
+                .start_file(
+                    "modrinth.index.json",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            let index = serde_json::json!({"formatVersion":1,"game":"minecraft","name":"Import","versionId":"1","files":[],"dependencies":{"minecraft":"1.21.4",kind:version}});
+            writer
+                .write_all(&serde_json::to_vec(&index).unwrap())
+                .unwrap();
+            writer
+                .start_file(
+                    "overrides/config/mod.json",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            writer.write_all(b"{}").unwrap();
+            writer.finish().unwrap();
+            let modpacks::PackPreparation::Ready(prepared) = modpacks::prepare_pack(&pack).unwrap()
+            else {
+                panic!("mrpack must be ready")
+            };
+            let store = LauncherStore::open(":memory:").unwrap();
+            let target = store
+                .create_instance(
+                    &CreateInstanceInput {
+                        name: "Import".into(),
+                        game_version: "1.21.4".into(),
+                    },
+                    &root,
+                )
+                .unwrap();
+            import_pack_contents(prepared, &target, &engine(&store).unwrap(), &store, None)
+                .await
+                .unwrap();
+            assert!(target.isolated);
+            assert_eq!(
+                std::fs::read(target.game_dir.join("config/mod.json")).unwrap(),
+                b"{}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(target.instance_dir.join("pack-loader.txt")).unwrap(),
+                format!("{kind}@{version}")
+            );
+            assert_eq!(
+                store.list_instances().unwrap()[0].loader,
+                "vanilla",
+                "loader remains pending until real installation"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn pending_marker_retry_uses_committed_store_loader_without_reinstalling() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         let store = LauncherStore::open(":memory:").unwrap();
@@ -1044,6 +1295,36 @@ mod pack_tests {
         let written = std::fs::read_to_string(target.instance_dir.join("pack-loader.txt")).unwrap();
         // 归一化后的标识：`from_name` 决定大小写，安装阶段按这个格式解析。
         assert_eq!(written, "fabric@0.16.10");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 桌面端新建实例时目录还不存在，写标记必须自己建目录。
+    ///
+    /// `create_instance` 只挑一个空闲路径并插入数据库行。之前这里直接
+    /// `symlink_metadata`，于是界面上选任何加载器再点「开始安装」都会立刻失败在
+    /// `os error 2`（系统找不到指定的文件），而实例记录已经写进去了。
+    #[test]
+    fn loader_request_creates_a_missing_instance_directory() {
+        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let store = LauncherStore::open(":memory:").unwrap();
+        let target = store
+            .create_instance(
+                &CreateInstanceInput {
+                    name: "forge".into(),
+                    game_version: "1.21.1".into(),
+                },
+                &root,
+            )
+            .unwrap();
+        assert!(
+            !target.instance_dir.exists(),
+            "create_instance must not pre-create the directory; otherwise this test proves nothing"
+        );
+        request_pack_loader(&target, "forge@1.21.1-52.1.21").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(target.instance_dir.join("pack-loader.txt")).unwrap(),
+            "forge@1.21.1-52.1.21"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -31,6 +31,8 @@ pub enum LaunchError {
         required: u32,
         detected: u32,
     },
+    #[error("Java selection failed: {0}")]
+    JavaSelection(String),
     #[error("failed to inspect Java: {0}")]
     JavaInspection(String),
     #[error("invalid legacy game arguments")]
@@ -252,7 +254,18 @@ fn prepare_launch(
         return Err(LaunchError::NotInstalled);
     }
     validate_identity(identity)?;
-    let runtime = detect_java_runtime(configured_java)?;
+    let request = match configured_java {
+        Some(path) => crate::java_runtime::JavaSelectionRequest {
+            mode: crate::java_runtime::JavaSelectionMode::Forced,
+            path: path.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        None => Default::default(),
+    };
+    let runtime = crate::java_runtime::select_java(data_root, instance, metadata, &request)
+        .map_err(|error| LaunchError::JavaSelection(error.to_string()))?
+        .runtime
+        .ok_or(LaunchError::JavaNotFound)?;
     prepare_with_runtime(data_root, instance, identity, metadata, runtime)
 }
 
@@ -282,20 +295,10 @@ fn prepare_with_runtime(
     metadata: &GameVersionMetadata,
     runtime: JavaRuntimeInfo,
 ) -> Result<PreparedLaunch, LaunchError> {
+    crate::java_runtime::java_requirement(instance, metadata)
+        .validate(&runtime)
+        .map_err(|error| LaunchError::JavaSelection(error.to_string()))?;
     let java_path = PathBuf::from(runtime.path);
-    let detected_java = runtime.major_version;
-    if let Some(required) = metadata
-        .java_version
-        .as_ref()
-        .map(|value| value.major_version)
-        && detected_java < required
-    {
-        return Err(LaunchError::JavaVersion {
-            version: metadata.id.clone(),
-            required,
-            detected: detected_java,
-        });
-    }
 
     crate::loaders::safe_version(&metadata.id).map_err(LaunchError::InvalidMetadata)?;
     if metadata.id != instance.game_version {
@@ -566,7 +569,7 @@ pub fn discover_java_runtimes() -> Vec<JavaRuntimeInfo> {
     let mut seen = HashSet::new();
     java_candidates()
         .into_iter()
-        .take(128)
+        .filter(|candidate| candidate.is_file())
         .filter_map(|candidate| {
             let identity = candidate
                 .canonicalize()
@@ -699,10 +702,12 @@ fn add_java_root_candidates(candidates: &mut Vec<PathBuf>, root: &Path, executab
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
-    for entry in entries.flatten().take(64) {
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
+    let mut entries: Vec<_> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
         let directory = entry.path();
         candidates.push(directory.join("bin").join(executable));
         if cfg!(target_os = "macos") {
@@ -712,12 +717,12 @@ fn add_java_root_candidates(candidates: &mut Vec<PathBuf>, root: &Path, executab
 }
 
 fn inspect_java(java_path: &Path) -> Result<JavaRuntimeInfo, LaunchError> {
+    let executable = crate::java_runtime::java_executable(java_path);
+    let java_path = executable.canonicalize().unwrap_or(executable);
     /*
-     * `hide_console` matters here more than anywhere else: discovery probes up to
-     * 128 candidate paths, and every probe used to flash a console window on a
-     * desktop launch.
+     * `hide_console` keeps runtime probes from flashing a console in the desktop shell.
      */
-    let mut command = Command::new(java_path);
+    let mut command = Command::new(&java_path);
     command.arg("-version");
     let output = crate::process::hide_console(&mut command)
         .output()

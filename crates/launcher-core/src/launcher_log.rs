@@ -27,7 +27,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// 单个日志文件的上限。
 ///
@@ -57,6 +57,72 @@ impl Level {
             Self::Error => "ERROR",
         }
     }
+}
+
+/// 进程级的日志出口，供**不持有 `LauncherLog` 句柄**的深层代码使用。
+///
+/// ## 为什么需要它
+///
+/// `LauncherLog` 是 Tauri 的托管状态，只有命令层拿得到。而真正出问题的地方在
+/// 很深的调用栈里：下载引擎的每个文件、Forge processor 的每一步、缓存命中与回退。
+/// 把这些函数都改成接收一个 `&LauncherLog` 参数，会污染整个 `launcher-core` 的
+/// 公共签名——它们也要被 CLI 和测试调用。
+///
+/// 所以这里放一个进程级的**路径**：深层代码直接往同一个文件追加，不共享任何句柄。
+/// 未设置路径（CLI、测试）时全部是空操作。
+///
+/// ## 为什么不共享一个 `LauncherLog` 实例
+///
+/// Tauri 托管的 `LauncherLog` 已经持有该文件的句柄。如果再让全局出口持有一个
+/// 独立句柄，Windows 上两者会争用同一个文件——一边的写入可能被另一边挡住，
+/// 表现为「日志丢了一半」。每次追加时短暂打开再关闭，就没有这个问题：
+/// 代价是每条日志一次 `open`，对纯文本追加可以忽略。
+static GLOBAL_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+fn global_path() -> &'static Mutex<Option<PathBuf>> {
+    GLOBAL_PATH.get_or_init(|| Mutex::new(None))
+}
+
+/// 设置全局日志文件路径。只在应用启动时调用一次。
+pub fn set_global_path(path: &Path) {
+    if let Ok(mut guard) = global_path().lock() {
+        *guard = Some(path.to_path_buf());
+    }
+}
+
+fn append_global(level: Level, message: &str) {
+    let Ok(guard) = global_path().lock() else {
+        return;
+    };
+    let Some(path) = guard.as_ref() else {
+        return;
+    };
+    let safe = crate::logs::redact_log(message, &[]);
+    let stamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+    let line = format!("[{stamp}] {:<5} {safe}\n", level.as_str());
+    // 追加打开再关闭：不与 Tauri 托管的句柄争用同一个文件。
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+/// 记录一条 INFO。未设置全局路径时是空操作。
+pub fn log_info(message: impl AsRef<str>) {
+    append_global(Level::Info, message.as_ref());
+}
+
+/// 记录一条 WARN。未设置全局路径时是空操作。
+pub fn log_warn(message: impl AsRef<str>) {
+    append_global(Level::Warn, message.as_ref());
+}
+
+/// 记录一条 ERROR。未设置全局路径时是空操作。
+pub fn log_error(message: impl AsRef<str>) {
+    append_global(Level::Error, message.as_ref());
 }
 
 /// 启动器日志写入器。
@@ -383,6 +449,54 @@ mod tests {
         log.disable();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "log file mode is {mode:o}, expected 600");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /*
+     * 全局出口必须真的把行写进文件。
+     *
+     * 这是「日志量太少」的直接解药：深层代码（下载引擎、Forge processor）拿不到
+     * Tauri 的托管状态，只能通过全局路径写入。若这条链路断了，日志里就永远只有
+     * 命令层那几行——安装过程发生什么完全看不到。
+     *
+     * ## 为什么单独起一个进程来测
+     *
+     * 全局路径是进程级单例，同一个测试进程里只能设置一次。与其他用例共享进程时，
+     * 谁先跑谁赢，测试会互相污染。这里 spawn 自身并只跑这一个用例，得到干净的
+     * 进程状态。
+     */
+    #[test]
+    fn the_global_sink_writes_to_the_configured_file() {
+        // 子进程模式：环境变量带着目标路径时，只跑全局写入这一段。
+        if let Some(path) = std::env::var_os("MFMCL_LOG_SINK_PROBE") {
+            let path = PathBuf::from(path);
+            set_global_path(&path);
+            log_info("全局通道 INFO");
+            log_warn("全局通道 WARN");
+            log_error("全局通道 ERROR");
+            return;
+        }
+        let dir = temp_dir();
+        let path = dir.join("global.log");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "launcher_log::tests::the_global_sink_writes_to_the_configured_file",
+                "--nocapture",
+            ])
+            .env("MFMCL_LOG_SINK_PROBE", &path)
+            .status()
+            .expect("re-run this test in a child process");
+        assert!(status.success(), "child probe failed: {status:?}");
+        let content = std::fs::read_to_string(&path).expect("global sink must create the file");
+        assert!(content.contains("全局通道 INFO"), "{content}");
+        assert!(content.contains("WARN"), "{content}");
+        assert!(content.contains("ERROR"), "{content}");
+        // 每行都带时间戳与级别，才能和别处的事件对上。
+        assert!(
+            content.lines().all(|line| line.starts_with('[')),
+            "{content}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

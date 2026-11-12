@@ -103,14 +103,14 @@ export function BackupDiagnostics({ instance, onNotice, onRestored }: BackupDiag
       const path = await createBackup(instance.id, backupDir.trim(), true);
       onNotice(t('backup.created', { values: { path } }));
     } catch (error) {
-      onNotice(errorText(error, '创建备份失败。'));
+      onNotice(errorText(error, t('backup.createFailed')));
     } finally {
       setCreating(false);
     }
   };
 
   const chooseArchive = async () => {
-    const picked = await pickFile(t('backup.pickArchive'), [{ name: 'MFMCL backup', extensions: ['zip'] }]);
+    const picked = await pickFile(t('backup.pickArchive'), [{ name: t('backup.archiveType'), extensions: ['zip'] }]);
     if (!picked) return;
     setArchivePath(picked);
     setPreview(null);
@@ -119,9 +119,9 @@ export function BackupDiagnostics({ instance, onNotice, onRestored }: BackupDiag
       const info = await previewBackup(picked);
       setPreview(info);
       // 默认名带上原实例与时间，避免恢复出两个同名实例分不清。
-      setRestoreName(`${info.name}（恢复）`);
+      setRestoreName(t('backup.restoredName', { values: { name: info.name } }));
     } catch (error) {
-      onNotice(errorText(error, '无法读取这个备份文件。'));
+      onNotice(errorText(error, t('backup.readFailed')));
     } finally {
       setPreviewing(false);
     }
@@ -138,7 +138,7 @@ export function BackupDiagnostics({ instance, onNotice, onRestored }: BackupDiag
       setArchivePath('');
       onRestored();
     } catch (error) {
-      onNotice(errorText(error, '恢复备份失败。'));
+      onNotice(errorText(error, t('backup.restoreFailed')));
     } finally {
       setRestoring(false);
     }
@@ -157,7 +157,7 @@ export function BackupDiagnostics({ instance, onNotice, onRestored }: BackupDiag
       setReportText(report.content);
       setReportName(report.name ?? '');
     } catch (error) {
-      onNotice(errorText(error, '无法读取崩溃报告。'));
+      onNotice(errorText(error, t('diagnostics.readFailed')));
     } finally {
       setLoadingReport(false);
     }
@@ -168,7 +168,7 @@ export function BackupDiagnostics({ instance, onNotice, onRestored }: BackupDiag
     try {
       setSummary(await summarizeDiagnostics(instance.id));
     } catch (error) {
-      onNotice(errorText(error, '无法生成诊断摘要。'));
+      onNotice(errorText(error, t('diagnostics.summaryFailed')));
     } finally {
       setSummarizing(false);
     }
@@ -186,7 +186,7 @@ export function BackupDiagnostics({ instance, onNotice, onRestored }: BackupDiag
       const path = await exportDiagnostics(instance.id, diagnosticDir.trim());
       onNotice(t('diagnostics.exported', { values: { path } }));
     } catch (error) {
-      onNotice(errorText(error, '导出诊断包失败。'));
+      onNotice(errorText(error, t('diagnostics.exportFailed')));
     } finally {
       setExporting(false);
     }

@@ -56,6 +56,10 @@ const KINDS: { id: LoaderKind; label: string; heavy: boolean }[] = [
   { id: 'quilt', label: 'Quilt', heavy: false },
   { id: 'forge', label: 'Forge', heavy: true },
   { id: 'neoforge', label: 'NeoForge', heavy: true },
+  { id: 'legacyfabric', label: 'Legacy Fabric', heavy: false },
+  { id: 'liteloader', label: 'LiteLoader', heavy: false },
+  { id: 'cleanroom', label: 'Cleanroom', heavy: true },
+  { id: 'optifine', label: 'OptiFine', heavy: true },
 ];
 
 export function LoaderInstallCard({ instance, onNotice, onInstalled }: LoaderInstallCardProps) {
@@ -70,22 +74,35 @@ export function LoaderInstallCard({ instance, onNotice, onInstalled }: LoaderIns
   /** 已装加载器的实例不能再装。后端会拒绝，界面就不该提供这个入口。 */
   const hasLoader = instance.loader !== 'vanilla';
   const current = KINDS.find(item => item.id === kind) ?? KINDS[0];
+  const query = `${instance.id}:${kind}:${instance.version}:${instance.loader}`;
+  const currentQuery = useRef(query);
+  currentQuery.current = query;
+  const request = useRef<object | null>(null);
+  const confirmedQuery = useRef('');
+  const installBusy = useRef(false);
 
   const load = useCallback(async () => {
+    const token = {};
+    request.current = token;
+    const key = `${instance.id}:${kind}:${instance.version}:${instance.loader}`;
+    confirmedQuery.current = '';
     setState('loading');
     setLoadError('');
     try {
       const list = await loaderVersions(kind, instance.version);
+      if (request.current !== token || currentQuery.current !== key) return;
+      confirmedQuery.current = key;
       setVersions(list);
       // 默认选第一个稳定版；没有稳定版时退回列表首项，而不是留空让用户多点一次。
       const preferred = list.find(item => item.stable) ?? list[0];
       setSelected(preferred?.version ?? '');
       setState('ready');
     } catch (error) {
-      setLoadError(errorText(error, '无法读取加载器版本。'));
+      if (request.current !== token || currentQuery.current !== key) return;
+      setLoadError(errorText(error, t('install.loaderListFailed')));
       setState('error');
     }
-  }, [instance.version, kind]);
+  }, [instance.id, instance.version, instance.loader, kind, t]);
 
   /*
    * 进入页面就自动检测可用版本。
@@ -98,28 +115,28 @@ export function LoaderInstallCard({ instance, onNotice, onInstalled }: LoaderIns
    * effect 都会跑，顺序由声明顺序决定——若「清空」在「加载」之后，会把刚拿到的
    * 结果立刻清掉，界面表现为闪一下空白。
    */
-  const lastQuery = useRef('');
   useEffect(() => {
     if (hasLoader) return;
-    const key = `${instance.id}:${kind}:${instance.version}`;
-    if (lastQuery.current === key) return;
-    lastQuery.current = key;
     setVersions([]);
     setSelected('');
     void load();
-  }, [hasLoader, instance.id, instance.version, kind, load]);
+    return () => { request.current = null; confirmedQuery.current = ''; };
+  }, [hasLoader, load]);
 
   const run = async () => {
-    if (!selected) return;
+    if (!selected || hasLoader || installBusy.current || state !== 'ready' || query !== currentQuery.current
+      || confirmedQuery.current !== currentQuery.current || !versions.some(version => version.version === selected)) return;
+    installBusy.current = true;
     setInstalling(true);
     try {
       await installLoader(instance.id, kind, selected);
       onNotice(t('loader.installed', { values: { kind, version: selected } }));
       onInstalled();
     } catch (error) {
-      onNotice(errorText(error, '安装加载器失败。'));
+      onNotice(errorText(error, t('app.installFailed')));
       onInstalled();
     } finally {
+      installBusy.current = false;
       setInstalling(false);
     }
   };
@@ -230,6 +247,7 @@ export function LoaderInstallCard({ instance, onNotice, onInstalled }: LoaderIns
               role="radio"
               aria-checked={kind === item.id}
               className={`${styles.kind} ${kind === item.id ? styles.kindActive : ''}`}
+              disabled={installing}
               onClick={() => setKind(item.id)}
             >
               {item.label}

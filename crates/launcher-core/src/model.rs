@@ -29,6 +29,37 @@ pub struct DownloadSettings {
     pub max_concurrent_downloads: u16,
     pub connections_per_file: u16,
     pub aria2_enabled: bool,
+    #[serde(default)]
+    pub proxy_mode: download_engine::ProxyMode,
+    #[serde(default)]
+    pub proxy_url: String,
+    #[serde(default = "default_download_timeout_sec")]
+    pub timeout_sec: u16,
+    #[serde(default = "default_download_retries")]
+    pub retries: u8,
+}
+
+fn default_download_timeout_sec() -> u16 {
+    download_engine::network::DEFAULT_TIMEOUT_SEC
+}
+
+fn default_download_retries() -> u8 {
+    download_engine::network::DEFAULT_RETRIES
+}
+
+impl DownloadSettings {
+    pub fn to_engine_settings(&self) -> download_engine::DownloadSettings {
+        download_engine::DownloadSettings {
+            source: self.source,
+            max_concurrent_downloads: self.max_concurrent_downloads,
+            connections_per_file: self.connections_per_file,
+            aria2_enabled: self.aria2_enabled,
+            proxy_mode: self.proxy_mode,
+            proxy_url: self.proxy_url.clone(),
+            timeout_sec: self.timeout_sec,
+            retries: self.retries,
+        }
+    }
 }
 
 impl Default for DownloadSettings {
@@ -47,6 +78,10 @@ impl Default for DownloadSettings {
             max_concurrent_downloads: 16,
             connections_per_file: 256,
             aria2_enabled: true,
+            proxy_mode: download_engine::ProxyMode::None,
+            proxy_url: String::new(),
+            timeout_sec: default_download_timeout_sec(),
+            retries: default_download_retries(),
         }
     }
 }
@@ -192,6 +227,12 @@ pub struct LauncherSettings {
     /// 一个无法兑现的隐私承诺。现在它对应一件真的会发生的事——写本地日志文件，
     /// 由用户自己决定要不要把文件贴到 issue 里。没有任何数据离开这台机器。
     #[serde(default)]
+    /*
+     * 日志默认开启。
+     *
+     * 内容已经过 `redact_log` 脱敏，不含凭据；而「装到 90% 卡住、日志里什么
+     * 都没有」是不可诊断的——用户报问题时手里必须有证据。想关掉仍可在设置里关。
+     */
     pub launcher_log_enabled: bool,
     /// 是否在启动器启动时清掉已结束的下载任务记录（默认开启）。
     ///
@@ -289,7 +330,7 @@ impl Default for LauncherSettings {
             announcement_policy: UpdatePolicy::Notify,
             cache_directory: None,
             game_root: None,
-            launcher_log_enabled: false,
+            launcher_log_enabled: true,
             clear_finished_tasks: true,
             llama_server_path: None,
             opacity: 100,
@@ -422,9 +463,16 @@ impl InstanceRecord {
     /// 早期实例的版本文件在 `instance_dir/versions/<mc 版本>`。如果那个目录存在，
     /// 仍然用它——不迁移、不复制。判断放在这里而不是调用点，三条路径
     /// （安装 / 启动 / 加载器）就都自动一致。
+    ///
+    /// 判据必须精确到「`versions/<mc 版本>` 这一层」，不能只看 `versions/` 是否
+    /// 存在：当前布局在共享根下写的是 `versions/<实例目录名>/<mc 版本>/`，而隔离
+    /// 实例的共享根就是 `instance_dir`，于是安装完成后 `instance_dir/versions/`
+    /// 一定存在。若仅凭它存在就判成旧布局，`version_dir()` 会少掉 `<实例目录名>`
+    /// 这一层，指向一个不存在的路径——启动、Java 选择、加载器安装都会报
+    /// 「系统找不到指定的路径」。
     pub fn version_root(&self) -> PathBuf {
         let legacy = self.instance_dir.join("versions");
-        if legacy.is_dir() {
+        if legacy.join(&self.game_version).is_dir() {
             return legacy;
         }
         match self.instance_dir.file_name().and_then(|n| n.to_str()) {

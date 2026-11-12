@@ -137,6 +137,30 @@ const MAX_JAR_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 256 * 1024;
 const MAX_ZIP_ENTRIES: usize = 16_384;
 const MAX_CENTRAL_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_NESTED_DEPTH: usize = 8;
+const MAX_TOTAL_JARS: usize = 1024;
+const MAX_TOTAL_ENTRIES: usize = 65_536;
+const MAX_EXPANDED_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Default)]
+struct InspectionBudget {
+    jars: usize,
+    entries: usize,
+    expanded: u64,
+    jarjar_ranges: BTreeMap<String, Vec<serde_json::Value>>,
+    jarjar_candidates: BTreeMap<String, Vec<(String, String)>>,
+}
+
+fn safe_nested_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 1024
+        && path.ends_with(".jar")
+        && !path.contains(['\\', ':', '\0'])
+        && !path.starts_with('/')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
 
 fn finding(
     severity: ModIssueSeverity,
@@ -156,12 +180,56 @@ fn file_error(code: &str, message: impl Into<String>, name: &str) -> ModIssue {
     finding(ModIssueSeverity::Error, code, message, vec![name.into()])
 }
 
+#[path = "mods_forge.rs"]
+mod forge_metadata;
+
+#[path = "mods_solver.rs"]
+mod nested_solver;
+#[path = "mods_versions.rs"]
+mod versions;
+use nested_solver::provider_map;
+use versions::Match;
+
 #[derive(Clone)]
-struct Dependency {
-    id: String,
-    versions: serde_json::Value,
+enum Dependency {
+    Mod {
+        id: String,
+        versions: serde_json::Value,
+    },
+    Any(Vec<Dependency>),
+    Conditional {
+        dependency: Box<Dependency>,
+        unless: Box<Dependency>,
+    },
+    Unknown,
 }
 
+impl Dependency {
+    fn new(id: impl Into<String>, versions: serde_json::Value) -> Self {
+        Self::Mod {
+            id: id.into(),
+            versions,
+        }
+    }
+    fn description(&self) -> String {
+        match self {
+            Self::Mod { id, versions } => format!("{id} {versions}"),
+            Self::Any(items) => items
+                .iter()
+                .map(Self::description)
+                .collect::<Vec<_>>()
+                .join(" 或 "),
+            Self::Conditional { dependency, unless } => format!(
+                "{}（除非 {}）",
+                dependency.description(),
+                unless.description()
+            ),
+            Self::Unknown => "不受支持的依赖表达式".into(),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct InspectedMod {
     file: String,
     id: String,
@@ -169,25 +237,35 @@ struct InspectedMod {
     provides: Vec<(String, String)>,
     depends: Vec<Dependency>,
     conflicts: Vec<Dependency>,
-    nested: bool,
+    nested: Vec<String>,
+    embedded: bool,
+    artifact: Option<(String, String)>,
+    containers: Vec<(String, String)>,
     quilt: bool,
+    forge: Option<&'static str>,
 }
 
 /// Inspect enabled JARs without extracting files, loading classes, or executing mods.
 ///
-/// This is a best-effort static check, NOT a compatibility guarantee. Only root
-/// Fabric schema 1 and Quilt schema 1 JSON metadata are understood. Filenames do
-/// not identify mods. Fabric metadata is accepted on Quilt; Quilt-only metadata
-/// is not accepted on Fabric. Unknown loaders do not produce loader guesses.
-/// Dependencies on built-in game/runtime/loader IDs are omitted. Complex conflict
-/// version predicates are never guessed; dependency version compatibility is not
-/// evaluated. Nested JARs and unsupported metadata make absence checks incomplete.
+/// Best-effort static inspection, never a runtime compatibility guarantee.
+/// Supports Fabric comparator AND, JSON-array/string `||` OR, wildcards, loader
+/// caret/tilde and prereleases; Quilt alternatives / any / all / unless; Forge
+/// numeric Maven ranges, unions, open bounds and common qualifiers. Unsupported
+/// grammar/version forms produce `unknown_version_constraint`, never compatibility.
+/// Built-in game/runtime/loader dependencies are omitted (runtime not supplied).
 ///
-/// Limits: 512 enabled JARs, 8192 directory entries, 256 MiB per JAR, 16384 ZIP
-/// entries, 8 MiB central directory and 256 KiB per metadata document. ZIP64 and
-/// ambiguous metadata/file name casing are rejected. Disabled files are ignored.
-/// Findings (including I/O failures) are returned in deterministic order. An empty
-/// result means no supported static issue was found, not that mods are compatible.
+/// Fabric/Quilt `jars` and Forge/NeoForge JarJar declarations are recursively read
+/// in memory. Nested Fabric candidates are optional and root IDs take precedence;
+/// JarJar coordinates and artifact versions are separate from mod IDs/versions.
+/// Limits: 512 root JARs, 8192 directory entries, 256 MiB/JAR, 16384 ZIP entries
+/// and 8 MiB central directory/JAR, 256 KiB/metadata, nesting depth 8, 1024 total
+/// JARs, 65536 total entries, 256 MiB cumulative decompressed reads, 4096 nested
+/// search states / 32768 candidate checks. ZIP64, symlinks and unsafe/ambiguous
+/// declared paths are rejected.
+/// Unreadable nests suspend absence/version-error conclusions, not other findings.
+/// Multi-level JarJar constraints are conservatively intersected across discovered
+/// containers; conditional packaging beyond these declarations is not simulated.
+/// Disabled JARs are ignored. Findings are deterministic; no classes are loaded.
 pub fn inspect_mods(instance: &InstanceRecord) -> Vec<ModIssue> {
     let mut issues = Vec::new();
     let directory = match mods_directory(instance) {
@@ -269,9 +347,15 @@ pub fn inspect_mods(instance: &InstanceRecord) -> Vec<ModIssue> {
             files.clone(),
         ));
     }
-    let loader = instance.loader.split('@').next().unwrap_or("");
+    let loader = match instance.loader.split('@').next().unwrap_or("") {
+        "legacyfabric" => "fabric",
+        "cleanroom" => "forge",
+        "optifine" => "vanilla",
+        other => other,
+    };
     let mut complete = ambiguous.is_empty();
     let mut mods = Vec::new();
+    let mut budget = InspectionBudget::default();
     for (name, path) in candidates {
         if ambiguous.contains(&name) {
             continue;
@@ -285,13 +369,11 @@ pub fn inspect_mods(instance: &InstanceRecord) -> Vec<ModIssue> {
             ));
             continue;
         }
-        match inspect_jar(&path, &name, loader) {
+        match inspect_jar(&path, &name, loader, &mut budget) {
             Ok((metadata, mut jar_issues, understood)) => {
                 complete &= understood;
                 issues.append(&mut jar_issues);
-                if let Some(metadata) = metadata {
-                    mods.push(metadata);
-                }
+                mods.extend(metadata);
             }
             Err(issue) => {
                 complete = false;
@@ -299,24 +381,16 @@ pub fn inspect_mods(instance: &InstanceRecord) -> Vec<ModIssue> {
             }
         }
     }
-    let mut providers = BTreeMap::<String, Vec<(usize, String)>>::new();
-    for (index, metadata) in mods.iter().enumerate() {
-        if incompatible_loader(metadata, loader) {
-            continue;
-        }
-        providers
-            .entry(metadata.id.clone())
-            .or_default()
-            .push((index, metadata.version.clone()));
-        for (id, version) in &metadata.provides {
-            if id != &metadata.id {
-                providers
-                    .entry(id.clone())
-                    .or_default()
-                    .push((index, version.clone()));
-            }
-        }
-    }
+    let (selected, resolved) = nested_solver::select(mods, loader, &budget, &mut issues);
+    let mods = selected;
+    complete &= resolved;
+    let providers = provider_map(
+        mods.iter()
+            .enumerate()
+            .filter(|(_, m)| !incompatible_loader(m, loader))
+            .map(|(i, _)| i),
+        &mods,
+    );
     // Real IDs, unlike aliases, must be unique. Several mods may provide an alias.
     let mut ids = BTreeMap::<&str, Vec<String>>::new();
     for metadata in &mods {
@@ -339,41 +413,102 @@ pub fn inspect_mods(instance: &InstanceRecord) -> Vec<ModIssue> {
                 "incompatible_loader",
                 format!(
                     "元数据声明的 {} 模组与实例加载器 {loader} 不兼容。",
-                    if metadata.quilt { "Quilt" } else { "Fabric" }
+                    metadata
+                        .forge
+                        .unwrap_or(if metadata.quilt { "Quilt" } else { "Fabric" })
                 ),
                 &metadata.file,
             ));
             continue;
         }
-        if !matches!(loader, "fabric" | "quilt") {
+        if !matches!(loader, "fabric" | "quilt" | "forge" | "neoforge") {
             continue;
         }
-        if complete {
-            for dependency in &metadata.depends {
-                if !builtin_id(&dependency.id) && !providers.contains_key(&dependency.id) {
-                    issues.push(file_error(
-                        "missing_dependency",
+        for dependency in &metadata.depends {
+            let result = dependency_match(dependency, &providers, metadata.forge.is_some(), false);
+            let targets = dependency_targets(dependency, &providers);
+            match result {
+                Match::Yes => {}
+                Match::Unknown => issues.push(finding(
+                    ModIssueSeverity::Warning,
+                    "unknown_version_constraint",
+                    format!(
+                        "模组 {} 的依赖 {} 含有不支持的约束或无法比较的版本；未假定兼容。",
+                        metadata.id,
+                        dependency.description()
+                    ),
+                    vec![metadata.file.clone()],
+                )),
+                Match::No if !targets.is_empty() && complete => {
+                    let mut files = vec![metadata.file.clone()];
+                    files.extend(targets.iter().map(|i| mods[*i].file.clone()));
+                    let actual = targets
+                        .iter()
+                        .map(|i| format!("{} {}", mods[*i].id, mods[*i].version))
+                        .collect::<Vec<_>>()
+                        .join("、");
+                    issues.push(finding(
+                        ModIssueSeverity::Error,
+                        "dependency_version_mismatch",
                         format!(
-                            "模组 {} 缺少强制依赖 {}（仅检查声明的 ID，未判断版本范围）。",
-                            metadata.id, dependency.id
+                            "模组 {} 需要 {}，已发现版本不满足：{actual}。",
+                            metadata.id,
+                            dependency.description()
                         ),
-                        &metadata.file,
+                        files,
                     ));
                 }
+                Match::No if complete => issues.push(file_error(
+                    "missing_dependency",
+                    format!(
+                        "模组 {} 缺少强制依赖 {}。",
+                        metadata.id,
+                        dependency.description()
+                    ),
+                    &metadata.file,
+                )),
+                Match::No => {}
             }
         }
         for conflict in &metadata.conflicts {
-            if builtin_id(&conflict.id) {
+            let targets = dependency_targets(conflict, &providers);
+            if dependency_match(conflict, &providers, metadata.forge.is_some(), true)
+                == Match::Unknown
+            {
+                issues.push(finding(
+                    ModIssueSeverity::Warning,
+                    "unknown_version_constraint",
+                    format!(
+                        "模组 {} 的冲突约束 {} 无法确定；未假定兼容。",
+                        metadata.id,
+                        conflict.description()
+                    ),
+                    vec![metadata.file.clone()],
+                ));
                 continue;
             }
-            if let Some(targets) = providers.get(&conflict.id) {
-                for (index, version) in targets {
-                    let target = &mods[*index];
-                    if target.file != metadata.file
-                        && certain_version_match(&conflict.versions, version)
-                    {
-                        issues.push(finding(ModIssueSeverity::Warning, "declared_conflict", format!("模组 {} 声明与 {} {} 冲突；这里只确认了静态声明，不能保证运行时兼容性。", metadata.id, conflict.id, version), vec![metadata.file.clone(), target.file.clone()]));
-                    }
+            // Test each provider independently, preserving aliases and alternatives.
+            for index in targets {
+                let target = &mods[index];
+                if target.file == metadata.file {
+                    continue;
+                }
+                let one = provider_map(std::iter::once(index), &mods);
+                if conflict_match(conflict, &providers, &one, metadata.forge.is_some())
+                    == Match::Yes
+                {
+                    issues.push(finding(
+                        ModIssueSeverity::Warning,
+                        "declared_conflict",
+                        format!(
+                            "模组 {} 声明与 {} {} 冲突（{}）；这是静态声明，不是运行时保证。",
+                            metadata.id,
+                            target.id,
+                            target.version,
+                            conflict.description()
+                        ),
+                        vec![metadata.file.clone(), target.file.clone()],
+                    ));
                 }
             }
         }
@@ -391,6 +526,12 @@ pub fn inspect_mods(instance: &InstanceRecord) -> Vec<ModIssue> {
 }
 
 fn incompatible_loader(metadata: &InspectedMod, loader: &str) -> bool {
+    if let Some(kind) = metadata.forge {
+        return matches!(
+            loader,
+            "vanilla" | "fabric" | "quilt" | "forge" | "neoforge"
+        ) && loader != kind;
+    }
     match loader {
         "fabric" => metadata.quilt,
         "vanilla" | "forge" | "neoforge" => true,
@@ -415,7 +556,7 @@ fn builtin_id(id: &str) -> bool {
 // Bound allocations *before* ZipArchive parses its central directory. Reject
 // ZIP64, multi-disk, prepended/trailing data and noncanonical metadata names.
 // Walk raw central entries because ZipArchive collapses duplicate entry names.
-fn check_zip(file: &mut fs::File, name: &str) -> Result<(), ModIssue> {
+fn check_zip<R: Read + Seek>(file: &mut R, name: &str) -> Result<usize, ModIssue> {
     let invalid = || file_error("invalid_metadata", "JAR ZIP 目录损坏或格式不受支持。", name);
     let limit = || {
         file_error(
@@ -424,7 +565,7 @@ fn check_zip(file: &mut fs::File, name: &str) -> Result<(), ModIssue> {
             name,
         )
     };
-    let size = file.metadata().map_err(|_| invalid())?.len();
+    let size = file.seek(SeekFrom::End(0)).map_err(|_| invalid())?;
     if size > MAX_JAR_BYTES {
         return Err(limit());
     }
@@ -477,13 +618,31 @@ fn check_zip(file: &mut fs::File, name: &str) -> Result<(), ModIssue> {
         let entry_name = central
             .get(offset + 46..offset + 46 + name_length)
             .ok_or_else(invalid)?;
-        for canonical in [b"fabric.mod.json".as_slice(), b"quilt.mod.json".as_slice()] {
+        for canonical in [
+            b"fabric.mod.json".as_slice(),
+            b"quilt.mod.json".as_slice(),
+            b"META-INF/mods.toml".as_slice(),
+            b"META-INF/neoforge.mods.toml".as_slice(),
+            b"META-INF/jarjar/metadata.json".as_slice(),
+            b"META-INF/MANIFEST.MF".as_slice(),
+        ] {
             if entry_name.eq_ignore_ascii_case(canonical)
                 && (entry_name != canonical || !metadata_names.insert(canonical.to_vec()))
             {
                 return Err(file_error(
                     "ambiguous_metadata",
                     "JAR 内元数据名称重复或存在大小写歧义。",
+                    name,
+                ));
+            }
+        }
+        if entry_name.len() >= 4 && entry_name[entry_name.len() - 4..].eq_ignore_ascii_case(b".jar")
+        {
+            let key: Vec<_> = entry_name.iter().map(u8::to_ascii_lowercase).collect();
+            if !metadata_names.insert(key) {
+                return Err(file_error(
+                    "ambiguous_metadata",
+                    "嵌套 JAR 条目存在重复或大小写歧义。",
                     name,
                 ));
             }
@@ -497,14 +656,15 @@ fn check_zip(file: &mut fs::File, name: &str) -> Result<(), ModIssue> {
         return Err(invalid());
     }
     file.rewind().map_err(|_| invalid())?;
-    Ok(())
+    Ok(count)
 }
 
 fn inspect_jar(
     path: &Path,
     name: &str,
     loader: &str,
-) -> Result<(Option<InspectedMod>, Vec<ModIssue>, bool), ModIssue> {
+    budget: &mut InspectionBudget,
+) -> Result<(Vec<InspectedMod>, Vec<ModIssue>, bool), ModIssue> {
     let metadata =
         fs::symlink_metadata(path).map_err(|e| file_error("inspection_io", e.to_string(), name))?;
     if !metadata.file_type().is_file() {
@@ -514,7 +674,7 @@ fn inspect_jar(
             name,
         ));
     }
-    let mut file =
+    let file =
         fs::File::open(path).map_err(|e| file_error("inspection_io", e.to_string(), name))?;
     // Verify the opened handle still refers to the checked regular file before
     // reading bytes. This also catches replacement by a symlink during open.
@@ -543,81 +703,245 @@ fn inspect_jar(
             ));
         }
     }
-    check_zip(&mut file, name)?;
+    inspect_archive(file, name, loader, 0, budget)
+}
+
+fn read_entry<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    path: &str,
+    name: &str,
+    limit: u64,
+    budget: &mut InspectionBudget,
+) -> Result<Option<Vec<u8>>, ModIssue> {
+    let mut entry = match archive.by_name(path) {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(e) => return Err(file_error("invalid_metadata", e.to_string(), name)),
+    };
+    if entry.is_symlink() || entry.is_dir() {
+        return Err(file_error(
+            "unsafe_metadata",
+            "拒绝读取非普通归档条目。",
+            name,
+        ));
+    }
+    if entry.size() > limit || budget.expanded.saturating_add(entry.size()) > MAX_EXPANDED_BYTES {
+        return Err(file_error(
+            if limit == MAX_METADATA_BYTES {
+                "metadata_limit"
+            } else {
+                "archive_limit"
+            },
+            "解压后条目大小或累计字节超限。",
+            name,
+        ));
+    }
+    let mut bytes = Vec::new();
+    (&mut entry)
+        .take(limit.min(MAX_EXPANDED_BYTES - budget.expanded) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| file_error("invalid_metadata", e.to_string(), name))?;
+    budget.expanded = budget.expanded.saturating_add(bytes.len() as u64);
+    if bytes.len() as u64 > limit || budget.expanded > MAX_EXPANDED_BYTES {
+        return Err(file_error("archive_limit", "解压后累计字节超限。", name));
+    }
+    Ok(Some(bytes))
+}
+
+fn inspect_archive<R: Read + Seek>(
+    mut file: R,
+    name: &str,
+    loader: &str,
+    depth: usize,
+    budget: &mut InspectionBudget,
+) -> Result<(Vec<InspectedMod>, Vec<ModIssue>, bool), ModIssue> {
+    if depth > MAX_NESTED_DEPTH || budget.jars >= MAX_TOTAL_JARS {
+        return Err(file_error(
+            "archive_limit",
+            "嵌套 JAR 深度或累计数量超限。",
+            name,
+        ));
+    }
+    budget.jars += 1;
+    budget.entries += check_zip(&mut file, name)?;
+    if budget.entries > MAX_TOTAL_ENTRIES {
+        return Err(file_error("archive_limit", "累计 ZIP 条目超限。", name));
+    }
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| file_error("invalid_metadata", e.to_string(), name))?;
-    if archive.len() > MAX_ZIP_ENTRIES {
-        return Err(file_error("archive_limit", "ZIP 条目数量超限。", name));
-    }
     let mut fabric = None;
     let mut quilt = None;
-    for (entry_name, destination, is_quilt) in [
-        ("fabric.mod.json", &mut fabric, false),
-        ("quilt.mod.json", &mut quilt, true),
-    ] {
-        let mut entry = match archive.by_name(entry_name) {
-            Ok(entry) => entry,
-            Err(zip::result::ZipError::FileNotFound) => continue,
-            Err(error) => return Err(file_error("invalid_metadata", error.to_string(), name)),
-        };
-        if entry.is_symlink() || entry.is_dir() {
-            return Err(file_error(
-                "unsafe_metadata",
-                "拒绝读取非普通元数据条目。",
-                name,
-            ));
+    // Only parse the descriptor the loader will prefer; an unrelated descriptor
+    // must not poison an otherwise valid dual-loader archive.
+    let json_order = if loader == "quilt" {
+        [("quilt.mod.json", true), ("fabric.mod.json", false)]
+    } else {
+        [("fabric.mod.json", false), ("quilt.mod.json", true)]
+    };
+    let mut forge_mods = if matches!(loader, "forge" | "neoforge") {
+        forge_metadata::read(&mut archive, name, loader, budget)?
+    } else {
+        None
+    };
+    let forge_selected = matches!(loader, "forge" | "neoforge") && forge_mods.is_some();
+    if !forge_selected {
+        for (path, is_quilt) in json_order {
+            if let Some(bytes) = read_entry(&mut archive, path, name, MAX_METADATA_BYTES, budget)? {
+                let parsed = parse_metadata(&bytes, name, is_quilt)?;
+                if is_quilt {
+                    quilt = Some(parsed);
+                } else {
+                    fabric = Some(parsed);
+                }
+                break;
+            }
         }
-        if entry.size() > MAX_METADATA_BYTES {
-            return Err(file_error(
-                "metadata_limit",
-                "模组 JSON 元数据超出 256 KiB 限制。",
-                name,
-            ));
-        }
-        let mut bytes = Vec::new();
-        (&mut entry)
-            .take(MAX_METADATA_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| file_error("invalid_metadata", e.to_string(), name))?;
-        if bytes.len() as u64 > MAX_METADATA_BYTES {
-            return Err(file_error(
-                "metadata_limit",
-                "解压后的模组 JSON 元数据超限。",
-                name,
-            ));
-        }
-        *destination = Some(parse_metadata(&bytes, name, is_quilt)?);
     }
-    let selected = if loader == "quilt" {
-        quilt.or(fabric)
+    if fabric.is_none()
+        && quilt.is_none()
+        && forge_mods.is_none()
+        && !matches!(loader, "forge" | "neoforge")
+    {
+        forge_mods = forge_metadata::read(&mut archive, name, loader, budget)?;
+    }
+    let mut mods = if forge_selected {
+        forge_mods.take().unwrap()
+    } else if let Some(item) = quilt.or(fabric) {
+        vec![item]
     } else {
-        fabric.or(quilt)
+        forge_mods.unwrap_or_default()
     };
-    let Some(selected) = selected else {
-        // A JAR without either supported descriptor is not identified from its name.
-        return Ok((
-            None,
-            vec![finding(
-                ModIssueSeverity::Warning,
-                "unrecognized_metadata",
-                "JAR 没有支持的 Fabric/Quilt 根元数据；未根据文件名猜测模组身份。",
-                vec![name.into()],
-            )],
-            false,
-        ));
-    };
-    let complete = !selected.nested;
-    let issues = if selected.nested {
-        vec![finding(
+    let recognized = !mods.is_empty();
+    let mut paths: Vec<(String, Option<(String, String)>)> = Vec::new();
+    for metadata in &mods {
+        if !incompatible_loader(metadata, loader)
+            && (matches!(loader, "fabric" | "quilt") || metadata.forge.is_some())
+        {
+            paths.extend(metadata.nested.iter().cloned().map(|path| (path, None)));
+        }
+    }
+    let mut jarjar = false;
+    if matches!(loader, "forge" | "neoforge") {
+        if let Some(bytes) = read_entry(
+            &mut archive,
+            "META-INF/jarjar/metadata.json",
+            name,
+            MAX_METADATA_BYTES,
+            budget,
+        )? {
+            jarjar = true;
+            let root: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|_| file_error("invalid_metadata", "JarJar 元数据 JSON 无效。", name))?;
+            let jars = root
+                .get("jars")
+                .and_then(serde_json::Value::as_array)
+                .filter(|jars| jars.len() <= MAX_TOTAL_JARS)
+                .ok_or_else(|| {
+                    file_error("invalid_metadata", "JarJar jars 字段无效或超限。", name)
+                })?;
+            for jar in jars {
+                let field = |pointer| {
+                    jar.pointer(pointer)
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| {
+                            file_error(
+                                "invalid_metadata",
+                                "JarJar 条目缺少标识、路径或版本。",
+                                name,
+                            )
+                        })
+                };
+                let path = field("/path")?;
+                if !safe_nested_path(path) {
+                    return Err(file_error(
+                        "unsafe_nested_path",
+                        "JarJar 路径不安全。",
+                        name,
+                    ));
+                }
+                let key = format!(
+                    "{}:{}",
+                    field("/identifier/group")?,
+                    field("/identifier/artifact")?
+                );
+                let version = field("/version/artifactVersion")?.to_owned();
+                let range = serde_json::Value::String(field("/version/range")?.into());
+                budget
+                    .jarjar_ranges
+                    .entry(key.clone())
+                    .or_default()
+                    .push(range);
+                paths.push((path.into(), Some((key, version))));
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    let mut issues = Vec::new();
+    let mut complete =
+        recognized || (depth > 0 && matches!(loader, "forge" | "neoforge")) || jarjar;
+    if !complete {
+        issues.push(finding(
             ModIssueSeverity::Warning,
-            "nested_mods_unchecked",
-            "元数据包含嵌套 JAR；本地静态检查不展开嵌套模组。",
+            "unrecognized_metadata",
+            "JAR 没有支持的模组元数据。",
             vec![name.into()],
-        )]
-    } else {
-        vec![]
-    };
-    Ok((Some(selected), issues, complete))
+        ));
+    }
+    for (path, artifact) in paths {
+        let child_name = format!("{name}!/{path}");
+        let result = (|| {
+            if depth >= MAX_NESTED_DEPTH {
+                return Err(file_error(
+                    "archive_limit",
+                    "嵌套 JAR 深度超限。",
+                    &child_name,
+                ));
+            }
+            let bytes = read_entry(&mut archive, &path, &child_name, MAX_JAR_BYTES, budget)?
+                .ok_or_else(|| {
+                    file_error("missing_nested_jar", "声明的嵌套 JAR 不存在。", &child_name)
+                })?;
+            inspect_archive(
+                std::io::Cursor::new(bytes),
+                &child_name,
+                loader,
+                depth + 1,
+                budget,
+            )
+        })();
+        match result {
+            Ok((mut children, mut child_issues, understood)) => {
+                complete &= understood;
+                if understood {
+                    if let Some((key, version)) = &artifact {
+                        budget
+                            .jarjar_candidates
+                            .entry(key.clone())
+                            .or_default()
+                            .push((version.clone(), child_name.clone()));
+                    }
+                }
+                for child in &mut children {
+                    child.embedded = true;
+                    if let Some((key, _)) = &artifact {
+                        child.containers.push((key.clone(), child_name.clone()));
+                        if child.file == child_name {
+                            child.artifact = artifact.clone();
+                        }
+                    }
+                }
+                mods.append(&mut children);
+                issues.append(&mut child_issues);
+            }
+            Err(issue) => {
+                complete = false;
+                issues.push(issue);
+            }
+        }
+    }
+    Ok((mods, issues, complete))
 }
 
 fn valid_id(id: &str) -> bool {
@@ -668,11 +992,30 @@ fn parse_metadata(bytes: &[u8], name: &str, quilt: bool) -> Result<InspectedMod,
         provides: vec![],
         depends: vec![],
         conflicts: vec![],
-        nested: false,
+        nested: vec![],
+        embedded: false,
+        artifact: None,
+        containers: vec![],
         quilt,
+        forge: None,
     };
     if let Some(jars) = body.get("jars").or_else(|| root.get("jars")) {
-        result.nested = !jars.as_array().ok_or_else(invalid)?.is_empty();
+        for jar in jars.as_array().ok_or_else(invalid)? {
+            let path = if quilt {
+                jar.as_str()
+            } else {
+                jar.get("file").and_then(Value::as_str)
+            }
+            .ok_or_else(invalid)?;
+            if !safe_nested_path(path) {
+                return Err(file_error(
+                    "unsafe_nested_path",
+                    "嵌套 JAR 路径不安全。",
+                    name,
+                ));
+            }
+            result.nested.push(path.into());
+        }
     }
     if let Some(provides) = body.get("provides") {
         for provided in provides.as_array().ok_or_else(invalid)? {
@@ -702,43 +1045,9 @@ fn parse_metadata(bytes: &[u8], name: &str, quilt: bool) -> Result<InspectedMod,
         };
         if quilt {
             for declaration in declarations.as_array().ok_or_else(invalid)? {
-                // Quilt arrays express alternatives; `unless` is conditional. Neither
-                // implies an unconditional missing dependency or certain conflict.
-                if declaration.is_array() {
-                    continue;
+                if let Some(dependency) = quilt_dependency(declaration, 0).map_err(|_| invalid())? {
+                    target.push(dependency);
                 }
-                if let Some(id) = declaration.as_str() {
-                    if !valid_id(id) {
-                        return Err(invalid());
-                    }
-                    target.push(Dependency {
-                        id: id.into(),
-                        versions: Value::String("*".into()),
-                    });
-                    continue;
-                }
-                let declaration = declaration.as_object().ok_or_else(invalid)?;
-                let id = declaration
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|s| valid_id(s))
-                    .ok_or_else(invalid)?;
-                if let Some(optional) = declaration.get("optional")
-                    && optional.as_bool().ok_or_else(invalid)?
-                {
-                    continue;
-                }
-                if declaration.contains_key("unless") {
-                    continue;
-                }
-                let versions = declaration
-                    .get("versions")
-                    .cloned()
-                    .unwrap_or(Value::String("*".into()));
-                target.push(Dependency {
-                    id: id.into(),
-                    versions,
-                });
             }
         } else {
             for (id, versions) in declarations.as_object().ok_or_else(invalid)? {
@@ -750,38 +1059,161 @@ fn parse_metadata(bytes: &[u8], name: &str, quilt: bool) -> Result<InspectedMod,
                 {
                     return Err(invalid());
                 }
-                target.push(Dependency {
-                    id: id.clone(),
-                    versions: versions.clone(),
-                });
+                target.push(Dependency::new(id.clone(), versions.clone()));
             }
         }
     }
     Ok(result)
 }
 
-fn certain_version_match(predicate: &serde_json::Value, version: &str) -> bool {
-    if let Some(alternatives) = predicate.as_array() {
-        return alternatives
-            .iter()
-            .any(|item| certain_version_match(item, version));
+fn quilt_dependency(value: &serde_json::Value, depth: usize) -> Result<Option<Dependency>, ()> {
+    use serde_json::Value;
+    if depth >= 16 {
+        return Ok(Some(Dependency::Unknown));
     }
-    let Some(predicate) = predicate.as_str() else {
-        return false;
-    };
-    if predicate == "*" {
-        return true;
+    if let Some(id) = value.as_str() {
+        if !valid_id(id) {
+            return Err(());
+        }
+        return Ok(Some(Dependency::new(id, Value::String("*".into()))));
     }
-    // Only literal, full three-component versions can establish equality. No
-    // ranges, wildcards, logical expressions, or partial versions are evaluated.
-    let literal = predicate.strip_prefix('=').unwrap_or(predicate);
-    let core = literal.split(['-', '+']).next().unwrap_or("");
-    let components: Vec<_> = core.split('.').collect();
-    literal == version
-        && components.len() == 3
-        && components
+    if let Some(items) = value.as_array() {
+        if items.is_empty() || items.len() > 128 {
+            return Err(());
+        }
+        let mut alternatives = Vec::new();
+        for item in items {
+            if let Some(item) = quilt_dependency(item, depth + 1)? {
+                alternatives.push(item);
+            }
+        }
+        return Ok(Some(Dependency::Any(alternatives)));
+    }
+    let map = value.as_object().ok_or(())?;
+    let id = map
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| valid_id(id))
+        .ok_or(())?;
+    if map
+        .get("optional")
+        .map(|v| v.as_bool().ok_or(()))
+        .transpose()?
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+    let dependency = Dependency::new(
+        id,
+        map.get("versions")
+            .cloned()
+            .unwrap_or(Value::String("*".into())),
+    );
+    if let Some(unless) = map.get("unless") {
+        let unless = quilt_dependency(unless, depth + 1)?.unwrap_or(Dependency::Unknown);
+        Ok(Some(Dependency::Conditional {
+            dependency: Box::new(dependency),
+            unless: Box::new(unless),
+        }))
+    } else {
+        Ok(Some(dependency))
+    }
+}
+
+fn dependency_match(
+    dependency: &Dependency,
+    providers: &BTreeMap<String, Vec<(usize, String)>>,
+    forge: bool,
+    conflict: bool,
+) -> Match {
+    match dependency {
+        Dependency::Mod {
+            id,
+            versions: predicate,
+        } => {
+            if builtin_id(id) {
+                return if conflict { Match::No } else { Match::Yes };
+            }
+            providers
+                .get(id)
+                .map(|targets| {
+                    Match::any(
+                        targets
+                            .iter()
+                            .map(|(_, version)| versions::evaluate(predicate, version, forge)),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    if versions::evaluate(predicate, "0", forge) == Match::Unknown {
+                        Match::Unknown
+                    } else {
+                        Match::No
+                    }
+                })
+        }
+        Dependency::Any(items) => Match::any(
+            items
+                .iter()
+                .map(|d| dependency_match(d, providers, forge, conflict)),
+        ),
+        Dependency::Conditional { dependency, unless } => {
+            match dependency_match(unless, providers, forge, false) {
+                Match::Yes => {
+                    if conflict {
+                        Match::No
+                    } else {
+                        Match::Yes
+                    }
+                }
+                Match::No => dependency_match(dependency, providers, forge, conflict),
+                Match::Unknown => Match::Unknown,
+            }
+        }
+        Dependency::Unknown => Match::Unknown,
+    }
+}
+
+fn conflict_match(
+    dependency: &Dependency,
+    environment: &BTreeMap<String, Vec<(usize, String)>>,
+    targets: &BTreeMap<String, Vec<(usize, String)>>,
+    forge: bool,
+) -> Match {
+    match dependency {
+        Dependency::Any(items) => Match::any(
+            items
+                .iter()
+                .map(|item| conflict_match(item, environment, targets, forge)),
+        ),
+        Dependency::Conditional { dependency, unless } => {
+            match dependency_match(unless, environment, forge, false) {
+                Match::Yes => Match::No,
+                Match::No => conflict_match(dependency, environment, targets, forge),
+                Match::Unknown => Match::Unknown,
+            }
+        }
+        _ => dependency_match(dependency, targets, forge, true),
+    }
+}
+
+fn dependency_targets(
+    dependency: &Dependency,
+    providers: &BTreeMap<String, Vec<(usize, String)>>,
+) -> Vec<usize> {
+    match dependency {
+        Dependency::Mod { id, .. } => providers
+            .get(id)
+            .into_iter()
+            .flatten()
+            .map(|(i, _)| *i)
+            .collect(),
+        Dependency::Any(items) => items
             .iter()
-            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+            .flat_map(|d| dependency_targets(d, providers))
+            .collect(),
+        Dependency::Conditional { dependency, .. } => dependency_targets(dependency, providers),
+        Dependency::Unknown => vec![],
+    }
 }
 
 #[cfg(test)]

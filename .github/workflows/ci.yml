@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      real_install:
+        description: Download official Minecraft 1.21.4 (~1 GB per OS); no game launch
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,17 +27,98 @@ jobs:
       - run: npm ci --prefix design/flowlaunch-ui
       - run: npm run typecheck --prefix design/flowlaunch-ui
       - run: npm run build --prefix design/flowlaunch-ui
+      - run: npm ci --prefix design/tools
+      - run: node design/tools/workspace-recovery-regression.cjs
+      - run: node design/tools/i18n-critical-regression.cjs
+      - run: node design/tools/java-preferences-regression.cjs
+      - run: npx --prefix design/tools playwright install --with-deps chromium
+      - name: Browser interaction regression
+        shell: bash
+        run: |
+          npm run dev > /tmp/mfmcl-vite.log 2>&1 &
+          for attempt in {1..40}; do
+            if curl --silent --fail http://127.0.0.1:5173/ > /dev/null; then break; fi
+            sleep 1
+          done
+          node design/tools/interaction-regression.cjs
 
   rust-tests:
-    runs-on: ubuntu-24.04
+    name: Rust tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - name: Install Linux credential-store build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - run: cargo fmt --all -- --check
-      - run: cargo test -p mc-metadata -p download-engine -p launcher-core -p launcher-auth -p launcher-runtime -p mfmcl-cli
-      - run: cargo check -p launcher-auth --features native-credentials
+      - run: cargo test --locked -p mc-metadata -p download-engine -p launcher-core -p launcher-auth -p launcher-runtime -p mfmcl-cli -p crash-ai
+      - run: cargo check --locked -p launcher-auth --features native-credentials
+
+  real-jvm-smoke:
+    name: Real JVM fixture (${{ matrix.os }}, JDK 21)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Run real JVM tests (original fixture, not Minecraft or real login)
+        shell: bash
+        run: |
+          set -o pipefail
+          java -version
+          javac -version
+          jar --version
+          cargo test --locked -p launcher-core --test jvm_smoke -- --ignored --nocapture --test-threads=1 2>&1 | tee jvm-smoke.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jvm-smoke-${{ matrix.os }}
+          path: jvm-smoke.log
+          retention-days: 7
+
+  real-install-smoke:
+    name: Live official install (${{ matrix.os }}, no game launch)
+    if: github.event_name == 'workflow_dispatch' && inputs.real_install
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux credential-store build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Install, fully verify, retry, repair and restore in a fresh temporary root
+        shell: bash
+        env:
+          MFMCL_REAL_INSTALL: '1'
+        run: |
+          set -o pipefail
+          cargo test --locked -p launcher-runtime --test real_install -- --ignored --nocapture --test-threads=1 2>&1 | tee real-install.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-install-${{ matrix.os }}
+          path: real-install.log
+          retention-days: 7
 
   desktop-compile:
     name: Compile desktop backend (${{ matrix.os }})
@@ -59,7 +146,7 @@ jobs:
       - run: ${{ matrix.deps }}
         shell: bash
       - run: npm ci --prefix design/flowlaunch-ui
-      - run: cargo check -p mfmcl-desktop
+      - run: cargo test --locked -p mfmcl-desktop --lib
       # The CLI is a library the desktop binary links, so a break in either shows
       # up in the desktop build above; this catches the standalone binary too.
       - run: cargo check -p mfmcl-cli --all-targets

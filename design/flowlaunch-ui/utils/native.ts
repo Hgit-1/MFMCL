@@ -18,9 +18,11 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import type { InstanceOverrides as UiInstanceOverrides } from './instanceOverrides'
 import type { LauncherPrefs } from './launcherPrefs'
+import type { JavaSelectionRequest } from './java'
 import { PREVIEW_DATA } from './preview'
 import { previewModelSources, previewModelStatus } from './modelPreview'
 import { autoAllocateMb, deviceMemoryMbSync, lastKnownUsedMb } from './memory'
+import { manualAccent } from './accent'
 
 // ---------------------------------------------------------------------------
 // 与 Rust 结构对应的类型
@@ -36,7 +38,7 @@ export type TitleBarMode = 'default' | 'text' | 'image' | 'none'
 export type ModpackMergeMode = 'ask' | 'replace' | 'merge'
 export type UpdatePolicy = 'notify' | 'off'
 export type DownloadSource = 'official' | 'bmclapi' | 'mixed'
-export type LoaderKind = 'fabric' | 'quilt' | 'forge' | 'neoforge'
+export type LoaderKind = 'fabric' | 'quilt' | 'forge' | 'neoforge' | 'liteloader' | 'cleanroom' | 'legacyfabric' | 'optifine'
 export type InstanceState = 'not_installed' | 'installing' | 'ready' | 'failed'
 export type AccountKind = 'microsoft' | 'offline' | 'skin_server'
 export type DownloadTaskState = 'running' | 'paused' | 'completed' | 'cancelled' | 'failed' | 'interrupted'
@@ -47,6 +49,10 @@ export interface DownloadSettings {
   maxConcurrentDownloads: number
   connectionsPerFile: number
   aria2Enabled: boolean
+  proxyMode: 'none' | 'system' | 'http'
+  proxyUrl: string
+  timeoutSec: number
+  retries: number
 }
 
 /**
@@ -484,6 +490,21 @@ export interface PackPreview {
   overrideFiles: number
 }
 
+export interface MissingPackFile {
+  projectId: number
+  fileId: number
+  fileName: string | null
+  required: boolean
+  reason: string
+  canSelectLocal: boolean
+}
+
+export interface PackResolution {
+  sourcePath: string
+  preview: PackPreview
+  unresolvedFiles: MissingPackFile[]
+}
+
 /** 对应 Rust `LoaderVersion`。 */
 export interface LoaderVersion {
   version: string
@@ -615,7 +636,7 @@ export function fallbackSettings(): LauncherSettings {
     titleBar: 'default',
     homeSource: 'official',
     updatePolicy: 'notify',
-    download: { source: 'mixed', maxConcurrentDownloads: 16, connectionsPerFile: 256, aria2Enabled: true },
+    download: { source: 'mixed', maxConcurrentDownloads: 16, connectionsPerFile: 256, aria2Enabled: true, proxyMode: 'none', proxyUrl: '', timeoutSec: 60, retries: 2 },
   }
 }
 
@@ -656,7 +677,7 @@ export function prefsToSettings(prefs: LauncherPrefs, base: LauncherSettings): L
     ...base,
     themeMode: prefs.theme,
     themePreset: prefs.themePreset as ThemePreset,
-    customAccent: prefs.customAccent || base.customAccent,
+    customAccent: manualAccent(prefs),
     customBackground: prefs.backgroundImage || null,
     backgroundImage: prefs.backgroundImage || null,
     showGameLog: prefs.showGameLog,
@@ -665,7 +686,7 @@ export function prefsToSettings(prefs: LauncherPrefs, base: LauncherSettings): L
       ? autoAllocateMb({ totalMb: deviceMemoryMbSync(), usedMb: lastKnownUsedMb() })
       : prefs.memoryMb,
     memoryMode: prefs.memoryMode,
-    optimizeMemory: prefs.optimizeMemory,
+    optimizeMemory: false,
     windowWidth: prefs.windowWidth,
     windowHeight: prefs.windowHeight,
     extraJvmArgs: prefs.extraJvmArgs,
@@ -673,7 +694,7 @@ export function prefsToSettings(prefs: LauncherPrefs, base: LauncherSettings): L
     preLaunchCommand: prefs.preLaunchCommand,
     fullscreen: prefs.fullscreen,
     launcherVisibility: prefs.launcherVisibility === 'close' ? 'keep' : prefs.launcherVisibility,
-    closeAfterLaunch: prefs.launcherVisibility === 'close' || prefs.closeAfterLaunch,
+    closeAfterLaunch: false,
     defaultIsolated: prefs.defaultVersionIsolation,
     speedLimitKbps: prefs.speedLimitKbps,
     downloadDirectory: prefs.downloadDirectory || null,
@@ -704,6 +725,10 @@ export function prefsToSettings(prefs: LauncherPrefs, base: LauncherSettings): L
       maxConcurrentDownloads: prefs.maxConcurrentDownloads,
       connectionsPerFile: prefs.connectionsPerFile,
       aria2Enabled: prefs.aria2Enabled,
+      proxyMode: prefs.proxyMode,
+      proxyUrl: prefs.proxyUrl.trim(),
+      timeoutSec: prefs.downloadTimeoutSec,
+      retries: prefs.downloadRetries,
     },
   }
 }
@@ -999,20 +1024,13 @@ export async function resetInstanceSettings(instanceId: string): Promise<void> {
 // 启动 / 停止
 // ---------------------------------------------------------------------------
 
-/**
- * 启动实例。
- *
- * `javaPath` 是这个实例**解析后**要用的 Java 可执行文件。前端负责把实例级 Java
- * 设置（自动 / 版本范围 / 目录 / 指定路径）与全局设置合并成唯一一个路径，后端
- * 只管用——它没有运行时列表，无法自己做区间匹配。
- *
- * 传 `null` 表示「这次不用前端解析的结果」，退回到全局 `java_path` + 后端自动探测。
- */
+/** 启动实例；Java 选择规则由后端统一解析，javaPath 保留旧调用兼容。 */
 export async function launchInstance(
   instanceId: string,
   accountId: string,
   offlineConfirmed: boolean,
   javaPath: string | null = null,
+  javaSelection?: JavaSelectionRequest,
 ): Promise<void> {
   requireDesktop('启动游戏')
   await invoke('launch_instance', {
@@ -1021,6 +1039,7 @@ export async function launchInstance(
     offlineConfirmed,
     /* 后端参数名是 snake_case 对应的 camelCase：javaPath -> java_path。 */
     javaPath,
+    javaSelection,
   })
 }
 
@@ -1861,9 +1880,10 @@ function previewToggleMod(instanceId: string, fileName: string, enabled: boolean
  * 桌面版走 Rust 后端（同样的接口，带额外校验）；预览直连是为了让安装面板在浏览器
  * 里真的能选到版本，而不是永远显示「读取失败」。
  */
-const LOADER_META: Record<'fabric' | 'quilt', string> = {
+const LOADER_META: Record<'fabric' | 'quilt' | 'legacyfabric', string> = {
   fabric: 'https://meta.fabricmc.net/v2',
   quilt: 'https://meta.quiltmc.org/v3',
+  legacyfabric: 'https://meta.legacyfabric.net/v2',
 }
 
 /**
@@ -1890,6 +1910,9 @@ async function fetchLoaderVersions(kind: LoaderKind, gameVersion: string): Promi
   // Forge / NeoForge 的来源与 Fabric 完全不同，先分派出去。
   if (kind === 'forge' || kind === 'neoforge') {
     return fetchInstallerVersions(kind, gameVersion)
+  }
+  if (kind !== 'fabric' && kind !== 'quilt' && kind !== 'legacyfabric') {
+    throw new NativeUnavailableError(kind)
   }
   /*
    * 用 `AbortSignal.timeout()` 而不是手写 `setTimeout + abort()`。
@@ -1984,32 +2007,34 @@ export async function installFabricApi(instanceId: string): Promise<string> {
   return invoke<string>('install_fabric_api', { instanceId })
 }
 
-export async function previewModpack(path: string): Promise<PackPreview> {
+export async function previewModpack(path: string, localPaths: string[] = []): Promise<PackResolution> {
   requireDesktop('预览整合包')
-  return invoke<PackPreview>('preview_modpack', { path })
+  return invoke<PackResolution>('preview_modpack', { path, localPaths })
 }
 
-export async function importModpack(path: string): Promise<InstanceRecord> {
+export async function importModpack(path: string, localPaths: string[] = []): Promise<InstanceRecord> {
   requireDesktop('导入整合包')
-  return invoke<InstanceRecord>('import_modpack', { path })
+  return invoke<InstanceRecord>('import_modpack', { path, localPaths })
 }
 
-/**
- * 从 CurseForge 下载整合包并导入为新实例。
- *
- * 与 `importModpack` 的区别只在于文件来源：这里由后端先把包下载到临时目录，
- * 再走完全相同的导入事务（校验结构 → 创建实例 → 下载包内文件 → 失败回滚）。
- * 前端不需要知道临时文件在哪。
- *
- * `instanceHint` 只用于给下载任务一个可见的归属——整合包会创建新实例，
- * 所以没有真正意义上的「当前实例」。
- */
+export async function discardModpackSource(path: string): Promise<void> {
+  requireDesktop('取消整合包导入')
+  return invoke<void>('discard_modpack_source', { path })
+}
+
+export async function pickPackSupplementFiles(title: string): Promise<string[] | null> {
+  requireDesktop('选择整合包补件')
+  const selected = await open({ directory: false, multiple: true, title })
+  return typeof selected === 'string' ? [selected] : selected
+}
+
+/** 下载并预检 CurseForge 整合包；sourcePath 供补件和确认复用。 */
 export async function downloadAndImportModpack(
   version: CurseForgeVersion,
   instanceHint?: string,
-): Promise<InstanceRecord> {
+): Promise<PackResolution> {
   requireDesktop('下载并导入整合包')
-  return invoke<InstanceRecord>('download_and_import_modpack', { version, instanceHint: instanceHint ?? null })
+  return invoke<PackResolution>('download_and_import_modpack', { version, instanceHint: instanceHint ?? null })
 }
 
 /**
@@ -2348,6 +2373,8 @@ async function subscribe<T>(name: string, handler: (payload: T) => void): Promis
 }
 
 export const onDownloadProgress = (handler: (payload: DownloadProgress) => void) => subscribe('download-progress', handler)
+export const onJavaRuntimeInstalled = (handler: (payload: JavaRuntimeInfo) => void) => subscribe('java-runtime-installed', handler)
+export const onModpackImportWarnings = (handler: (payload: Array<{ projectId: number; fileId: number; fileName: string | null; required: boolean; reason: string }>) => void) => subscribe('modpack-import-warnings', handler)
 export const onInstallationTask = (handler: (payload: TaskEvent) => void) => subscribe('installation-task', handler)
 export const onGameLogLine = (handler: (payload: GameLogLine) => void) => subscribe('game-log-line', handler)
 export const onGameProcess = (handler: (payload: GameProcessEvent) => void) => subscribe('game-process', handler)

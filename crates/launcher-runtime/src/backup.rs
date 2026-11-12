@@ -69,21 +69,14 @@ pub async fn restore(
     tokio::task::spawn_blocking(move || {
         let prepared =
             backups::prepare_backup(&path, Some(&archive_sha256)).map_err(RuntimeError::message)?;
-        /*
-         * `create_instance_in` with no game root, not `create_instance`:
-         * `restore_backup` extracts into `<instance_dir>/game` and refuses any
-         * other layout. `create_instance` would resolve the shared `~/.minecraft`
-         * root from settings and produce `<root>/shared`, so every restore failed
-         * with "恢复目标必须使用隔离的默认游戏目录".
-         */
+        // Restore never inherits the optional shared-directory default.
         let target = store
-            .create_instance_in(
+            .create_isolated_instance(
                 &CreateInstanceInput {
                     name,
                     game_version: prepared.preview().minecraft.clone(),
                 },
                 &root,
-                None,
             )
             .map_err(RuntimeError::from)?;
         if let Err(mut error) = backups::restore_backup(prepared, &target) {

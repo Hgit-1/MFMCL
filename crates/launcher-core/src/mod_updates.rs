@@ -67,11 +67,20 @@ struct ModrinthFile {
     hashes: HashMap<String, String>,
 }
 
-pub fn instance_loader_name(instance: &InstanceRecord) -> Option<&'static str> {
-    match instance.loader.split_once('@') {
-        Some(("fabric", _)) => Some("fabric"),
-        Some(("quilt", _)) => Some("quilt"),
-        _ => None,
+pub fn instance_loader_name(instance: &InstanceRecord) -> Option<&str> {
+    let name = instance.loader.split('@').next()?;
+    if name == "vanilla"
+        || name.is_empty()
+        || name.len() > 32
+        || !name
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+    {
+        None
+    } else {
+        // Catalog support is determined by returned loader tags, not a local
+        // Fabric-only allowlist that would hide Forge or future loader entries.
+        Some(name)
     }
 }
 
@@ -128,7 +137,7 @@ pub async fn check_mod_updates(
     mod_files: &[String],
 ) -> Result<Vec<ModUpdateReport>, String> {
     let Some(loader) = instance_loader_name(instance) else {
-        return Err("模组更新检查需要 Fabric 或 Quilt 实例。".into());
+        return Err("模组更新检查需要有效的模组加载器实例。".into());
     };
     let jars: Vec<&String> = mod_files
         .iter()
@@ -439,7 +448,17 @@ mod tests {
         instance.loader = "quilt@1".into();
         assert_eq!(instance_loader_name(&instance), Some("quilt"));
         instance.loader = "forge@1".into();
-        assert_eq!(instance_loader_name(&instance), None);
+        assert_eq!(instance_loader_name(&instance), Some("forge"));
+        for loader in [
+            "neoforge",
+            "liteloader",
+            "cleanroom",
+            "legacyfabric",
+            "optifine",
+        ] {
+            instance.loader = format!("{loader}@1");
+            assert_eq!(instance_loader_name(&instance), Some(loader));
+        }
     }
 
     #[tokio::test]

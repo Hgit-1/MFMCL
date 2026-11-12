@@ -15,19 +15,17 @@
 // 必然失败的组合，然后让他在点完安装之后才看到错误。这里用单选，物理上排除这个
 // 可能。
 //
-// OptiFine 有单独的说明：它不能与 Fabric 类加载器共存，且官方不提供可自动下载的
-// 直链，所以这里只提供状态说明，不假装能一键安装。
-//
 // ## 顺序
 //
 // 后端的状态机决定了顺序，界面必须遵守：
-//   1. `create_instance`      —— 只写一条记录，状态 not_installed
-//   2. `install_instance`     —— 下载游戏文件，成功后状态 ready
-//   3. `install_loader`       —— 要求状态已是 ready，且 loader 仍是 vanilla
+//   1. `create_instance`      —— 写一条记录，并把加载器请求写成标记文件
+//   2. `install_instance`     —— 下载游戏文件；成功后消费标记并安装加载器
 //
-// 所以「选 Fabric」不是把加载器参数塞进创建请求，而是在第 2 步完成之后再走第 3 步。
+// 加载器请求必须在第 1 步就交给后端。之前这里只传名称和版本、把加载器留到第 3 步
+// 单独调用，一旦那一步没有执行（面板被关掉、请求失败），实例就永久停在「名字写着
+// Forge、记录却是 vanilla」的状态：界面上加载器显示原版，而用户以为已经装好了。
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AlertTriangle, Boxes, Check, Cpu, Package } from 'lucide-react';
 import { Button } from './Button';
 import { useI18n } from '../utils/i18n';
@@ -36,7 +34,6 @@ import {
   createInstance,
   errorText,
   installInstance,
-  installLoader,
   loaderVersions,
   type LoaderKind,
   type LoaderVersion,
@@ -57,6 +54,10 @@ const LOADER_LABELS: Record<LoaderKind, string> = {
   quilt: 'Quilt',
   forge: 'Forge',
   neoforge: 'NeoForge',
+  legacyfabric: 'Legacy Fabric',
+  liteloader: 'LiteLoader',
+  cleanroom: 'Cleanroom',
+  optifine: 'OptiFine',
 };
 
 export interface InstallPlanTarget {
@@ -68,12 +69,23 @@ interface InstallPlanProps {
   target: InstallPlanTarget | null;
   /** 关闭面板（放弃安装）。 */
   onClose: () => void;
-  /** 全部步骤完成：父组件刷新实例列表并选中新实例。 */
+  /** 刷新已写入的实例/任务，不关闭安装面板。 */
+  onChanged: (instanceId: string) => Promise<void> | void;
+  /** 仅全部步骤成功后关闭本次面板。 */
   onDone: (instanceId: string) => Promise<void> | void;
   onNotice: (message: string) => void;
 }
 
-type Phase = 'idle' | 'creating' | 'installing' | 'loader' | 'done' | 'failed';
+type Phase = 'idle' | 'creating' | 'installing' | 'done' | 'failed';
+
+type InstallProgress = {
+  name: string;
+  version: string;
+  loader: LoaderChoice;
+  loaderVersion: string;
+  instanceId: string;
+  vanillaDone: boolean;
+};
 
 /**
  * 找到最近的、真的能纵向滚动的祖先。
@@ -97,7 +109,7 @@ function scrollParentOf(node: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
-export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanProps) {
+export function InstallPlan({ target, onClose, onChanged, onDone, onNotice }: InstallPlanProps) {
   const { t } = useI18n();
 
   const [name, setName] = useState('');
@@ -109,6 +121,11 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
 
   const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState('');
+  const progress = useRef<InstallProgress | null>(null);
+  const session = useRef<object>({});
+  const running = useRef<object | null>(null);
+  const loaderRequest = useRef<object | null>(null);
+  const [createdInstanceId, setCreatedInstanceId] = useState('');
   /**
    * 用户是否手动改过名字。
    *
@@ -139,10 +156,14 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
   );
 
   // 换目标版本时重置：版本变了，加载器列表与默认名都要跟着变。
-  useEffect(() => {
-    if (!target) return;
+  useLayoutEffect(() => {
+    session.current = {};
+    running.current = null;
+    loaderRequest.current = null;
+    progress.current = null;
+    setCreatedInstanceId('');
     nameEdited.current = false;
-    setName(defaultName(target.version, 'vanilla', ''));
+    setName(target ? defaultName(target.version, 'vanilla', '') : '');
     setLoader('vanilla');
     setLoaderVersion('');
     setVersions([]);
@@ -150,6 +171,7 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
     setVersionsError('');
     setPhase('idle');
     setError('');
+    return () => { session.current = {}; loaderRequest.current = null; };
   }, [target, defaultName]);
 
   /**
@@ -221,11 +243,16 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
    * 这层匹配，前端自己筛容易给出不适配的组合。
    */
   const loadVersions = useCallback(async (kind: LoaderKind, game: string) => {
+    const request = {};
+    loaderRequest.current = request;
+    const owner = session.current;
+    const fresh = () => loaderRequest.current === request && session.current === owner;
     setVersionsState('loading');
     setVersionsError('');
     setVersions([]);
     try {
       const list = await loaderVersions(kind, game);
+      if (!fresh()) return;
       setVersions(list);
       // 默认选最新的稳定版：绝大多数用户要的就是这个。
       const preferred = list.find(item => item.stable)?.version ?? list[0]?.version ?? '';
@@ -234,19 +261,22 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
        * 加载器版本定下来之后更新名字：`1.21.1 neoforge` → `1.21.1 neoforge 21.1.265`。
        * 只有版本号才能说明「装的是哪个构建」，而它决定能装哪些模组。
        */
-      if (!nameEdited.current && target && preferred) {
-        setName(defaultName(target.version, kind, preferred));
+      if (!nameEdited.current && preferred) {
+        setName(defaultName(game, kind, preferred));
       }
       setVersionsState('ready');
       if (list.length === 0) setVersionsError(t('install.noLoaderVersion'));
     } catch (cause) {
+      if (!fresh()) return;
       setVersionsState('error');
       setVersionsError(errorText(cause, t('install.loaderListFailed')));
       setLoaderVersion('');
     }
-  }, [t]);
+  }, [t, defaultName]);
 
   const chooseLoader = (choice: LoaderChoice) => {
+    if (running.current || progress.current?.instanceId) return;
+    loaderRequest.current = null;
     setLoader(choice);
     setLoaderVersion('');
     setVersions([]);
@@ -265,62 +295,76 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
 
   /** 加载器选好了才算可以开始；vanilla 直接可以。 */
   const loaderReady = loader === 'vanilla' || (versionsState === 'ready' && loaderVersion !== '');
-  const busy = phase === 'creating' || phase === 'installing' || phase === 'loader';
+  const busy = phase === 'creating' || phase === 'installing';
 
   const run = async () => {
-    if (!target) return;
+    if (!target || running.current || !loaderReady) return;
     const trimmed = name.trim();
     if (!trimmed) { setError(t('install.nameRequired')); return; }
+    const owner = session.current;
+    const operation = {};
+    running.current = operation;
+    const fresh = () => session.current === owner;
+    const plan: InstallProgress = progress.current?.instanceId ? progress.current : {
+      name: trimmed, version: target.version, loader, loaderVersion,
+      instanceId: '', vanillaDone: false,
+    };
+    progress.current = plan;
     setError('');
-
-    let instanceId = '';
+    let stage: Phase = 'creating';
+    let succeeded = false;
     try {
-      // 第 1 步：创建记录。
-      setPhase('creating');
-      const record = await createInstance(trimmed, target.version);
-      instanceId = record.id;
-
-      // 第 2 步：下载游戏文件。成功后后端会把状态改成 ready。
-      setPhase('installing');
-      await installInstance(instanceId);
-
-      // 第 3 步：仅在用户选了加载器时执行。
-      // 顺序不能提前：`install_loader` 要求实例已 ready，否则直接拒绝。
-      if (loader !== 'vanilla') {
-        setPhase('loader');
-        await installLoader(instanceId, loader, loaderVersion);
+      if (!plan.instanceId) {
+        setPhase(stage);
+        /*
+         * 加载器一起交给创建请求。后端会把它写成标记文件，`install_instance`
+         * 在官方文件补齐后自动消费并安装——同一条通路也是整合包导入用的那条。
+         *
+         * 不要改回「先建实例、稍后单独装加载器」：那一步只要没跑到，实例就会
+         * 停在「名字带加载器、记录是原版」的状态，用户看不出少了什么。
+         */
+        const record = await createInstance(
+          plan.name,
+          plan.version,
+          plan.loader === 'vanilla' ? null : `${plan.loader}@${plan.loaderVersion}`,
+        );
+        plan.instanceId = record.id;
+        if (!fresh()) return;
+        setCreatedInstanceId(record.id);
       }
-
+      if (!plan.vanillaDone) {
+        stage = 'installing';
+        setPhase(stage);
+        await installInstance(plan.instanceId);
+        plan.vanillaDone = true;
+        if (!fresh()) return;
+      }
+      succeeded = true;
       setPhase('done');
-      onNotice(t('install.finished', { values: { name: trimmed } }));
-      await onDone(instanceId);
     } catch (cause) {
+      if (!fresh()) return;
       setPhase('failed');
-      /*
-       * 失败时如实说明「已经做到哪一步」。
-       *
-       * 这一步很关键：如果游戏文件已经装完、只是加载器失败，那实例其实是可用的
-       * （原版）。笼统地报「安装失败」会让用户以为整个实例不可用，甚至去删掉一个
-       * 本来能用的实例。
-       */
       const detail = errorText(cause, t('install.failed'));
-      setError(
-        phase === 'creating' ? detail
-          : phase === 'installing' ? t('install.failedVanilla', { values: { detail } })
-            : t('install.failedLoader', { values: { detail } }),
-      );
-      // 原版已经装好就刷新一次，让实例出现在列表里。
-      if (instanceId) await Promise.resolve(onDone(instanceId)).catch(() => undefined);
+      setError(stage === 'creating' ? detail : t('install.failedVanilla', { values: { detail } }));
+    } finally {
+      if (plan.instanceId) {
+        try { await onChanged(plan.instanceId); }
+        catch (cause) { if (fresh()) onNotice(errorText(cause)); }
+      }
+      if (running.current === operation) running.current = null;
     }
+    if (!fresh() || !succeeded) return;
+    onNotice(t('install.finished', { values: { name: plan.name } }));
+    try { await onDone(plan.instanceId); }
+    catch (cause) { if (fresh()) onNotice(errorText(cause)); }
   };
 
   if (!target) return null;
 
   const stepLabel = phase === 'creating' ? t('install.stepCreating')
     : phase === 'installing' ? t('install.stepInstalling')
-      : phase === 'loader' ? t('install.stepLoader')
-        : phase === 'done' ? t('install.stepDone')
-          : '';
+      : phase === 'done' ? t('install.stepDone')
+        : '';
 
   return (
     <div className={styles.panel} role="group" aria-label={t('install.title')} ref={panelRef}>
@@ -345,7 +389,7 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
           }}
           placeholder={`Minecraft ${target.version}`}
           maxLength={48}
-          disabled={busy}
+          disabled={busy || createdInstanceId !== ''}
         />
         <small>{t('install.nameHint')}</small>
       </label>
@@ -364,7 +408,7 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
             顺序按安装代价排列：Fabric/Quilt 十几秒，Forge/NeoForge 要跑几分钟的
             JVM processor。
           */}
-          {(['vanilla', 'fabric', 'quilt', 'forge', 'neoforge'] as LoaderChoice[]).map(choice => (
+          {(['vanilla', 'fabric', 'quilt', 'forge', 'neoforge', 'legacyfabric', 'liteloader', 'cleanroom', 'optifine'] as LoaderChoice[]).map(choice => (
             <button
               key={choice}
               type="button"
@@ -372,7 +416,7 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
               aria-checked={loader === choice}
               className={`${styles.loaderOption} ${loader === choice ? styles.loaderOptionActive : ''}`}
               onClick={() => chooseLoader(choice)}
-              disabled={busy}
+              disabled={busy || createdInstanceId !== ''}
             >
               {choice === 'vanilla' ? <Package size={15} /> : <Boxes size={15} />}
               <span>{choice === 'vanilla' ? t('install.loaderNone') : LOADER_LABELS[choice]}</span>
@@ -398,8 +442,11 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
           {versionsState === 'ready' && versions.length > 0 && (
             <select
               value={loaderVersion}
-              onChange={event => setLoaderVersion(event.target.value)}
-              disabled={busy}
+              onChange={event => {
+                setLoaderVersion(event.target.value);
+                if (!nameEdited.current) setName(defaultName(target.version, loader, event.target.value));
+              }}
+              disabled={busy || createdInstanceId !== ''}
             >
               {versions.map(item => (
                 <option key={item.version} value={item.version}>
@@ -414,19 +461,13 @@ export function InstallPlan({ target, onClose, onDone, onNotice }: InstallPlanPr
         </div>
       )}
 
-      {/*
-        OptiFine 只做说明，不给按钮。
-        原因有两条，都不是能靠写代码绕过的：官方下载页要求经过广告页与定时跳转，
-        没有可直接请求的直链；它也不能与 Fabric/Quilt 共存。给一个装不上的按钮
-        只会浪费用户时间。
-      */}
-      <div className={styles.optifine}>
+      {loader === 'optifine' && <div className={styles.optifine}>
         <Cpu size={15} />
         <div>
           <strong>{t('install.optifineTitle')}</strong>
           <span>{t('install.optifineNote')}</span>
         </div>
-      </div>
+      </div>}
 
       {error && (
         <div className={styles.errorBox} role="alert">

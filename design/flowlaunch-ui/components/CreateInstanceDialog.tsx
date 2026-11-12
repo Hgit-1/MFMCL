@@ -42,6 +42,10 @@ const LOADER_KINDS: { id: LoaderKind; label: string; heavy: boolean }[] = [
   { id: 'quilt', label: 'Quilt', heavy: false },
   { id: 'forge', label: 'Forge', heavy: true },
   { id: 'neoforge', label: 'NeoForge', heavy: true },
+  { id: 'legacyfabric', label: 'Legacy Fabric', heavy: false },
+  { id: 'liteloader', label: 'LiteLoader', heavy: false },
+  { id: 'cleanroom', label: 'Cleanroom', heavy: true },
+  { id: 'optifine', label: 'OptiFine', heavy: true },
 ];
 
 interface CreateInstanceDialogProps {
@@ -95,7 +99,7 @@ export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInsta
       })
       .catch(cause => {
         if (cancelled) return;
-        setError(errorText(cause, '无法读取版本列表。'));
+        setError(errorText(cause, ''));
         setState('error');
       });
     return () => { cancelled = true; };
@@ -142,7 +146,7 @@ export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInsta
       })
       .catch(cause => {
         if (cancelled) return;
-        setLoaderError(errorText(cause, '无法读取加载器版本。'));
+        setLoaderError(errorText(cause, ''));
         setLoaderState('error');
       });
     return () => { cancelled = true; };
@@ -172,8 +176,8 @@ export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInsta
 
   const submit = async () => {
     const trimmed = name.trim();
-    if (!selected) { setError('请先选择一个游戏版本。'); return; }
-    if (!trimmed) { setError('请填写实例名称。'); return; }
+    if (!selected) { setError(t('create.versionRequired')); return; }
+    if (!trimmed) { setError(t('create.nameRequired')); return; }
     /*
      * 选了加载器但版本还没读出来（或读取失败）时不允许提交。
      *
@@ -190,7 +194,7 @@ export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInsta
       await onCreated(trimmed, selected, loaderKind ? `${loaderKind}@${loaderVersion}` : null);
       onClose();
     } catch (cause) {
-      setError(errorText(cause, '创建实例失败。'));
+      setError(errorText(cause, t('create.failed')));
     } finally {
       setSubmitting(false);
     }
@@ -248,7 +252,7 @@ export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInsta
           </div>
         </div>
 
-        {state === 'error' && <p className={styles.error} role="alert">{error}</p>}
+        {state === 'error' && <p className={styles.error} role="alert">{error || t('create.versionsReadFailed')}</p>}
 
         <div className={styles.list} role="radiogroup" aria-label={t('create.version')}>
           {state === 'loading' && <p className={styles.hint}>{t('common.loading')}</p>}
@@ -340,7 +344,7 @@ export function CreateInstanceDialog({ isOpen, onClose, onCreated }: CreateInsta
               <span>{t('loader.version')}</span>
               {loaderState === 'loading' && <em className={styles.loaderNote}>{t('loader.detecting')}</em>}
               {loaderState === 'error' && (
-                <em className={styles.loaderError} role="alert">{loaderError}</em>
+                <em className={styles.loaderError} role="alert">{loaderError || t('create.loaderVersionsReadFailed')}</em>
               )}
               {loaderState === 'ready' && loaderList.length === 0 && (
                 <em className={styles.loaderNote}>

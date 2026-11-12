@@ -313,8 +313,8 @@ export const SEASON_TINT_DARK: Record<Season, [string, string]> = {
  * 与 `--color-text-*`：它们是全站对比度计算的基准，插件改一个值，同一个主题下
  * 其它组件的可读性就跟着变，而插件没有能力重新验证那些组合。
  *
- * 返回撤销函数：关掉插件时调用，界面必须回到用户原来选的强调色，而不是停在
- * 最后一个季节的颜色上。
+ * 返回的撤销函数只清理装饰；调用方必须用当前配色来源重算整组强调色，
+ * 不能在清理时恢复旧快照（手动色或背景可能已经改变）。
  */
 export function applySeasonTheme(
   season: Season,
@@ -322,7 +322,6 @@ export function applySeasonTheme(
   tint: boolean,
   target: HTMLElement = document.documentElement,
 ): () => void {
-  const previousAccent = target.style.getPropertyValue('--color-primary-500');
   applyAccent(SEASON_PALETTE[season].accent, target);
 
   const colors: [string, string] = dark
@@ -338,10 +337,8 @@ export function applySeasonTheme(
     target.style.removeProperty('--aria-tint-a');
     target.style.removeProperty('--aria-tint-b');
     target.style.removeProperty('--aria-tint-strength');
-    // 强调色交给调用方恢复：只有它知道用户原本选的是哪个（可能是手选的，也可能
-    // 来自背景取色）。在这里恢复成默认蓝会悄悄改掉用户的选择。
-    if (previousAccent) target.style.setProperty('--color-primary-500', previousAccent);
-    else target.style.removeProperty('--color-primary-500');
+    // The owner resolves the latest manual/background/seasonal accent on every
+    // transition. Restoring a captured colour here would overwrite newer choices.
   };
 }
 

@@ -79,7 +79,7 @@ fn loader_valid(loader: &str) -> Result<(), String> {
         return Ok(());
     }
     let (kind, version) = loader.split_once('@').ok_or("备份加载器标识无效。")?;
-    if !matches!(kind, "fabric" | "quilt") {
+    if crate::loaders::LoaderKind::from_name(kind).is_none() {
         return Err("此备份使用尚不支持恢复的加载器。".into());
     }
     safe_version(version)
@@ -227,7 +227,8 @@ pub fn create_backup(instance: &InstanceRecord, directory: &Path) -> Result<Path
         return Err("请选择游戏目录之外的备份位置。".into());
     }
     safe_version(&instance.game_version)?;
-    loader_valid(&instance.loader)?;
+    let loader = crate::modpacks::pack_export_loader(instance)?;
+    loader_valid(&loader)?;
     let mut files = Vec::new();
     let mut declared = 0;
     let mut visited = 0;
@@ -255,7 +256,7 @@ pub fn create_backup(instance: &InstanceRecord, directory: &Path) -> Result<Path
         format_version: 1,
         name: instance.name.clone(),
         minecraft: instance.game_version.clone(),
-        loader: instance.loader.clone(),
+        loader,
         created_at: chrono::Utc::now().to_rfc3339(),
         files: BTreeMap::new(),
     };
@@ -458,7 +459,7 @@ pub fn preview_backup(path: &Path) -> Result<BackupPreview, String> {
 
 /// No overwrite mode exists: the target must be an uninstalled, unused instance.
 pub fn restore_backup(mut prepared: PreparedBackup, target: &InstanceRecord) -> Result<(), String> {
-    if target.game_dir != target.instance_dir.join("game") {
+    if !target.isolated || target.game_dir != target.instance_dir.join("game") {
         return Err("恢复目标必须使用隔离的默认游戏目录。".into());
     }
     if target.state != InstanceState::NotInstalled

@@ -6,6 +6,17 @@ use launcher_core::{
 use std::{fs, path::PathBuf, process::Command};
 use tokio::io::BufReader;
 
+fn jdk_tool(name: &str) -> PathBuf {
+    if let Some(home) = std::env::var_os("JAVA_HOME") {
+        let tool = PathBuf::from(home)
+            .join("bin")
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        assert!(tool.is_file(), "JAVA_HOME is missing {}", tool.display());
+        return tool;
+    }
+    PathBuf::from(name)
+}
+
 struct Fixture {
     root: PathBuf,
     instance: InstanceRecord,
@@ -18,19 +29,38 @@ impl Drop for Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("MFMCL JVM 测试 {}", uuid::Uuid::new_v4()));
+        // Windows JDK tools can narrow command-line paths through the system code page.
+        // Keep build artifacts ASCII while exercising Unicode in the JVM working directory.
+        let root = std::env::temp_dir().join(format!("MFMCL JVM fixture {}", uuid::Uuid::new_v4()));
         let instance = InstanceRecord {
             id: "test".into(),
             name: "JVM fixture".into(),
             game_version: "1.21.4".into(),
             loader: "vanilla".into(),
             instance_dir: root.join("instance"),
-            game_dir: root.join("instance/game"),
+            game_dir: root.join("instance/game 测试"),
             isolated: true,
             state: InstanceState::Ready,
             created_at: String::new(),
             last_launched_at: None,
         };
+        for name in ["java", "javac", "jar"] {
+            let output = Command::new(jdk_tool(name))
+                .arg("--version")
+                .output()
+                .expect("Set JAVA_HOME to an installed JDK (java, javac, jar)");
+            assert!(output.status.success(), "{name} --version failed");
+            eprintln!(
+                "JVM_SMOKE tool={name} {}",
+                String::from_utf8_lossy(&output.stdout).trim()
+            );
+        }
+        eprintln!(
+            "JVM_SMOKE root={} platform={}-{}",
+            root.display(),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
         fs::create_dir_all(&instance.game_dir).unwrap();
         fs::create_dir_all(root.join("classes")).unwrap();
         let source = root.join("Smoke.java");
@@ -39,6 +69,7 @@ impl Fixture {
             r#"import java.nio.file.Path;
 public final class Smoke {
  public static void main(String[] args) throws Exception {
+   System.setOut(new java.io.PrintStream(System.out, true, java.nio.charset.StandardCharsets.UTF_8));
    System.out.println("cwd=" + Path.of("").toAbsolutePath());
    System.out.println("literal=" + System.getProperty("fixture.literal"));
    for(String arg : args) System.out.println("argument=" + arg);
@@ -49,7 +80,7 @@ public final class Smoke {
         )
         .unwrap();
         assert!(
-            Command::new("javac")
+            Command::new(jdk_tool("javac"))
                 .arg("--release")
                 .arg("17")
                 .arg("-d")
@@ -62,7 +93,7 @@ public final class Smoke {
         let dir = instance.instance_dir.join("versions/1.21.4");
         fs::create_dir_all(&dir).unwrap();
         assert!(
-            Command::new("jar")
+            Command::new(jdk_tool("jar"))
                 .arg("--create")
                 .arg("--file")
                 .arg(dir.join("1.21.4.jar"))
@@ -73,6 +104,10 @@ public final class Smoke {
                 .expect("Install JDK jar tool")
                 .success()
         );
+        eprintln!(
+            "JVM_SMOKE fixture_jar_bytes={} network_bytes=0",
+            fs::metadata(dir.join("1.21.4.jar")).unwrap().len()
+        );
         let metadata = serde_json::from_value(serde_json::json!({"id":"1.21.4","mainClass":"Smoke","javaVersion":{"component":"java-runtime-delta","majorVersion":17},"arguments":{"jvm":["-Dfixture.literal=0"],"game":["--username=${auth_player_name}","--uuid=${auth_uuid}","--accessToken=${auth_access_token}","--userType=${user_type}"]}})).unwrap();
         Self {
             root,
@@ -82,9 +117,9 @@ public final class Smoke {
     }
 }
 
-#[test]
-#[ignore = "requires a real JDK (java, javac, jar); runs no Minecraft code"]
-fn authentic_and_offline_arguments_reach_a_real_jvm() {
+#[tokio::test]
+#[ignore = "requires a real JDK (java, javac, jar); synthetic identities, no account authentication"]
+async fn synthetic_online_and_offline_arguments_reach_a_real_jvm() {
     let fixture = Fixture::new();
     let account = AccountProfile {
         id: "offline".into(),
@@ -100,7 +135,7 @@ fn authentic_and_offline_arguments_reach_a_real_jvm() {
         &fixture.instance,
         &account,
         &fixture.metadata,
-        None,
+        Some(jdk_tool("java")),
     )
     .unwrap();
     let identity = LaunchIdentity {
@@ -116,17 +151,21 @@ fn authentic_and_offline_arguments_reach_a_real_jvm() {
         &fixture.instance,
         &identity,
         &fixture.metadata,
-        None,
+        Some(jdk_tool("java")),
     )
     .unwrap();
     for (prepared, expected_name, expected_type) in [
         (&offline, "Offline_Name", "legacy"),
         (&online, "Online_Name", "msa"),
     ] {
-        let result = Command::new(&prepared.java_path)
+        let mut command = tokio::process::Command::new(&prepared.java_path);
+        command
             .args(&prepared.args)
             .current_dir(&prepared.working_directory)
-            .output()
+            .kill_on_drop(true);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+            .await
+            .expect("JVM fixture exceeded 15 seconds")
             .unwrap();
         assert!(
             result.status.success(),
@@ -137,6 +176,23 @@ fn authentic_and_offline_arguments_reach_a_real_jvm() {
         assert!(text.contains(&format!("--userType={expected_type}")));
         assert!(text.contains("literal=0"));
         assert!(text.contains("fixture-ready"));
+        let cwd = text
+            .lines()
+            .find_map(|line| line.strip_prefix("cwd="))
+            .unwrap();
+        assert_eq!(
+            fs::canonicalize(cwd).unwrap(),
+            fs::canonicalize(&fixture.instance.game_dir).unwrap()
+        );
+        if expected_type == "msa" {
+            assert!(text.contains("--accessToken=fixture-secret-${user_type}"));
+        } else {
+            assert!(text.contains("--accessToken=0"));
+        }
+        eprintln!(
+            "JVM_SMOKE argument_mode={expected_type} exit={} unicode_cwd_verified=true",
+            result.status
+        );
         let safe = launcher_core::logs::redact_log(&text, &[identity.access_token]);
         assert!(!safe.contains("fixture-secret"));
     }
@@ -146,7 +202,7 @@ fn authentic_and_offline_arguments_reach_a_real_jvm() {
 #[ignore = "requires a real JDK; validates draining and killing the original Java fixture"]
 async fn a_real_java_process_can_be_drained_and_stopped() {
     let fixture = Fixture::new();
-    let mut child = tokio::process::Command::new("java")
+    let mut child = tokio::process::Command::new(jdk_tool("java"))
         .arg("-cp")
         .arg(
             fixture
@@ -177,6 +233,26 @@ async fn a_real_java_process_can_be_drained_and_stopped() {
     .await
     .unwrap();
     assert!(ready);
-    child.kill().await.unwrap();
-    assert!(child.wait().await.is_ok());
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "fixture must still be alive before kill"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), child.kill())
+        .await
+        .expect("JVM kill exceeded 10 seconds")
+        .unwrap();
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        .await
+        .expect("JVM reap exceeded 5 seconds")
+        .unwrap();
+    assert!(
+        !status.success(),
+        "killed fixture must not report a normal exit"
+    );
+    while launcher_core::logs::bounded_log_line(&mut reader)
+        .await
+        .unwrap()
+        .is_some()
+    {}
+    eprintln!("JVM_SMOKE ready=true killed=true reaped=true stdout_eof=true exit={status}");
 }

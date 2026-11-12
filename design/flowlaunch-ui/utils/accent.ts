@@ -378,8 +378,15 @@ export function analyzeImageData(pixels: Uint8ClampedArray): ImageAnalysis {
  * whether the background has taken over.
  */
 export function pickAccent(userAccent: string, auto: string | null): string {
-  if (auto) return normalizeHex(auto) ?? DEFAULT_ACCENT;
-  return normalizeHex(userAccent) ?? DEFAULT_ACCENT;
+  return (auto && normalizeHex(auto)) || normalizeHex(userAccent) || DEFAULT_ACCENT;
+}
+
+/** Empty custom colours in older settings still refer to the selected preset. */
+export function manualAccent(prefs: { customAccent: string; themePreset: string }): string {
+  const presets: Record<string, string> = {
+    ocean: DEFAULT_ACCENT, moss: '#41c98b', lavender: '#8b7cff', ember: '#f19b52',
+  };
+  return normalizeHex(prefs.customAccent) ?? presets[prefs.themePreset] ?? DEFAULT_ACCENT;
 }
 
 /**

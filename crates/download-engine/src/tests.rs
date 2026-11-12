@@ -1,4 +1,6 @@
 use super::*;
+
+mod network;
 use std::sync::{
     Mutex as StdMutex,
     atomic::{AtomicUsize, Ordering},
@@ -54,7 +56,22 @@ async fn mock(handler: impl Fn(usize, &str) -> Reply + Send + Sync + 'static) ->
             tokio::spawn(async move {
                 let mut bytes = Vec::new();
                 let mut buffer = [0; 1024];
-                while !bytes.ends_with(b"\r\n\r\n") && bytes.len() < 65536 {
+                loop {
+                    if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let header_end = end + 4;
+                        let content_length = String::from_utf8_lossy(&bytes[..end])
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .map(|(_, value)| value.trim().parse::<usize>().unwrap())
+                            .unwrap_or(0);
+                        if bytes.len() >= header_end + content_length {
+                            break;
+                        }
+                    }
+                    if bytes.len() >= 65536 {
+                        return;
+                    }
                     let n = socket.read(&mut buffer).await.unwrap_or(0);
                     if n == 0 {
                         return;
@@ -213,7 +230,7 @@ fn explicit_mirror_is_used_even_without_a_checksum() {
         let candidates = source_candidates_with_mirror(
             original.clone(),
             Some(mirror),
-            SourcePreference::Official,
+            SourcePreference::Mixed,
             pinned,
         );
         assert_eq!(
@@ -223,6 +240,16 @@ fn explicit_mirror_is_used_even_without_a_checksum() {
         );
         assert_eq!(candidates[0].as_str(), mirror, "mirror must come first");
         assert_eq!(candidates[1], original);
+        assert_eq!(
+            source_candidates_with_mirror(
+                original.clone(),
+                Some(mirror),
+                SourcePreference::Official,
+                pinned
+            ),
+            vec![original.clone()],
+            "Official must never be silently redirected to an explicit mirror"
+        );
     }
 
     // 非白名单主机仍然被拒绝，即使调用方显式给了它。
@@ -443,14 +470,12 @@ async fn cancel_interrupts_stalled_response_and_retry_wait() {
     ));
 }
 
-/// Opt-in end-to-end test against a REAL aria2 sidecar binary (not a mock):
-/// set MFMCL_ARIA2_BINARY to a 1.37.0 aria2c. Mirrors the runtime path —
-/// loopback RPC session, checksum-pinned download, verification back in the
-/// engine, and graceful shutdown — without touching the public network.
+/// Opt-in test that a real sidecar can be owned by the host without bypassing
+/// the native transport policy. Requires MFMCL_ARIA2_BINARY; no public network.
 #[cfg(unix)]
 #[tokio::test]
 #[ignore = "requires a real aria2 1.37.0 binary via MFMCL_ARIA2_BINARY"]
-async fn real_aria2_sidecar_downloads_and_verifies_through_the_engine() {
+async fn real_aria2_session_keeps_downloads_on_policy_enforced_native_http() {
     let binary =
         std::env::var("MFMCL_ARIA2_BINARY").expect("MFMCL_ARIA2_BINARY must point to aria2c");
     let dir = TestDir::new();
@@ -471,7 +496,7 @@ async fn real_aria2_sidecar_downloads_and_verifies_through_the_engine() {
     .with_aria2(session.clone())
     .download(&good, None)
     .await
-    .expect("verified download via the real sidecar");
+    .expect("verified native download with an attached sidecar session");
     assert_eq!(
         fs::read(&good.destination).await.unwrap(),
         b"real aria2 payload"

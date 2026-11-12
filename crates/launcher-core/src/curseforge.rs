@@ -57,6 +57,35 @@ const MATCH_RESPONSE: usize = 16 * 1024 * 1024;
 /// 服务端硬上限：`index + pageSize <= 10000`。
 const MAX_PAGE_WINDOW: u32 = 10_000;
 
+/// Keeps HTTPS and no-redirect enforcement when a request carries `x-api-key`.
+pub struct MetadataClient(reqwest::Client);
+
+pub fn metadata_client_with_settings(
+    settings: &crate::DownloadSettings,
+) -> Result<MetadataClient, String> {
+    settings
+        .to_engine_settings()
+        .configure_metadata_client_with_post_paths(
+            reqwest::Client::builder()
+                .https_only(true)
+                .redirect(reqwest::redirect::Policy::none())
+                .user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION"))),
+            &["api.curseforge.com", "mod.mcimirror.top"],
+            &[
+                "/v1/mods/files",
+                "/v1/mods",
+                "/v1/fingerprints/432",
+                "/curseforge/v1/mods/files",
+                "/curseforge/v1/mods",
+                "/curseforge/v1/fingerprints/432",
+            ],
+        )
+        .map_err(|e| e.to_string())?
+        .build()
+        .map(MetadataClient)
+        .map_err(|_| "无法初始化 CurseForge 元数据客户端。".into())
+}
+
 /// 一次 CurseForge 请求要用哪个入口。
 ///
 /// ## 为什么要有这个类型
@@ -293,16 +322,24 @@ pub async fn files_by_fingerprints(
     source: Source<'_>,
     fingerprints: &[u32],
 ) -> Result<std::collections::HashMap<u32, CurseForgeFileMatch>, String> {
+    let client = metadata_client_with_settings(&crate::DownloadSettings::default())?;
+    files_by_fingerprints_with_client(&client, source, fingerprints).await
+}
+
+pub async fn files_by_fingerprints_with_client(
+    client: &MetadataClient,
+    source: Source<'_>,
+    fingerprints: &[u32],
+) -> Result<std::collections::HashMap<u32, CurseForgeFileMatch>, String> {
     if fingerprints.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
     const BATCH: usize = 200;
-    let client = catalog_client()?;
     let mut out = std::collections::HashMap::new();
     for chunk in fingerprints.chunks(BATCH) {
         let body = serde_json::json!({ "fingerprints": chunk });
         let bytes = post_json(
-            &client,
+            &client.0,
             source,
             format!("{}/v1/fingerprints/{GAME_ID}", source.base()),
             &body,
@@ -455,11 +492,22 @@ pub async fn identify_files(
     game_version: Option<&str>,
     loader: Option<&str>,
 ) -> Result<Vec<IdentifiedMod>, String> {
+    let client = metadata_client_with_settings(&crate::DownloadSettings::default())?;
+    identify_files_with_client(&client, source, hashed, game_version, loader).await
+}
+
+pub async fn identify_files_with_client(
+    client: &MetadataClient,
+    source: Source<'_>,
+    hashed: &[(String, u32)],
+    game_version: Option<&str>,
+    loader: Option<&str>,
+) -> Result<Vec<IdentifiedMod>, String> {
     if hashed.is_empty() {
         return Ok(Vec::new());
     }
     let fingerprints: Vec<u32> = hashed.iter().map(|(_, fingerprint)| *fingerprint).collect();
-    let matched = files_by_fingerprints(source, &fingerprints).await?;
+    let matched = files_by_fingerprints_with_client(client, source, &fingerprints).await?;
     if matched.is_empty() {
         return Ok(Vec::new());
     }
@@ -474,7 +522,7 @@ pub async fn identify_files(
         }
     }
     // 工程信息查不到时退回空表，由下面按「无名称」处理，而不是让整批失败。
-    let projects = projects_by_ids(source, &project_ids)
+    let projects = projects_by_ids_with_client(client, source, &project_ids)
         .await
         .unwrap_or_default();
     /*
@@ -499,7 +547,9 @@ pub async fn identify_files(
      * 更新提示是「锦上添花」：这里失败不该让整次识别失败。
      * 识别出「装了哪些」已经是有用的结果，丢掉它会连来源都看不到。
      */
-    let latest_files = files_by_ids(source, &latest_ids).await.unwrap_or_default();
+    let latest_files = files_by_ids_with_client(client, source, &latest_ids)
+        .await
+        .unwrap_or_default();
 
     let mut out = Vec::new();
     for (file_name, fingerprint) in hashed {
@@ -581,6 +631,15 @@ pub async fn projects_by_ids(
     source: Source<'_>,
     project_ids: &[String],
 ) -> Result<std::collections::HashMap<String, CurseForgeProject>, String> {
+    let client = metadata_client_with_settings(&crate::DownloadSettings::default())?;
+    projects_by_ids_with_client(&client, source, project_ids).await
+}
+
+pub async fn projects_by_ids_with_client(
+    client: &MetadataClient,
+    source: Source<'_>,
+    project_ids: &[String],
+) -> Result<std::collections::HashMap<String, CurseForgeProject>, String> {
     if project_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
@@ -607,12 +666,11 @@ pub async fn projects_by_ids(
     }
 
     const BATCH: usize = 200;
-    let client = catalog_client()?;
     let mut out = std::collections::HashMap::new();
     for chunk in ids.chunks(BATCH) {
         let body = serde_json::json!({ "modIds": chunk });
         let bytes = post_json(
-            &client,
+            &client.0,
             source,
             format!("{}/v1/mods", source.base()),
             &body,
@@ -845,17 +903,25 @@ pub async fn files_by_ids(
     source: Source<'_>,
     file_ids: &[u64],
 ) -> Result<std::collections::HashMap<u64, CurseForgeVersion>, String> {
+    let client = metadata_client_with_settings(&crate::DownloadSettings::default())?;
+    files_by_ids_with_client(&client, source, file_ids).await
+}
+
+pub async fn files_by_ids_with_client(
+    client: &MetadataClient,
+    source: Source<'_>,
+    file_ids: &[u64],
+) -> Result<std::collections::HashMap<u64, CurseForgeVersion>, String> {
     if file_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
     // 服务端上限是 200 个一批；调用方可能给更多，这里分片以免整单失败。
     const BATCH: usize = 200;
-    let client = catalog_client()?;
     let mut out = std::collections::HashMap::new();
     for chunk in file_ids.chunks(BATCH) {
         let body = serde_json::json!({ "fileIds": chunk });
         let bytes = post_json(
-            &client,
+            &client.0,
             source,
             format!("{}/v1/mods/files", source.base()),
             &body,
@@ -871,11 +937,66 @@ pub async fn files_by_ids(
     Ok(out)
 }
 
+pub async fn pack_files_with_client(
+    client: &MetadataClient,
+    source: Source<'_>,
+    file_ids: &[u64],
+) -> Result<std::collections::HashMap<u64, crate::modpacks::CurseForgePackFile>, String> {
+    #[derive(Deserialize)]
+    struct Response {
+        data: Vec<crate::modpacks::CurseForgePackFile>,
+    }
+    let mut out = std::collections::HashMap::new();
+    for chunk in file_ids.chunks(200) {
+        let bytes = post_json(
+            &client.0,
+            source,
+            format!("{}/v1/mods/files", source.base()),
+            &serde_json::json!({ "fileIds": chunk }),
+            MAX_RESPONSE,
+        )
+        .await?;
+        let response: Response =
+            serde_json::from_slice(&bytes).map_err(|_| "CurseForge 文件详情格式错误。")?;
+        for file in response.data {
+            if !chunk.contains(&file.id) || out.insert(file.id, file).is_some() {
+                return Err("CurseForge 文件详情标识重复或不匹配。".into());
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// 搜索指定类型的内容。
 ///
 /// `game_version` 与 `loader` 同时给出时按两者收窄；只给版本时按版本收窄。
 /// 这与官方文档的要求一致：`modLoaderType` 必须与 `gameVersion` 搭配使用。
 pub async fn search(
+    source: Source<'_>,
+    kind: ContentKind,
+    query: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+    index: u32,
+    page_size: u32,
+) -> Result<Vec<CurseForgeMod>, String> {
+    let client = metadata_client_with_settings(&crate::DownloadSettings::default())?;
+    search_with_client(
+        &client,
+        source,
+        kind,
+        query,
+        game_version,
+        loader,
+        index,
+        page_size,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn search_with_client(
+    client: &MetadataClient,
     source: Source<'_>,
     kind: ContentKind,
     query: &str,
@@ -919,8 +1040,7 @@ pub async fn search(
     let url =
         reqwest::Url::parse_with_params(&format!("{}/v1/mods/search", source.base()), &params)
             .map_err(|_| "搜索地址无效。")?;
-    let client = catalog_client()?;
-    let bytes = get_json(&client, source, url).await?;
+    let bytes = get_json(&client.0, source, url).await?;
     parse_search(&bytes)
 }
 
@@ -1026,6 +1146,17 @@ pub async fn files(
     game_version: &str,
     loader: Option<&str>,
 ) -> Result<Vec<CurseForgeVersion>, String> {
+    let client = metadata_client_with_settings(&crate::DownloadSettings::default())?;
+    files_with_client(&client, source, project_id, game_version, loader).await
+}
+
+pub async fn files_with_client(
+    client: &MetadataClient,
+    source: Source<'_>,
+    project_id: &str,
+    game_version: &str,
+    loader: Option<&str>,
+) -> Result<Vec<CurseForgeVersion>, String> {
     if project_id.is_empty()
         || project_id.len() > 20
         || !project_id.bytes().all(|b| b.is_ascii_digit())
@@ -1052,8 +1183,7 @@ pub async fn files(
     )
     .map_err(|_| "版本地址无效。")?;
 
-    let client = catalog_client()?;
-    let bytes = get_json(&client, source, url).await?;
+    let bytes = get_json(&client.0, source, url).await?;
     parse_files(&bytes)
 }
 
@@ -1477,6 +1607,103 @@ pub async fn verify_key(key: &str) -> Result<(), String> {
             Source::Official(key.trim()),
             response.status(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+    use crate::catalog::network_tests::MockProxy;
+
+    #[tokio::test]
+    async fn official_and_mirror_metadata_queries_use_settings_for_every_lookup() {
+        for (source, host) in [
+            (Source::Official("test-key"), "api.curseforge.com"),
+            (Source::Mirror, "mod.mcimirror.top"),
+        ] {
+            let proxy = MockProxy::new("502 Bad Gateway", Duration::ZERO).await;
+            let client = metadata_client_with_settings(&proxy.settings(0)).unwrap();
+            assert!(
+                search_with_client(&client, source, ContentKind::Mod, "", None, None, 0, 20)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                files_with_client(&client, source, "123", "", None)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                files_by_ids_with_client(&client, source, &[123])
+                    .await
+                    .is_err()
+            );
+            assert!(
+                projects_by_ids_with_client(&client, source, &["123".into()])
+                    .await
+                    .is_err()
+            );
+            assert!(
+                identify_files_with_client(&client, source, &[("m.jar".into(), 123)], None, None)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                pack_files_with_client(&client, source, &[123])
+                    .await
+                    .is_err()
+            );
+            let requests = proxy.requests.lock().unwrap();
+            assert_eq!(requests.len(), 6);
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.starts_with(&format!("CONNECT {host}:443 HTTP/1.1")))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn only_explicit_read_only_post_paths_are_retried() {
+        for retries in [0, 2] {
+            for (path, expected_retries) in [("/v1/mods/files", retries), ("/unlisted", 0)] {
+                let proxy = MockProxy::new("503 Service Unavailable", Duration::ZERO).await;
+                let client = proxy
+                    .settings(retries)
+                    .to_engine_settings()
+                    .configure_metadata_client_with_post_paths(
+                        reqwest::Client::builder(),
+                        &["metadata.test"],
+                        &["/v1/mods/files"],
+                    )
+                    .unwrap()
+                    .build()
+                    .unwrap();
+                let response = client
+                    .post(format!("http://metadata.test{path}"))
+                    .json(&serde_json::json!({ "fileIds": [123] }))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+                let requests = proxy.requests.lock().unwrap();
+                assert_eq!(requests.len(), usize::from(expected_retries) + 1);
+                assert!(
+                    requests
+                        .iter()
+                        .all(|request| request.contains("\"fileIds\":[123]"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_network_configuration_does_not_fall_back_to_default() {
+        let settings = crate::DownloadSettings {
+            timeout_sec: 0,
+            ..Default::default()
+        };
+        assert!(metadata_client_with_settings(&settings).is_err());
     }
 }
 

@@ -109,7 +109,8 @@ pub async fn run(session: &Session<'_>, args: &DownloadArgs) -> Outcome {
      */
     let resolved_loader = match kind {
         Some(kind) => {
-            let resolved = resolve_loader_version(kind, &args.game, &version).await?;
+            let resolved =
+                resolve_loader_version(&session.store, kind, &args.game, &version).await?;
             /*
              * A newly created instance carries a marker file that the installer
              * consumes. An existing instance has no marker, so the loader has to be
@@ -282,7 +283,7 @@ async fn install_mods(
             })?,
         };
 
-        let file = launcher_core::catalog::install_mod_version(version, &mods_dir, &engine)
+        let file = launcher_core::catalog::dependencies::install(instance, version, &engine)
             .await
             .map_err(Failure::message)?;
         installed += 1;
@@ -296,21 +297,6 @@ async fn install_mods(
             version.version_number,
             file
         );
-        /*
-         * Dependencies are reported, not installed. The catalogue only exposes how
-         * many a version declares, and fetching them would mean resolving a graph
-         * the GUI does not resolve either. Saying so beats letting the user find out
-         * from a crash report.
-         */
-        if version.dependency_count > 0 {
-            println!(
-                "{}",
-                palette.yellow(&format!(
-                    "  这个版本声明了 {} 个前置模组；它们不会被自动安装，请按需补齐。",
-                    version.dependency_count
-                ))
-            );
-        }
     }
 
     if session.cli.json {
@@ -374,6 +360,7 @@ fn default_name(game: &str, kind: Option<loaders::LoaderKind>) -> String {
 /// kind when nothing is flagged stable (Forge's promotion feed is often empty for
 /// older versions, and returning "no stable version" there would be useless).
 async fn resolve_loader_version(
+    store: &launcher_core::LauncherStore,
     kind: loaders::LoaderKind,
     game: &str,
     requested: &str,
@@ -383,7 +370,8 @@ async fn resolve_loader_version(
         loaders::safe_version(requested).map_err(Failure::message)?;
         return Ok(requested.to_owned());
     }
-    let versions = loaders::list_loader_versions(kind, game)
+    let download = store.load_settings()?.download;
+    let versions = loaders::list_loader_versions_with_settings(kind, game, &download)
         .await
         .map_err(Failure::from)?;
     /*
@@ -502,7 +490,9 @@ mod tests {
     fn a_concrete_loader_version_skips_the_network() {
         // This test must not need the internet: a concrete version is returned
         // before any request is made.
-        let future = resolve_loader_version(loaders::LoaderKind::Fabric, "1.21.1", "0.16.10");
+        let store = launcher_core::LauncherStore::open(":memory:").unwrap();
+        let future =
+            resolve_loader_version(&store, loaders::LoaderKind::Fabric, "1.21.1", "0.16.10");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

@@ -199,8 +199,15 @@ impl Aria2Session {
         file_name: &str,
         checksum: Option<&str>,
     ) -> Result<String, Aria2Error> {
-        self.add_uri_bounded(urls, directory, file_name, checksum, 1)
-            .await
+        self.add_uri_bounded(
+            urls,
+            directory,
+            file_name,
+            checksum,
+            1,
+            &crate::DownloadSettings::default(),
+        )
+        .await
     }
 
     pub(crate) fn task_guard(&self, gid: String) -> TaskGuard {
@@ -226,7 +233,14 @@ impl Aria2Session {
         file_name: &str,
         checksum: Option<&str>,
         connections: u16,
+        network: &crate::DownloadSettings,
     ) -> Result<String, Aria2Error> {
+        network
+            .validate_network()
+            .map_err(|e| Aria2Error::Rpc(e.to_string()))?;
+        if network.proxy_mode == crate::ProxyMode::System {
+            return Err(Aria2Error::Rpc("system proxy requires native HTTP".into()));
+        }
         if urls.is_empty()
             || urls.iter().any(|s| {
                 reqwest::Url::parse(s)
@@ -248,10 +262,25 @@ impl Aria2Session {
         options.insert("max-connection-per-server".to_owned(), json!(connections));
         // Native HTTP handles redirects with our HTTPS-only redirect policy.
         options.insert("max-http-redirect".to_owned(), json!("0"));
-        options.insert("max-tries".to_owned(), json!("3"));
+        options.insert(
+            "max-tries".to_owned(),
+            json!((u16::from(network.retries) + 1).to_string()),
+        );
         options.insert("retry-wait".to_owned(), json!("1"));
-        options.insert("connect-timeout".to_owned(), json!("15"));
-        options.insert("timeout".to_owned(), json!("60"));
+        options.insert(
+            "connect-timeout".to_owned(),
+            json!(network.timeout_sec.min(15).to_string()),
+        );
+        options.insert("timeout".to_owned(), json!(network.timeout_sec.to_string()));
+        let proxy = if network.proxy_mode == crate::ProxyMode::Http {
+            network.proxy_url.as_str()
+        } else {
+            ""
+        };
+        options.insert("all-proxy".to_owned(), json!(proxy));
+        options.insert("http-proxy".to_owned(), json!(proxy));
+        options.insert("https-proxy".to_owned(), json!(proxy));
+        options.insert("no-proxy".to_owned(), json!(""));
         options.insert("dir".to_owned(), json!(directory.to_string_lossy()));
         options.insert("out".to_owned(), json!(file_name));
         options.insert("continue".to_owned(), json!("true"));

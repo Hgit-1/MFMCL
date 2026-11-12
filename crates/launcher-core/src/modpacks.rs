@@ -16,6 +16,73 @@ const MAX_TOTAL: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_INDEX: u64 = 4 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
 
+#[path = "modpacks_hmcl.rs"]
+mod hmcl;
+#[path = "modpacks_local.rs"]
+mod local;
+#[path = "modpacks_multimc.rs"]
+mod multimc;
+pub use local::{
+    CurseForgePackFile, PackResolution, prepare_pack_for_import, resolve_curseforge_pack,
+};
+
+pub async fn prepare_pack_for_import_with_client(
+    client: &crate::curseforge::MetadataClient,
+    path: &Path,
+    local_paths: &[PathBuf],
+    key: Option<&str>,
+) -> Result<PackResolution, String> {
+    match prepare_pack(path)? {
+        PackPreparation::Ready(prepared) => Ok(PackResolution {
+            source_path: path.to_path_buf(),
+            preview: prepared.preview().clone(),
+            unresolved_files: vec![],
+            prepared: Some(prepared),
+        }),
+        PackPreparation::NeedsOnlineLookup { manifest, .. } => {
+            let details = crate::curseforge::pack_files_with_client(
+                client,
+                crate::curseforge::Source::from_key(key),
+                &manifest.file_ids(),
+            )
+            .await;
+            match details {
+                Ok(details) => {
+                    resolve_curseforge_pack(path, &manifest, &details, local_paths).await
+                }
+                Err(reason) => {
+                    let mut resolution = resolve_curseforge_pack(
+                        path,
+                        &manifest,
+                        &std::collections::HashMap::new(),
+                        local_paths,
+                    )
+                    .await?;
+                    for file in &mut resolution.unresolved_files {
+                        file.reason = reason.clone();
+                    }
+                    Ok(resolution)
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ArchiveLayout {
+    root: String,
+    content: PackContent,
+    imported_overrides: Option<crate::InstanceOverrides>,
+}
+
+#[derive(Clone)]
+enum PackContent {
+    Modrinth,
+    CurseForge { overrides: String },
+    MultiMC { game: String },
+    Hmcl(hmcl::Layout),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackIndex {
@@ -58,11 +125,27 @@ pub struct PreparedPack {
     index: PackIndex,
     preview: PackPreview,
     download_bytes: u64,
+    layout: ArchiveLayout,
+    // Archive is dropped before the snapshot so Windows can remove the temporary ZIP.
+    _snapshot: Option<multimc::Snapshot>,
+    local_files: local::LocalFiles,
 }
 
 impl PreparedPack {
     pub fn preview(&self) -> &PackPreview {
         &self.preview
+    }
+
+    /// Validated, portable launch preferences only. Persist together with the new
+    /// instance after extraction succeeds; never apply these to global settings.
+    pub fn imported_overrides(&self) -> Option<&crate::InstanceOverrides> {
+        self.layout.imported_overrides.as_ref()
+    }
+
+    /// Detach preferences before `import_prepared_pack` consumes this archive.
+    /// The caller must discard them if import or its database transaction fails.
+    pub fn take_imported_overrides(&mut self) -> Option<crate::InstanceOverrides> {
+        self.layout.imported_overrides.take()
     }
 }
 
@@ -96,16 +179,18 @@ pub fn safe_pack_path(value: &str) -> Result<PathBuf, String> {
 }
 
 fn eligible_file(path: &str) -> bool {
-    [
-        "mods/",
-        "config/",
-        "resourcepacks/",
-        "shaderpacks/",
-        "defaultconfigs/",
-        "kubejs/",
-    ]
-    .iter()
-    .any(|prefix| path.starts_with(prefix))
+    matches!(path, "options.txt" | "optionsof.txt" | "servers.dat")
+        || [
+            "saves/",
+            "mods/",
+            "config/",
+            "resourcepacks/",
+            "shaderpacks/",
+            "defaultconfigs/",
+            "kubejs/",
+        ]
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
 }
 
 /// `prepare_pack` 的结果。
@@ -123,60 +208,108 @@ pub enum PackPreparation {
     },
 }
 
-/// 把查到的 CurseForge 文件详情组装成 `PackFile`。
-///
-/// 落盘路径按内容类型决定：
-///   - `.jar` → `mods/`（绝大多数整合包文件）；
-///   - `.zip` 且文件名含 resourcepack 字样 → `resourcepacks/`。
-///
-/// 其余类型（世界、光影）的归类没有可靠信号：CurseForge 的文件对象不带「这个文件
-/// 属于哪一类」的信息，只能靠扩展名与文件名推断。推断错会让文件落到游戏读不到的
-/// 位置，所以拿不准时**跳过**并在结果里报告数量，而不是硬塞进 `mods/`——一个放错
-/// 的 `.zip` 会让游戏在启动时报错，比少装一个文件更难排查。
+/// A missing CurseForge reference with enough identity to locate it without a download URL.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingPackFile {
+    pub project_id: u64,
+    pub file_id: u64,
+    pub file_name: Option<String>,
+    pub required: bool,
+    pub reason: String,
+    pub can_select_local: bool,
+}
+
+pub fn require_complete_curseforge_files(missing: &[MissingPackFile]) -> Result<(), String> {
+    let required: Vec<_> = missing.iter().filter(|file| file.required).collect();
+    if required.is_empty() {
+        return Ok(());
+    }
+    let details = required
+        .iter()
+        .take(8)
+        .map(|file| {
+            format!(
+                "projectID={} fileID={}{}：{}",
+                file.project_id,
+                file.file_id,
+                file.file_name
+                    .as_deref()
+                    .map(|name| format!(" ({name})"))
+                    .unwrap_or_default(),
+                file.reason
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("；");
+    Err(format!(
+        "CurseForge 整合包缺少 {} 个必需文件，未创建实例。{details}",
+        required.len()
+    ))
+}
+
+/// Resolve only safely classifiable files; required missing references must block import.
 pub fn curseforge_files_to_pack_files(
     manifest: &CurseForgeManifest,
     details: &std::collections::HashMap<u64, crate::curseforge::CurseForgeVersion>,
-) -> (Vec<PackFile>, usize) {
+) -> (Vec<PackFile>, Vec<MissingPackFile>) {
     let mut out = Vec::new();
-    let mut skipped = 0_usize;
+    let mut missing = Vec::new();
+    let mut seen = BTreeSet::new();
+    let required_ids: BTreeSet<_> = manifest
+        .files
+        .iter()
+        .filter(|file| file.required)
+        .map(|file| file.file_id)
+        .collect();
     for entry in &manifest.files {
-        let Some(version) = details.get(&entry.file_id) else {
-            skipped += 1;
+        if !seen.insert(entry.file_id) {
             continue;
-        };
-        let Some(url) = version.url.clone() else {
-            // 作者禁止第三方分发：无法自动下载，只能跳过并让调用方提示用户。
-            skipped += 1;
-            continue;
-        };
-        let Some(sha1) = version.sha1.clone() else {
-            skipped += 1;
-            continue;
-        };
-        let some_path = classify_curseforge_file(&version.file_name);
-        let Some(path) = some_path else {
-            skipped += 1;
-            continue;
+        }
+        // Duplicate references cannot turn a required dependency into an optional one.
+        let required = required_ids.contains(&entry.file_id);
+        let version = details.get(&entry.file_id);
+        let resolved = (|| {
+            let version = version.ok_or("API 未返回文件详情")?;
+            if version.version_id != entry.file_id.to_string() {
+                return Err("API 返回的文件标识不匹配");
+            }
+            let url = version
+                .url
+                .clone()
+                .ok_or("作者限制第三方分发或未提供下载地址")?;
+            let sha1 = version.sha1.clone().ok_or("文件缺少 SHA-1 校验值")?;
+            let path =
+                classify_curseforge_file(&version.file_name).ok_or("无法可靠确定文件安装目录")?;
+            safe_pack_path(&path).map_err(|_| "文件名不安全")?;
+            Ok::<_, &str>((url, sha1, path, version.size))
+        })();
+        let (url, sha1, path, size) = match resolved {
+            Ok(value) => value,
+            Err(reason) => {
+                missing.push(MissingPackFile {
+                    project_id: entry.project_id,
+                    file_id: entry.file_id,
+                    file_name: version.map(|value| value.file_name.clone()),
+                    required,
+                    reason: reason.to_owned(),
+                    can_select_local: false,
+                });
+                continue;
+            }
         };
         out.push(PackFile {
             path,
             hashes: std::collections::HashMap::from([("sha1".to_owned(), sha1)]),
             downloads: vec![url],
-            file_size: version.size,
-            // CurseForge 的 `required` 语义与 Modrinth 的 `env.client` 对齐：
-            // 必选 → required；可选 → optional（下载但允许缺失）。
+            file_size: size,
             env: std::collections::HashMap::from([(
                 "client".to_owned(),
-                if entry.required {
-                    "required"
-                } else {
-                    "optional"
-                }
-                .to_owned(),
+                if required { "required" } else { "optional" }.to_owned(),
             )]),
         });
     }
-    (out, skipped)
+    (out, missing)
 }
 
 /// 推断一个 CurseForge 文件该放到实例的哪个目录；无法可靠判断时返回 `None`。
@@ -199,6 +332,18 @@ fn classify_curseforge_file(file_name: &str) -> Option<String> {
 
 /// Prepare an archive once so import consumes the same open archive that supplied its metadata.
 pub fn prepare_pack(path: &Path) -> Result<PackPreparation, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("整合包来源不能是符号链接。".into());
+    }
+    if metadata.is_dir() {
+        let snapshot = multimc::snapshot_directory(path)?;
+        let PackPreparation::Ready(mut prepared) = prepare_pack(&snapshot.archive_path())? else {
+            return Err("已有实例目录缺少可转换的整合包或版本元数据。".into());
+        };
+        prepared._snapshot = Some(snapshot);
+        return Ok(PackPreparation::Ready(prepared));
+    }
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let raw_entry_count = zip_entry_count(&mut file)?;
     if raw_entry_count > MAX_ARCHIVE_ENTRIES as u64 {
@@ -212,14 +357,19 @@ pub fn prepare_pack(path: &Path) -> Result<PackPreparation, String> {
     if archive.len() > MAX_ARCHIVE_ENTRIES {
         return Err("整合包文件数量超过限制。".into());
     }
-    match read_pack_index_source(&mut archive)? {
-        PackIndexSource::Modrinth(index) => {
-            Ok(PackPreparation::Ready(prepare_from_index(archive, index)?))
+    let (source, layout) = read_pack_index_source(&mut archive)?;
+    match source {
+        PackIndexSource::Modrinth(index) => Ok(PackPreparation::Ready(prepare_from_index(
+            archive, index, layout,
+        )?)),
+        PackIndexSource::CurseForge(manifest) => {
+            let (_, bytes, paths) = validate_index(&manifest.to_index_skeleton())?;
+            scan_archive(&mut archive, bytes, &paths, None, &layout)?;
+            Ok(PackPreparation::NeedsOnlineLookup {
+                path: path.to_path_buf(),
+                manifest,
+            })
         }
-        PackIndexSource::CurseForge(manifest) => Ok(PackPreparation::NeedsOnlineLookup {
-            path: path.to_path_buf(),
-            manifest,
-        }),
     }
 }
 
@@ -229,27 +379,87 @@ pub fn prepare_pack(path: &Path) -> Result<PackPreparation, String> {
 /// 解析清单，浪费一次 ZIP 扫描），或者把补全好的 `PackIndex` 直接交回来。后者
 /// 更直接，也避免中间态差异。
 pub fn prepare_from_completed_index(path: &Path, index: PackIndex) -> Result<PreparedPack, String> {
+    prepare_completed_index(path, index, local::LocalFiles::default(), None)
+}
+
+fn prepare_completed_index(
+    path: &Path,
+    index: PackIndex,
+    local_files: local::LocalFiles,
+    expected_manifest: Option<&CurseForgeManifest>,
+) -> Result<PreparedPack, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let raw_entry_count = zip_entry_count(&mut file)?;
     if raw_entry_count > MAX_ARCHIVE_ENTRIES as u64 {
         return Err("整合包文件数量超过限制。".into());
     }
     file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    // 只读长度、不解析条目，因此不需要可变借用。
-    let archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
     if archive.len() as u64 != raw_entry_count {
         return Err("ZIP 中存在重复路径，或目录条目数量不一致。".into());
     }
-    prepare_from_index(archive, index)
+    let (source, layout) = read_pack_index_source(&mut archive)?;
+    let PackIndexSource::CurseForge(manifest) = source else {
+        return Err("补全索引仅适用于 CurseForge 整合包。".into());
+    };
+    if let Some(expected) = expected_manifest {
+        let references = |manifest: &CurseForgeManifest| {
+            manifest
+                .files
+                .iter()
+                .map(|file| (file.project_id, file.file_id, file.required))
+                .collect::<BTreeSet<_>>()
+        };
+        if references(&manifest) != references(expected) {
+            return Err("CurseForge 文件引用在补全期间发生变化，请重新导入。".into());
+        }
+    }
+    let expected = manifest.to_index_skeleton();
+    if index.dependencies != expected.dependencies
+        || index.name != expected.name
+        || index.version_id != expected.version_id
+    {
+        return Err("CurseForge 清单在补全期间发生变化，请重新导入。".into());
+    }
+    let required_ids: BTreeSet<_> = manifest
+        .files
+        .iter()
+        .filter(|file| file.required)
+        .map(|file| file.file_id)
+        .collect();
+    let completed_required = index
+        .files
+        .iter()
+        .filter(|file| {
+            !matches!(
+                file.env.get("client").map(String::as_str),
+                Some("optional" | "unsupported")
+            )
+        })
+        .count();
+    if completed_required < required_ids.len() {
+        return Err("CurseForge 补全索引缺少必需文件，不会创建不完整实例。".into());
+    }
+    prepare_index_with_local(archive, index, layout, local_files)
 }
 
 fn prepare_from_index(
+    archive: ZipArchive<File>,
+    index: PackIndex,
+    layout: ArchiveLayout,
+) -> Result<PreparedPack, String> {
+    prepare_index_with_local(archive, index, layout, local::LocalFiles::default())
+}
+
+fn prepare_index_with_local(
     mut archive: ZipArchive<File>,
     index: PackIndex,
+    layout: ArchiveLayout,
+    local_files: local::LocalFiles,
 ) -> Result<PreparedPack, String> {
-    let (preview, download_bytes, output_paths) = validate_index(&index)?;
+    let (preview, download_bytes, output_paths) = validate_index_with_local(&index, &local_files)?;
     let (zip_bytes, override_files) =
-        scan_archive(&mut archive, download_bytes, &output_paths, None)?;
+        scan_archive(&mut archive, download_bytes, &output_paths, None, &layout)?;
     let mut preview = preview;
     preview.total_bytes = download_bytes
         .checked_add(zip_bytes)
@@ -260,6 +470,9 @@ fn prepare_from_index(
         index,
         preview,
         download_bytes,
+        layout,
+        _snapshot: None,
+        local_files,
     })
 }
 
@@ -367,27 +580,111 @@ pub enum PackIndexSource {
     CurseForge(CurseForgeManifest),
 }
 
-fn read_pack_index_source(archive: &mut ZipArchive<File>) -> Result<PackIndexSource, String> {
-    /*
-     * 两种索引格式，按入口文件区分：
-     *   - `modrinth.index.json` —— Modrinth 的 `.mrpack`，自描述，可直接用；
-     *   - `manifest.json`       —— CurseForge 的整合包，需要联网补全文件地址。
-     *
-     * 先试 Modrinth（更常见且无需网络），再试 CurseForge，都不匹配时明确说明
-     * 「这不是有效的整合包」，而不是报「缺少 modrinth.index.json」——后者只有
-     * 开发者能读懂。
-     */
-    if let Some(index) = try_read_modrinth_index(archive)? {
-        return Ok(PackIndexSource::Modrinth(index));
+fn read_pack_index_source(
+    archive: &mut ZipArchive<File>,
+) -> Result<(PackIndexSource, ArchiveLayout), String> {
+    let (root, index_name) = locate_pack_root(archive)?;
+    let mut imported_overrides = None;
+    let (source, content) = match index_name.as_str() {
+        "modrinth.index.json" => {
+            let index = try_read_modrinth_index(archive, &root)?.ok_or("缺少整合包索引。")?;
+            (PackIndexSource::Modrinth(index), PackContent::Modrinth)
+        }
+        "manifest.json" => {
+            let manifest =
+                try_read_curseforge_manifest(archive, &root)?.ok_or("缺少整合包清单。")?;
+            let overrides = manifest.overrides.trim_end_matches('/').to_owned();
+            safe_pack_path(&overrides)?;
+            (
+                PackIndexSource::CurseForge(manifest),
+                PackContent::CurseForge { overrides },
+            )
+        }
+        "mmc-pack.json" => {
+            let (index, game, overrides) = multimc::read_index(archive, &root)?;
+            imported_overrides = overrides;
+            (
+                PackIndexSource::Modrinth(index),
+                PackContent::MultiMC { game },
+            )
+        }
+        "modpack.json" | "hmcl-version" => {
+            let (index, layout, overrides) =
+                hmcl::read_index(archive, &root, index_name == "modpack.json")?;
+            imported_overrides = overrides;
+            (PackIndexSource::Modrinth(index), PackContent::Hmcl(layout))
+        }
+        _ => return Err("不支持的整合包索引。".into()),
+    };
+    Ok((
+        source,
+        ArchiveLayout {
+            root,
+            content,
+            imported_overrides,
+        },
+    ))
+}
+
+fn locate_pack_root(archive: &mut ZipArchive<File>) -> Result<(String, String), String> {
+    let mut candidates = Vec::new();
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().map_err(|_| "整合包文件名无法解码。")?;
+        safe_pack_path(&name)?;
+        let (root, base) = name
+            .rsplit_once('/')
+            .map(|(a, b)| (format!("{a}/"), b))
+            .unwrap_or((String::new(), &name));
+        if matches!(
+            base,
+            "modrinth.index.json" | "manifest.json" | "mmc-pack.json" | "modpack.json"
+        ) {
+            candidates.push((root, base.to_owned()));
+        }
     }
-    if let Some(manifest) = try_read_curseforge_manifest(archive)? {
-        return Ok(PackIndexSource::CurseForge(manifest));
+    if candidates.is_empty() {
+        return hmcl::locate_version_root(archive);
     }
-    Err(
-        "这不是有效的整合包：压缩包里既没有 Modrinth 的 modrinth.index.json，\
-         也没有 CurseForge 的 manifest.json。"
-            .into(),
-    )
+    // An index in a config/world subdirectory is data, not a second pack root.
+    if let Some(depth) = candidates
+        .iter()
+        .map(|(root, _)| root.matches('/').count())
+        .min()
+    {
+        candidates.retain(|(root, _)| root.matches('/').count() == depth);
+    }
+    if candidates.len() != 1 {
+        return Err(if candidates.is_empty() {
+            "这不是有效的整合包：未找到支持的 Modrinth、CurseForge 或 MultiMC 索引。".into()
+        } else {
+            "压缩包包含多个整合包索引，无法安全确定导入根目录。".into()
+        });
+    }
+    Ok(candidates.remove(0))
+}
+
+fn read_archive_bytes(archive: &mut ZipArchive<File>, name: &str) -> Result<Vec<u8>, String> {
+    let mut entry = archive
+        .by_name(name)
+        .map_err(|_| format!("整合包缺少 {name}。"))?;
+    if entry.is_dir()
+        || entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+    {
+        return Err("整合包索引必须为普通文件。".into());
+    }
+    if entry.size() > MAX_INDEX {
+        return Err("整合包索引过大。".into());
+    }
+    let declared = entry.size();
+    let mut bytes = Vec::with_capacity(declared as usize);
+    copy_bounded(&mut entry, &mut bytes, declared, MAX_INDEX, &mut 0)?;
+    Ok(bytes)
 }
 
 /// CurseForge 的 `manifest.json` 原始结构。
@@ -405,8 +702,15 @@ pub struct CurseForgeManifest {
     pub version: String,
     #[serde(default)]
     pub author: String,
+    /// The original archive-relative override folder; empty/missing uses the standard folder.
+    #[serde(default = "default_overrides")]
+    pub overrides: String,
     #[serde(default)]
     pub files: Vec<CurseForgeManifestFile>,
+}
+
+fn default_overrides() -> String {
+    "overrides".to_owned()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -433,8 +737,12 @@ pub struct CurseForgeManifestFile {
     pub project_id: u64,
     #[serde(rename = "fileID")]
     pub file_id: u64,
-    #[serde(default)]
+    #[serde(default = "required_by_default")]
     pub required: bool,
+}
+
+fn required_by_default() -> bool {
+    true
 }
 
 /// 读完 CurseForge 的 `manifest.json`；不存在时返回 `Ok(None)`。
@@ -443,22 +751,9 @@ pub struct CurseForgeManifestFile {
 /// 不触网的（要求它在无网络时也能给出可预期的错误），所以补全放在调用方。
 fn try_read_curseforge_manifest(
     archive: &mut ZipArchive<File>,
+    root: &str,
 ) -> Result<Option<CurseForgeManifest>, String> {
-    let mut entry = match archive.by_name("manifest.json") {
-        Ok(entry) => entry,
-        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
-        Err(_) => return Err("读取整合包索引失败。".into()),
-    };
-    if entry.is_dir() {
-        return Err("整合包索引不是普通文件。".into());
-    }
-    if entry.size() > MAX_INDEX {
-        return Err("整合包索引过大。".into());
-    }
-    let mut bytes = Vec::with_capacity(entry.size() as usize);
-    let mut total = 0;
-    let declared = entry.size();
-    copy_bounded(&mut entry, &mut bytes, declared, MAX_INDEX, &mut total)?;
+    let bytes = read_archive_bytes(archive, &format!("{root}manifest.json"))?;
     let manifest: CurseForgeManifest =
         serde_json::from_slice(&bytes).map_err(|_| "CurseForge 整合包清单格式错误。".to_owned())?;
     // 与 Modrinth 侧一致的边界检查：条目数与版本号长度都必须有限。
@@ -469,6 +764,28 @@ fn try_read_curseforge_manifest(
         return Err("整合包未声明 Minecraft 版本。".into());
     }
     safe_version(&manifest.minecraft.version)?;
+    let loader = manifest.loader_string();
+    if !manifest.minecraft.mod_loaders.is_empty() {
+        let (kind, version) = loader
+            .split_once('@')
+            .ok_or("CurseForge 清单加载器缺少版本或不受支持。")?;
+        if !matches!(kind, "fabric" | "quilt" | "forge" | "neoforge") {
+            return Err("CurseForge 加载器不受支持。".into());
+        }
+        safe_version(version)?;
+    }
+    let mut ids = std::collections::HashMap::new();
+    for file in &manifest.files {
+        if file.project_id == 0
+            || file.file_id == 0
+            || ids
+                .insert(file.file_id, file.project_id)
+                .is_some_and(|prior| prior != file.project_id)
+        {
+            return Err("CurseForge 清单文件引用无效或项目冲突。".into());
+        }
+    }
+    validate_index(&manifest.to_index_skeleton())?;
     Ok(Some(manifest))
 }
 
@@ -503,10 +820,8 @@ impl CurseForgeManifest {
         }
     }
 
-    /// 清单声明的加载器，形如 `fabric@0.16.10`；没有或无法识别时回到 `vanilla`。
-    ///
-    /// 优先取 `primary: true` 的那条——一个整合包可能同时声明多个加载器的兼容性，
-    /// 但真正安装用的是主加载器。
+    /// Preserve unknown loader identities so validation can reject them rather than downgrade to vanilla.
+    /// A primary loader takes precedence over other manifest entries.
     fn loader_string(&self) -> String {
         let chosen = self
             .minecraft
@@ -530,7 +845,7 @@ impl CurseForgeManifest {
             "quilt" => "quilt",
             "forge" => "forge",
             "neoforge" => "neoforge",
-            _ => return "vanilla".to_owned(),
+            _ => return format!("{kind}@{version}"),
         };
         if version.is_empty() {
             canonical.to_owned()
@@ -549,20 +864,14 @@ impl CurseForgeManifest {
             "minecraft".to_owned(),
             self.minecraft.version.trim().to_owned(),
         );
-        // Modrinth 的 `PackIndex` 用 `fabric-loader` / `quilt-loader` 作为键。
-        // CurseForge 的 `forge` / `neoforge` 在 Modrinth 里没有对应键——它们由
-        // `PackIndex` 之外的安装流程处理，所以这里只映射 loader 家族。
         let loader = self.loader_string();
         if let Some((kind, version)) = loader.split_once('@') {
-            match kind {
-                "fabric" => {
-                    dependencies.insert("fabric-loader".to_owned(), version.to_owned());
-                }
-                "quilt" => {
-                    dependencies.insert("quilt-loader".to_owned(), version.to_owned());
-                }
-                _ => {}
-            }
+            let key = match kind {
+                "fabric" => "fabric-loader",
+                "quilt" => "quilt-loader",
+                other => other,
+            };
+            dependencies.insert(key.to_owned(), version.to_owned());
         }
         PackIndex {
             format_version: 1,
@@ -598,28 +907,24 @@ impl CurseForgeManifest {
 }
 
 /// 读 Modrinth 的 `modrinth.index.json`；不存在时返回 `Ok(None)`。
-fn try_read_modrinth_index(archive: &mut ZipArchive<File>) -> Result<Option<PackIndex>, String> {
-    let mut entry = match archive.by_name("modrinth.index.json") {
-        Ok(entry) => entry,
-        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
-        Err(_) => return Err("读取整合包索引失败。".into()),
-    };
-    if entry.is_dir() {
-        return Err("整合包索引不是普通文件。".into());
-    }
-    if entry.size() > MAX_INDEX {
-        return Err("整合包索引过大。".into());
-    }
-    let mut bytes = Vec::with_capacity(entry.size() as usize);
-    let mut total = 0;
-    let declared = entry.size();
-    copy_bounded(&mut entry, &mut bytes, declared, MAX_INDEX, &mut total)?;
+fn try_read_modrinth_index(
+    archive: &mut ZipArchive<File>,
+    root: &str,
+) -> Result<Option<PackIndex>, String> {
+    let bytes = read_archive_bytes(archive, &format!("{root}modrinth.index.json"))?;
     Ok(Some(
         serde_json::from_slice(&bytes).map_err(|_| "整合包索引格式错误。".to_owned())?,
     ))
 }
 
 fn validate_index(index: &PackIndex) -> Result<(PackPreview, u64, PathRegistry), String> {
+    validate_index_with_local(index, &local::LocalFiles::default())
+}
+
+fn validate_index_with_local(
+    index: &PackIndex,
+    local_files: &local::LocalFiles,
+) -> Result<(PackPreview, u64, PathRegistry), String> {
     if index.format_version != 1
         || index.game != "minecraft"
         || index.name.trim().is_empty()
@@ -642,16 +947,23 @@ fn validate_index(index: &PackIndex) -> Result<(PackPreview, u64, PathRegistry),
         safe_version(version)?;
         match kind.as_str() {
             "minecraft" => {}
-            "fabric-loader" | "quilt-loader" => {
+            "fabric-loader"
+            | "quilt-loader"
+            | "forge"
+            | "neoforge"
+            | "liteloader"
+            | "cleanroom"
+            | "legacyfabric-loader" => {
                 if loader != "vanilla" {
                     return Err("整合包声明了多个加载器。".into());
                 }
                 loader = format!(
                     "{}@{version}",
-                    if kind == "fabric-loader" {
-                        "fabric"
-                    } else {
-                        "quilt"
+                    match kind.as_str() {
+                        "fabric-loader" => "fabric",
+                        "quilt-loader" => "quilt",
+                        "legacyfabric-loader" => "legacyfabric",
+                        other => other,
                     }
                 );
             }
@@ -696,6 +1008,9 @@ fn validate_index(index: &PackIndex) -> Result<(PackPreview, u64, PathRegistry),
             .filter(|size| *size <= MAX_TOTAL)
             .ok_or("整合包过大。")?;
         validate_file_hashes(&file.hashes)?;
+        if local_files.contains(&file.path) && file.downloads.is_empty() {
+            continue;
+        }
         if file.downloads.is_empty() || file.downloads.len() > 8 {
             return Err("依赖下载地址数量无效。".into());
         }
@@ -819,6 +1134,52 @@ enum ArchiveEntryKind {
     Ignored,
 }
 
+impl ArchiveLayout {
+    fn entry_kind(&self, name: &str, is_dir: bool) -> Result<ArchiveEntryKind, String> {
+        if is_dir
+            && !self.root.is_empty()
+            && self
+                .root
+                .starts_with(&format!("{}/", name.trim_end_matches('/')))
+        {
+            return Ok(ArchiveEntryKind::Ignored);
+        }
+        let name = name
+            .strip_prefix(&self.root)
+            .ok_or("整合包包含根目录之外的条目。")?;
+        match &self.content {
+            PackContent::Modrinth => archive_entry_kind(name, is_dir),
+            PackContent::CurseForge { overrides } => {
+                if !is_dir && matches!(name, "manifest.json" | "modlist.html") {
+                    return Ok(ArchiveEntryKind::Index);
+                }
+                if is_dir && overrides.starts_with(&format!("{}/", name.trim_end_matches('/'))) {
+                    return Ok(ArchiveEntryKind::Ignored);
+                }
+                if name.trim_end_matches('/') == overrides && is_dir {
+                    return Ok(ArchiveEntryKind::Ignored);
+                }
+                if let Some(relative) = name.strip_prefix(&format!("{overrides}/")) {
+                    return archive_entry_kind(&format!("overrides/{relative}"), is_dir);
+                }
+                if harmless_document(name, is_dir) {
+                    return Ok(ArchiveEntryKind::Ignored);
+                }
+                Err(format!("CurseForge 整合包包含不支持的条目：{name}"))
+            }
+            PackContent::MultiMC { game } => multimc::entry_kind(name, is_dir, game),
+            PackContent::Hmcl(layout) => hmcl::entry_kind(name, is_dir, layout),
+        }
+    }
+}
+
+fn harmless_document(name: &str, is_dir: bool) -> bool {
+    !is_dir
+        && !name.contains('/')
+        && (name.to_ascii_lowercase().starts_with("readme")
+            || matches!(name, "LICENSE" | "LICENSE.txt" | "icon.png" | "pack.png"))
+}
+
 fn archive_entry_kind(name: &str, is_dir: bool) -> Result<ArchiveEntryKind, String> {
     let logical_name = if is_dir && !name.ends_with('/') {
         format!("{name}/")
@@ -827,6 +1188,9 @@ fn archive_entry_kind(name: &str, is_dir: bool) -> Result<ArchiveEntryKind, Stri
     };
     if !is_dir && logical_name == "modrinth.index.json" {
         return Ok(ArchiveEntryKind::Index);
+    }
+    if harmless_document(name, is_dir) {
+        return Ok(ArchiveEntryKind::Ignored);
     }
     for prefix in ["overrides/", "client-overrides/", "server-overrides/"] {
         if let Some(relative) = logical_name.strip_prefix(prefix) {
@@ -866,6 +1230,7 @@ fn scan_archive(
     download_bytes: u64,
     output_paths: &PathRegistry,
     output_dir: Option<&Path>,
+    layout: &ArchiveLayout,
 ) -> Result<(u64, usize), String> {
     if archive.len() > MAX_ARCHIVE_ENTRIES {
         return Err("整合包文件数量超过限制。".into());
@@ -888,7 +1253,8 @@ fn scan_archive(
             .name()
             .map_err(|_| "整合包包含无法解码的文件名。".to_owned())?
             .into_owned();
-        indices.push((name.starts_with("client-overrides/"), index));
+        let logical = name.strip_prefix(&layout.root).unwrap_or(&name);
+        indices.push((logical.starts_with("client-overrides/"), index));
     }
     indices.sort_unstable();
 
@@ -912,7 +1278,7 @@ fn scan_archive(
             return Err("整合包不允许包含符号链接。".into());
         }
         archive_paths.insert(normalized_name, is_dir)?;
-        let kind = archive_entry_kind(&name, is_dir)?;
+        let kind = layout.entry_kind(&name, is_dir)?;
         let declared = entry.size();
         if declared > MAX_ENTRY {
             return Err("ZIP 文件超过单文件大小限制。".into());
@@ -1073,7 +1439,8 @@ pub async fn import_prepared_pack(
     if instance.state != InstanceState::NotInstalled {
         return Err("整合包只能导入新实例，现有世界不会被覆盖。".into());
     }
-    if instance.game_dir.parent() != Some(instance.instance_dir.as_path())
+    if !instance.isolated
+        || instance.game_dir.parent() != Some(instance.instance_dir.as_path())
         || instance
             .game_dir
             .file_name()
@@ -1112,6 +1479,11 @@ pub async fn import_prepared_pack(
     let mut metadata_published = false;
     let result = async {
         for file in &prepared.index.files {
+            engine
+                .control()
+                .checkpoint()
+                .await
+                .map_err(|e| e.to_string())?;
             if matches!(
                 file.env.get("client").map(String::as_str),
                 Some("optional" | "unsupported")
@@ -1119,6 +1491,10 @@ pub async fn import_prepared_pack(
                 continue;
             }
             let destination = staging.join(safe_pack_path(&file.path)?);
+            if let Some(source) = prepared.local_files.get(&file.path) {
+                local::copy_local(source, &destination, file).await?;
+                continue;
+            }
             let mut success = false;
             let mut failure = String::new();
             for url in &file.downloads {
@@ -1148,12 +1524,18 @@ pub async fn import_prepared_pack(
         let (_, override_files) = scan_archive(
             &mut prepared.archive,
             prepared.download_bytes,
-            &validate_index(&prepared.index)?.2,
+            &validate_index_with_local(&prepared.index, &prepared.local_files)?.2,
             Some(&staging),
+            &prepared.layout,
         )?;
         if override_files != prepared.preview.override_files {
             return Err("整合包覆盖文件在导入期间发生变化。".into());
         }
+        engine
+            .control()
+            .checkpoint()
+            .await
+            .map_err(|e| e.to_string())?;
         let index_path = staging.join("modrinth.index.json");
         let mut index_file = OpenOptions::new()
             .write(true)
@@ -1206,16 +1588,41 @@ pub async fn import_prepared_pack(
     result
 }
 
+pub(crate) fn pack_export_loader(instance: &InstanceRecord) -> Result<String, String> {
+    let path = instance.instance_dir.join("pack-loader.txt");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(instance.loader.clone());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > 256 {
+        return Err("待安装加载器标记无效，无法导出。".into());
+    }
+    let pending = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if instance.loader != "vanilla" && instance.loader != pending {
+        return Err("待安装加载器与实例记录冲突，无法导出。".into());
+    }
+    Ok(pending)
+}
+
 /// Local files are included only after caller confirms redistribution rights. Saves, tokens and launcher settings are never exported.
 pub fn export_pack(instance: &InstanceRecord, directory: &Path) -> Result<PathBuf, String> {
     let mut dependencies =
         std::collections::HashMap::from([("minecraft".to_owned(), instance.game_version.clone())]);
-    if instance.loader != "vanilla" {
-        let (kind, version) = instance.loader.split_once('@').ok_or("加载器记录无效。")?;
+    let loader = pack_export_loader(instance)?;
+    if loader != "vanilla" {
+        let (kind, version) = loader.split_once('@').ok_or("加载器记录无效。")?;
         safe_version(version)?;
         let key = match kind {
             "fabric" => "fabric-loader",
             "quilt" => "quilt-loader",
+            "forge" => "forge",
+            "neoforge" => "neoforge",
+            "liteloader" => "liteloader",
+            "cleanroom" => "cleanroom",
+            "legacyfabric" => "legacyfabric-loader",
             _ => return Err("暂不支持导出此加载器。".into()),
         };
         dependencies.insert(key.into(), version.into());
@@ -1377,6 +1784,10 @@ fn collect_export_files(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "modpacks_compat_tests.rs"]
+mod compat_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1565,7 +1976,16 @@ mod tests {
         });
         let mut prepared = prepare_pack_ready(&path).unwrap();
         let (_, size, destinations) = validate_index(&index).unwrap();
-        assert!(scan_archive(&mut prepared.archive, size, &destinations, None).is_err());
+        assert!(
+            scan_archive(
+                &mut prepared.archive,
+                size,
+                &destinations,
+                None,
+                &prepared.layout
+            )
+            .is_err()
+        );
         fs::remove_file(path).unwrap();
     }
 
@@ -1749,13 +2169,22 @@ mod tests {
     }
 
     #[test]
-    fn export_rejects_symlinked_game_and_case_conflicts() {
+    fn export_case_conflicts_use_registry_without_requiring_case_sensitive_disk() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         fs::create_dir_all(root.join("game/mods")).unwrap();
         fs::write(root.join("game/mods/A.jar"), b"a").unwrap();
-        fs::write(root.join("game/mods/a.jar"), b"b").unwrap();
-        let instance = test_instance(&root, "1.21.4");
-        assert!(export_pack(&instance, &root).is_err());
+        let mut paths = PathRegistry::default();
+        paths.insert("mods/a.jar", false).unwrap();
+        assert!(
+            collect_export_files(
+                &root.join("game"),
+                &root.join("game/mods"),
+                &mut Vec::new(),
+                &mut paths,
+                0
+            )
+            .is_err()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1796,6 +2225,26 @@ mod tests {
                 { "projectID": 11, "fileID": 1002, "required": false }
             ]
         })
+    }
+
+    #[tokio::test]
+    async fn curseforge_pack_resolution_uses_injected_proxy_and_preserves_missing_files() {
+        let proxy = crate::catalog::network_tests::MockProxy::new(
+            "502 Bad Gateway",
+            std::time::Duration::ZERO,
+        )
+        .await;
+        let client = crate::curseforge::metadata_client_with_settings(&proxy.settings(0)).unwrap();
+        let path = write_curseforge_pack(&curseforge_manifest(), &[]);
+        let resolution = prepare_pack_for_import_with_client(&client, &path, &[], None)
+            .await
+            .unwrap();
+        assert!(resolution.prepared.is_none());
+        assert_eq!(resolution.unresolved_files.len(), 2);
+        let requests = proxy.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("CONNECT mod.mcimirror.top:443 HTTP/1.1"));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1918,7 +2367,11 @@ mod tests {
         // 只有 1 号可用；2 号受限被跳过；3 号没查到也被跳过。
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "mods/ok.jar");
-        assert_eq!(skipped, 2);
+        assert_eq!(skipped.len(), 2);
+        let error = require_complete_curseforge_files(&skipped).unwrap_err();
+        assert!(error.contains("projectID=2 fileID=2"));
+        assert!(error.contains("projectID=3 fileID=3"));
+        assert!(error.contains("restricted.jar"));
         // 校验值与下载地址必须原样带上，否则下载引擎无法验证完整性。
         assert_eq!(files[0].hashes.get("sha1"), Some(&"a".repeat(40)));
         assert_eq!(
