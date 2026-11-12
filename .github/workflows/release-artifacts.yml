@@ -65,6 +65,15 @@ jobs:
       - name: Install macOS targets
         if: runner.os == 'macOS'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Use a canonical workspace-local fixture directory
+        shell: bash
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import path from "node:path";
+            const root = fs.realpathSync(fs.mkdtempSync(path.join(process.cwd(), ".release-temp-")));
+            fs.appendFileSync(process.env.GITHUB_ENV, ["TMPDIR", "TMP", "TEMP"].map(name => `${name}=${root}\n`).join(""));
+          '
       - run: npm ci --prefix design/flowlaunch-ui
       - run: npm run typecheck --prefix design/flowlaunch-ui
       - run: npm run build --prefix design/flowlaunch-ui
