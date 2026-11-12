@@ -370,9 +370,96 @@ async function uninstallCase(browser) {
   } finally { await f.context.close(); }
 }
 
+async function localImportCases(browser) {
+  const f = await fixture(browser);
+  const { page } = f;
+  try {
+    await page.evaluate(async record => {
+      const { default: R } = await import('/node_modules/.vite/deps/react.js');
+      const { PluginImportBar } = await import('/components/PluginImportBar.tsx');
+      const state = window.pluginFixture;
+      Object.assign(state, { calls: [], notices: [], imported: [], selectedPath: null, dialogError: null, installError: null, holdDialog: false });
+      window.__TAURI_INTERNALS__ = {
+        invoke: async (command, args) => {
+          state.calls.push({ command, args });
+          if (command === 'plugin:dialog|open') {
+            if (state.holdDialog) await new Promise(resolve => { state.releaseDialog = resolve; });
+            if (state.dialogError) throw new Error(state.dialogError);
+            return state.selectedPath;
+          }
+          if (command === 'plugin_install_file') {
+            if (state.installError) throw state.installError;
+            return structuredClone(record);
+          }
+          throw new Error(`Unexpected IPC during local import: ${command}`);
+        },
+      };
+      state.renderImport = () => state.render(R.createElement(PluginImportBar, {
+        onNotice: message => state.notices.push(message),
+        onInstalled: plugin => state.imported.push(plugin),
+        onOpenSourcePanel: () => {}, onReload: () => {},
+      }));
+      state.renderImport();
+    }, RECORD);
+    const button = page.getByRole('button', { name: 'Import a plugin package', exact: true });
+    await button.waitFor();
+    assert.equal(await page.locator('input[type="file"]').count(), 0, 'local import cannot depend on non-standard File.path');
+    for (const selectedPath of ['C:\\Users\\测试 用户\\Downloads\\aria-with-you.mflp', '/home/test/Downloads/local plugin.mfplugin', '/Users/test/Downloads/local.zip']) {
+      await page.evaluate(selectedPath => Object.assign(window.pluginFixture, { selectedPath, calls: [], imported: [] }), selectedPath);
+      await button.click();
+      await page.waitForFunction(() => window.pluginFixture.imported.length === 1);
+      assert.deepEqual(await page.evaluate(() => window.pluginFixture.calls), [
+        { command: 'plugin:dialog|open', args: { options: { directory: false, multiple: false, title: 'Import a plugin package', filters: [{ name: 'Import a plugin package', extensions: ['zip', 'mflp', 'mfplugin'] }] } } },
+        { command: 'plugin_install_file', args: { path: selectedPath } },
+      ]);
+      await page.waitForFunction(() => !document.querySelector('button').disabled);
+    }
+    assert.deepEqual(await page.evaluate(() => window.pluginFixture.notices), []);
+    await page.evaluate(() => Object.assign(window.pluginFixture, { selectedPath: null, calls: [], imported: [] }));
+    await button.click();
+    await page.waitForFunction(() => !document.querySelector('button').disabled && window.pluginFixture.calls.length === 1);
+    assert.deepEqual(await page.evaluate(() => window.pluginFixture.imported), [], 'cancel must not install');
+    assert.deepEqual(await page.evaluate(() => window.pluginFixture.notices), [], 'cancel must not report an error');
+    for (const failure of [{ dialogError: 'Native file dialog unavailable', installError: null }, { dialogError: null, installError: '插件包清单无效' }]) {
+      await page.evaluate(failure => Object.assign(window.pluginFixture, failure, { selectedPath: 'C:/local.zip', calls: [], notices: [] }), failure);
+      await button.click();
+      await page.waitForFunction(() => window.pluginFixture.notices.length === 1 && !document.querySelector('button').disabled);
+      assert.deepEqual(await page.evaluate(() => window.pluginFixture.notices), [failure.dialogError ?? failure.installError]);
+      assert.equal(await page.evaluate(() => window.pluginFixture.calls.some(call => call.command === 'plugin_install_url')), false);
+    }
+    await page.getByRole('button', { name: 'Install from a URL', exact: true }).click();
+    const url = page.getByRole('textbox', { name: 'Install from a URL', exact: true });
+    await url.fill('https://example.test/index.json');
+    await page.evaluate(() => {
+      Object.assign(window.pluginFixture, { dialogError: null, installError: null, calls: [], notices: [], imported: [], holdDialog: true });
+      const button = document.querySelector('button');
+      button.click(); button.click();
+    });
+    await page.waitForFunction(() => Boolean(window.pluginFixture.releaseDialog));
+    assert.equal(await button.isDisabled(), true);
+    await url.press('Enter');
+    assert.equal(await page.evaluate(() => window.pluginFixture.calls.length), 1, 'pending local dialog blocks repeated clicks and URL Enter submissions');
+    await page.evaluate(() => window.pluginFixture.releaseDialog());
+    await page.waitForFunction(() => window.pluginFixture.imported.length === 1 && !document.querySelector('button').disabled);
+    assert.deepEqual(await page.evaluate(() => window.pluginFixture.calls.map(call => call.command)), ['plugin:dialog|open', 'plugin_install_file']);
+    await page.evaluate(() => {
+      delete window.__TAURI_INTERNALS__;
+      Object.assign(window.pluginFixture, { calls: [], notices: [] });
+      window.pluginFixture.renderImport();
+    });
+    await settle(page);
+    await button.click();
+    assert.equal(await page.evaluate(() => window.pluginFixture.notices.length), 1, 'browser preview cannot pretend to install a local package');
+    assert.deepEqual(await page.evaluate(() => window.pluginFixture.calls), []);
+    clean(f);
+    console.log('PASS local import: native dialog filters and exact Windows/Unix paths, cancel, dialog/backend errors, duplicate-submit lock and preview boundary; no URL installation');
+  } finally { await f.context.close(); }
+}
+
 (async () => {
   const browser = await chromium.launch(process.env.MFMCL_BROWSER_CHANNEL ? { channel: process.env.MFMCL_BROWSER_CHANNEL } : {});
   try {
+    await localImportCases(browser);
     await modelCases(browser);
     await componentCases(browser);
     await startupCases(browser);
