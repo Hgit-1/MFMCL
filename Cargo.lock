@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "crash-ai"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "download-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "hex",
@@ -2275,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-auth"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "keyring",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "download-engine",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "launcher-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "download-engine",
@@ -2454,7 +2454,7 @@ dependencies = [
 
 [[package]]
 name = "mc-metadata"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "reqwest 0.12.28",
@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "mfmcl-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "clap",
@@ -2510,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "mfmcl-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "crash-ai",
