@@ -113,8 +113,8 @@ jobs:
           cargo build --release --locked -p mfmcl-cli --target aarch64-apple-darwin
           cargo build --release --locked -p mfmcl-cli --target x86_64-apple-darwin
           lipo -create target/aarch64-apple-darwin/release/mfmcl-cli target/x86_64-apple-darwin/release/mfmcl-cli -output target/mfmcl-cli-universal
-          lipo -verify_arch arm64 x86_64 target/mfmcl-cli-universal
-          lipo -verify_arch arm64 x86_64 target/universal-apple-darwin/release/bundle/macos/MFMCL.app/Contents/MacOS/mfmcl
+          lipo target/mfmcl-cli-universal -verify_arch arm64 x86_64
+          lipo target/universal-apple-darwin/release/bundle/macos/MFMCL.app/Contents/MacOS/mfmcl -verify_arch arm64 x86_64
           target/mfmcl-cli-universal --version
       - name: Collect required artifacts
         shell: bash
