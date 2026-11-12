@@ -24,3 +24,4 @@ tokio.workspace = true
 uuid.workspace = true
 zeroize = { version = "1", features = ["derive"] }
 zip.workspace = true
+toml = "1.2.1"

@@ -80,6 +80,52 @@ fn has(issues: &[ModIssue], code: &str) -> bool {
 }
 
 #[test]
+fn forge_and_neoforge_descriptors_check_required_dependencies_and_duplicate_ids() {
+    for label in ["forge", "neoforge"] {
+        let mut f = Fixture::new();
+        f.instance.loader = format!("{label}@1.0");
+        let descriptor = if label == "forge" {
+            "META-INF/mods.toml"
+        } else {
+            "META-INF/neoforge.mods.toml"
+        };
+        let text = r#"
+modLoader = "javafml"
+loaderVersion = "[1,)"
+[[mods]]
+modId = "main_mod"
+version = "1.0"
+[[dependencies.main_mod]]
+modId = "needed"
+mandatory = true
+side = "CLIENT"
+[[dependencies.main_mod]]
+modId = "optional_mod"
+mandatory = false
+type = "optional"
+[[dependencies.main_mod]]
+modId = "server_only"
+mandatory = true
+side = "SERVER"
+"#;
+        f.jar("main.jar", &[(descriptor, text.as_bytes())]);
+        let issues = f.inspect();
+        assert!(issues.iter().any(|issue| issue.code == "missing_dependency" && issue.message.contains("needed")));
+        assert!(
+            !issues
+                .iter()
+                .any(|issue| issue.message.contains("optional_mod")
+                    || issue.message.contains("server_only"))
+        );
+        let dependency = b"[[mods]]\nmodId = \"needed\"\nversion = \"1.0\"";
+        f.jar("dependency.jar", &[(descriptor, dependency)]);
+        assert!(!has(&f.inspect(), "missing_dependency"));
+        f.jar("duplicate.jar", &[(descriptor, dependency)]);
+        assert!(has(&f.inspect(), "duplicate_mod_id"));
+    }
+}
+
+#[test]
 fn empty_and_missing_mod_directories_have_no_findings() {
     let f = Fixture::new();
     assert!(f.inspect().is_empty());
@@ -130,7 +176,7 @@ fn mandatory_dependencies_use_ids_and_aliases_not_filenames_and_ignore_builtins(
 }
 
 #[test]
-fn quilt_optional_conditional_and_alternative_dependencies_are_not_guessed() {
+fn quilt_optional_conditional_and_alternative_dependencies_are_evaluated() {
     let mut f = Fixture::new();
     f.instance.loader = "quilt@0.27.0".into();
     let mut main = quilt("main_mod");
@@ -146,9 +192,28 @@ fn quilt_optional_conditional_and_alternative_dependencies_are_not_guessed() {
     provider["quilt_loader"]["provides"] = json!([{"id": "provided_mod", "version": "9.0.0"}]);
     f.quilt("provider.jar", provider);
     let issues = f.inspect();
-    assert_eq!(issues.len(), 1, "{issues:?}");
-    assert_eq!(issues[0].code, "missing_dependency");
-    assert!(issues[0].message.contains("required_mod"));
+    assert_eq!(issues.len(), 3, "{issues:?}");
+    assert!(
+        issues
+            .iter()
+            .all(|issue| issue.code == "missing_dependency")
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.message.contains("required_mod"))
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.message.contains("conditional_mod"))
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.message.contains("alternative_a")
+                && issue.message.contains("alternative_b"))
+    );
 }
 
 #[test]
@@ -202,7 +267,7 @@ fn incompatible_quilt_mod_does_not_satisfy_fabric_dependencies() {
 }
 
 #[test]
-fn conflicts_only_warn_for_certain_wildcard_or_exact_versions() {
+fn conflicts_evaluate_ranges_and_do_not_treat_partial_versions_as_wildcards() {
     let f = Fixture::new();
     let mut main = fabric("main_mod");
     main["breaks"] = json!({"wildcard_mod": "*", "exact_mod": ["0.0.1", "=1.2.3"], "range_mod": ">=1 <2", "partial_mod": "1.2", "absent_mod": "*", "minecraft": "*", "different_mod": "9.9.9"});
@@ -219,17 +284,17 @@ fn conflicts_only_warn_for_certain_wildcard_or_exact_versions() {
         f.fabric(&format!("{id}.jar"), fabric(id));
     }
     let issues = f.inspect();
-    assert_eq!(issues.len(), 3, "{issues:?}");
+    assert_eq!(issues.len(), 4, "{issues:?}");
     assert!(issues.iter().all(|issue| issue.code == "declared_conflict"
         && issue.severity == ModIssueSeverity::Warning
         && issue.files.len() == 2));
     for issue in &issues {
-        assert!(!issue.message.contains("range_mod") && !issue.message.contains("partial_mod"));
+        assert!(!issue.message.contains("partial_mod"));
     }
 }
 
 #[test]
-fn quilt_breaks_conditions_and_complex_versions_are_not_guessed() {
+fn quilt_breaks_conditions_alternatives_and_all_version_ranges_are_evaluated() {
     let mut f = Fixture::new();
     f.instance.loader = "quilt@1".into();
     let mut main = quilt("main_mod");
@@ -249,8 +314,8 @@ fn quilt_breaks_conditions_and_complex_versions_are_not_guessed() {
         f.quilt(&format!("{id}.jar"), quilt(id));
     }
     let issues = f.inspect();
-    assert_eq!(issues.len(), 1, "{issues:?}");
-    assert_eq!(issues[0].code, "declared_conflict");
+    assert_eq!(issues.len(), 5, "{issues:?}");
+    assert!(issues.iter().all(|issue| issue.code == "declared_conflict"));
 }
 
 #[test]
@@ -359,9 +424,16 @@ fn zip_entry_count_and_central_directory_are_bounded_before_archive_construction
 fn case_ambiguous_filenames_and_metadata_are_rejected() {
     let f = Fixture::new();
     f.fabric("a.jar", fabric("one_mod"));
-    f.fabric("A.jar", fabric("two_mod"));
-    assert!(has(&f.inspect(), "ambiguous_file_name"));
-    fs::remove_file(f.root.join("mods/A.jar")).unwrap();
+    let alias = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(f.root.join("mods/A.jar"));
+    if let Ok(file) = alias {
+        drop(file);
+        f.fabric("A.jar", fabric("two_mod"));
+        assert!(has(&f.inspect(), "ambiguous_file_name"));
+        fs::remove_file(f.root.join("mods/A.jar")).unwrap();
+    }
     fs::remove_file(f.root.join("mods/a.jar")).unwrap();
     f.jar(
         "case.jar",
@@ -448,4 +520,253 @@ fn file_directory_and_metadata_symlinks_are_rejected_and_disabled_links_ignored(
     fs::create_dir(f.root.join("real_mods")).unwrap();
     symlink(f.root.join("real_mods"), f.root.join("mods")).unwrap();
     assert!(has(&f.inspect(), "unsafe_mods_directory"));
+}
+
+fn archive_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, bytes) in entries {
+        writer
+            .start_file(
+                *name,
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+#[test]
+fn dependency_mismatch_has_actual_files_and_unknown_syntax_is_not_compatibility() {
+    let f = Fixture::new();
+    let mut main = fabric("main");
+    main["depends"] = json!({"dependency": ">=2 <3", "unknown": "(>=1)"});
+    f.fabric("main.jar", main);
+    f.fabric("dep.jar", fabric("dependency"));
+    f.fabric("unknown.jar", fabric("unknown"));
+    let issues = f.inspect();
+    let issue = issues
+        .iter()
+        .find(|i| i.code == "dependency_version_mismatch")
+        .unwrap();
+    assert!(issue.message.contains("1.2.3") && issue.message.contains(">=2 <3"));
+    assert_eq!(issue.files, ["dep.jar", "main.jar"]);
+    assert!(has(&issues, "unknown_version_constraint"));
+    assert!(!has(&issues, "missing_dependency"));
+    assert_eq!(issues, f.inspect());
+}
+
+#[test]
+fn quilt_alternative_versions_and_unless_use_real_providers() {
+    let mut f = Fixture::new();
+    f.instance.loader = "quilt@1".into();
+    let mut main = quilt("main");
+    main["quilt_loader"]["depends"] = json!([
+        [{"id":"absent", "versions":"*"}, {"id":"api", "versions": {"all":[">=2", "<3"]}}],
+        {"id":"conditional", "unless":{"id":"api", "versions":">=2"}}
+    ]);
+    f.quilt("main.jar", main);
+    let mut provider = quilt("actual");
+    provider["quilt_loader"]["provides"] = json!([{"id":"api", "version":"2.5"}]);
+    f.quilt("provider.jar", provider);
+    assert!(f.inspect().is_empty(), "{:?}", f.inspect());
+}
+
+#[test]
+fn nested_fabric_candidates_are_recursive_and_backtrack_without_duplicate_ids() {
+    let f = Fixture::new();
+    let mut main = fabric("main");
+    main["depends"] = json!({"dependency":">=1"});
+    main["jars"] = json!([{"file":"jars/new.jar"}, {"file":"jars/old.jar"}]);
+    let mut newer = fabric("dependency");
+    newer["version"] = json!("2.0");
+    newer["depends"] = json!({"base":">=2"});
+    let newer = serde_json::to_vec(&newer).unwrap();
+    let newer = archive_bytes(&[("fabric.mod.json", &newer)]);
+    let mut older = fabric("dependency");
+    older["version"] = json!("1.0");
+    older["depends"] = json!({"leaf":"~1.2"});
+    older["jars"] = json!([{"file":"deep/leaf.jar"}]);
+    let leaf = serde_json::to_vec(&fabric("leaf")).unwrap();
+    let leaf = archive_bytes(&[("fabric.mod.json", &leaf)]);
+    let older = serde_json::to_vec(&older).unwrap();
+    let older = archive_bytes(&[("fabric.mod.json", &older), ("deep/leaf.jar", &leaf)]);
+    let main = serde_json::to_vec(&main).unwrap();
+    f.jar(
+        "main.jar",
+        &[
+            ("fabric.mod.json", &main),
+            ("jars/new.jar", &newer),
+            ("jars/old.jar", &older),
+        ],
+    );
+    f.fabric("base.jar", fabric("base"));
+    assert!(f.inspect().is_empty(), "{:?}", f.inspect());
+    let mut root_override = fabric("dependency");
+    root_override["version"] = json!("3.0");
+    f.fabric("root.jar", root_override);
+    assert!(!has(&f.inspect(), "duplicate_mod_id"));
+}
+
+#[test]
+fn unreadable_unsafe_and_overbudget_nested_jars_never_become_providers() {
+    for nested_path in [
+        "../evil.jar",
+        "a/../evil.jar",
+        "a//evil.jar",
+        "/evil.jar",
+        "C:evil.jar",
+        "a\\evil.jar",
+    ] {
+        let f = Fixture::new();
+        let mut main = fabric("main");
+        main["jars"] = json!([{"file":nested_path}]);
+        f.fabric("main.jar", main);
+        assert!(has(&f.inspect(), "unsafe_nested_path"), "{nested_path}");
+        assert!(has(&f.inspect(), "inspection_incomplete"));
+    }
+    let f = Fixture::new();
+    let mut main = fabric("main");
+    main["jars"] = json!([{"file":"nested.jar"}]);
+    main["depends"] = json!({"nested":"*"});
+    f.fabric("main.jar", main);
+    assert!(has(&f.inspect(), "missing_nested_jar"));
+    assert!(!has(&f.inspect(), "missing_dependency"));
+    let metadata = serde_json::to_vec(&fabric("nested")).unwrap();
+    let bytes = archive_bytes(&[("fabric.mod.json", &metadata)]);
+    for mut budget in [
+        InspectionBudget {
+            expanded: MAX_EXPANDED_BYTES - 1,
+            ..Default::default()
+        },
+        InspectionBudget {
+            entries: MAX_TOTAL_ENTRIES,
+            ..Default::default()
+        },
+        InspectionBudget {
+            jars: MAX_TOTAL_JARS,
+            ..Default::default()
+        },
+    ] {
+        assert!(
+            inspect_archive(
+                std::io::Cursor::new(bytes.clone()),
+                "test.jar",
+                "fabric",
+                0,
+                &mut budget
+            )
+            .is_err()
+        );
+    }
+    let mut inner = bytes;
+    for _ in 0..=MAX_NESTED_DEPTH {
+        let mut metadata = fabric("container");
+        metadata["jars"] = json!([{"file":"inner.jar"}]);
+        let metadata = serde_json::to_vec(&metadata).unwrap();
+        inner = archive_bytes(&[("fabric.mod.json", &metadata), ("inner.jar", &inner)]);
+    }
+    let (_, issues, complete) = inspect_archive(
+        std::io::Cursor::new(inner),
+        "test.jar",
+        "fabric",
+        0,
+        &mut InspectionBudget::default(),
+    )
+    .unwrap();
+    assert!(!complete && has(&issues, "archive_limit"));
+}
+
+#[test]
+fn quilt_nested_paths_use_quilt_schema_and_forge_does_not_load_fabric_nests() {
+    let mut f = Fixture::new();
+    f.instance.loader = "quilt@1".into();
+    let mut main = quilt("main");
+    main["quilt_loader"]["jars"] = json!(["nested.jar"]);
+    main["quilt_loader"]["depends"] = json!([{"id":"dependency", "versions":">=1"}]);
+    let child = serde_json::to_vec(&fabric("dependency")).unwrap();
+    let child = archive_bytes(&[("fabric.mod.json", &child)]);
+    let main = serde_json::to_vec(&main).unwrap();
+    f.jar(
+        "main.jar",
+        &[("quilt.mod.json", &main), ("nested.jar", &child)],
+    );
+    assert!(f.inspect().is_empty(), "{:?}", f.inspect());
+    f.instance.loader = "forge@1".into();
+    assert!(has(&f.inspect(), "incompatible_loader"));
+    assert!(!has(&f.inspect(), "missing_nested_jar"));
+}
+
+#[test]
+fn forge_manifest_versions_and_maven_unions_distinguish_mismatch_from_unknown() {
+    let mut f = Fixture::new();
+    f.instance.loader = "forge@1".into();
+    let main = b"[[mods]]\nmodId='main'\nversion='1'\n[[dependencies.main]]\nmodId='api'\nmandatory=true\nversionRange='(,1.0],[2,)'";
+    let api = b"[[mods]]\nmodId='api'\nversion='${file.jarVersion}'";
+    f.jar("main.jar", &[("META-INF/mods.toml", main)]);
+    f.jar(
+        "api.jar",
+        &[
+            ("META-INF/mods.toml", api),
+            (
+                "META-INF/MANIFEST.MF",
+                b"Manifest-Version: 1.0\r\nImplementation-Version: 1.\r\n 6\r\n\r\n",
+            ),
+        ],
+    );
+    let issues = f.inspect();
+    assert!(has(&issues, "dependency_version_mismatch"));
+    assert!(!has(&issues, "missing_dependency"));
+    f.jar("api.jar", &[("META-INF/mods.toml", api)]);
+    assert!(has(&f.inspect(), "unknown_version_constraint"));
+    assert!(!has(&f.inspect(), "dependency_version_mismatch"));
+}
+
+#[test]
+fn forge_jarjar_picks_one_coordinate_version_across_containers() {
+    let mut f = Fixture::new();
+    f.instance.loader = "forge@1".into();
+    for (file, id, version) in [("a.jar", "main_a", "1.2"), ("b.jar", "main_b", "1.5")] {
+        let main = format!(
+            "[[mods]]\nmodId='{id}'\nversion='1'\n[[dependencies.{id}]]\nmodId='api'\nmandatory=true\nversionRange='[1.4,)'"
+        );
+        let api = format!("[[mods]]\nmodId='api'\nversion='{version}'");
+        let child = archive_bytes(&[("META-INF/mods.toml", api.as_bytes())]);
+        let metadata = serde_json::to_vec(&json!({"jars":[{"identifier":{"group":"test","artifact":"api"},"version":{"range":"[1,2)","artifactVersion":version},"path":"lib/api.jar"}]})).unwrap();
+        f.jar(
+            file,
+            &[
+                ("META-INF/mods.toml", main.as_bytes()),
+                ("META-INF/jarjar/metadata.json", &metadata),
+                ("lib/api.jar", &child),
+            ],
+        );
+    }
+    assert!(f.inspect().is_empty(), "{:?}", f.inspect());
+}
+
+#[test]
+fn forge_jarjar_selects_coordinates_not_mod_ids_or_mod_versions() {
+    let mut f = Fixture::new();
+    f.instance.loader = "forge@1".into();
+    let main = b"[[mods]]\nmodId='main'\nversion='1'\n[[dependencies.main]]\nmodId='api'\nmandatory=true\nversionRange='[1.5,2)'";
+    let child = archive_bytes(&[(
+        "META-INF/mods.toml",
+        b"[[mods]]\nmodId='api'\nversion='1.6'",
+    )]);
+    let descriptor = json!({"jars":[{"identifier":{"group":"example.group","artifact":"library"},"version":{"range":"[9,)","artifactVersion":"9.1"},"path":"META-INF/jarjar/library.jar"}]});
+    let descriptor = serde_json::to_vec(&descriptor).unwrap();
+    f.jar(
+        "main.jar",
+        &[
+            ("META-INF/mods.toml", main),
+            ("META-INF/jarjar/metadata.json", &descriptor),
+            ("META-INF/jarjar/library.jar", &child),
+        ],
+    );
+    assert!(f.inspect().is_empty(), "{:?}", f.inspect());
+    let mut version = fabric("unrelated");
+    version["version"] = json!("1");
+    f.fabric("wrong-loader.jar", version);
+    assert!(has(&f.inspect(), "incompatible_loader"));
 }
