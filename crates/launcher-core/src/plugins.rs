@@ -506,11 +506,18 @@ mod tests {
         assert!(
             validate_contribution(&Contribution {
                 kind: ContributionKind::BackupBefore,
-                value: "/tmp/backups".into()
+                value: std::env::temp_dir()
+                    .join("mfmcl-plugin-backups")
+                    .to_string_lossy()
+                    .into_owned(),
             })
             .is_ok()
         );
-        for bad in ["relative/dir", "/tmp/../etc"] {
+        let traversal = std::env::temp_dir().join("mfmcl-plugin-backups/../escape");
+        for bad in [
+            "relative/dir".to_owned(),
+            traversal.to_string_lossy().into_owned(),
+        ] {
             assert!(
                 validate_contribution(&Contribution {
                     kind: ContributionKind::BackupBefore,
@@ -553,13 +560,14 @@ mod tests {
     }
 
     fn instance_at(dir: &str) -> InstanceRecord {
+        let dir = std::env::temp_dir().join(dir);
         InstanceRecord {
             id: "inst".into(),
             name: "Test".into(),
             game_version: "1.21.4".into(),
             loader: "vanilla".into(),
-            instance_dir: std::path::PathBuf::from(dir),
-            game_dir: std::path::PathBuf::from(dir).join("game"),
+            instance_dir: dir.clone(),
+            game_dir: dir.join("game"),
             isolated: true,
             state: crate::model::InstanceState::Ready,
             created_at: "2026-01-01T00:00:00Z".into(),
@@ -580,7 +588,7 @@ mod tests {
             ],
         )];
         let state = PluginState::default();
-        let instance = instance_at("/tmp/inst");
+        let instance = instance_at("mfmcl-plugin-inst");
         let settings = LauncherSettings::default();
         let plan = build_plan(&plugins, &state, &instance, &settings);
 
@@ -611,7 +619,7 @@ mod tests {
         let plan = build_plan(
             &plugins,
             &state,
-            &instance_at("/tmp/inst"),
+            &instance_at("mfmcl-plugin-inst"),
             &LauncherSettings::default(),
         );
         assert!(plan.jvm_args.is_empty());
@@ -625,7 +633,7 @@ mod tests {
         let plan = build_plan(
             &plugins,
             &PluginState::default(),
-            &instance_at("/tmp/inst"),
+            &instance_at("mfmcl-plugin-inst"),
             &LauncherSettings::default(),
         );
         assert_eq!(plan.jvm_args.len(), 1);
@@ -641,7 +649,7 @@ mod tests {
         let plan = build_plan(
             &plugins,
             &PluginState::default(),
-            &instance_at("/tmp/inst"),
+            &instance_at("mfmcl-plugin-inst"),
             &LauncherSettings::default(),
         );
         assert_eq!(plan.jvm_args, vec!["-Dok=1".to_owned()]);
@@ -655,13 +663,16 @@ mod tests {
             "backup",
             vec![Contribution {
                 kind: ContributionKind::BackupBefore,
-                value: "/tmp/inst/game/backups".into(),
+                value: std::env::temp_dir()
+                    .join("mfmcl-plugin-inst/game/backups")
+                    .to_string_lossy()
+                    .into_owned(),
             }],
         )];
         let plan = build_plan(
             &plugins,
             &PluginState::default(),
-            &instance_at("/tmp/inst"),
+            &instance_at("mfmcl-plugin-inst"),
             &LauncherSettings::default(),
         );
         assert!(plan.backups.is_empty());
@@ -706,7 +717,7 @@ mod tests {
         let plan = build_plan(
             &plugins,
             &PluginState::default(),
-            &instance_at("/tmp/inst"),
+            &instance_at("mfmcl-plugin-inst"),
             &LauncherSettings::default(),
         );
         assert_eq!(
@@ -721,7 +732,7 @@ mod tests {
         let plan = build_plan(
             &plugins,
             &pushed,
-            &instance_at("/tmp/inst"),
+            &instance_at("mfmcl-plugin-inst"),
             &LauncherSettings::default(),
         );
         assert!(plan.jvm_args.is_empty());

@@ -6,6 +6,7 @@ mod diagnostics;
 pub mod fabric_api;
 pub mod forge_install;
 mod installer;
+pub mod java_runtime;
 mod launch;
 pub mod launcher_log;
 pub mod loaders;

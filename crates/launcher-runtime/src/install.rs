@@ -240,13 +240,8 @@ impl Downloads {
 /// a pinned binary against, and the manifest ships with no pins anyway. The
 /// desktop path that *can* use aria2 keeps passing its own engine in.
 pub fn engine_from_settings(settings: &LauncherSettings) -> Result<DownloadEngine> {
-    DownloadEngine::new(download_engine::DownloadSettings {
-        source: settings.download.source,
-        max_concurrent_downloads: settings.download.max_concurrent_downloads,
-        connections_per_file: settings.download.connections_per_file,
-        aria2_enabled: false,
-    })
-    .map_err(|error| RuntimeError::message(format!("无法创建下载器：{error}")))
+    DownloadEngine::new(settings.download.to_engine_settings())
+        .map_err(|error| RuntimeError::message(format!("无法创建下载器：{error}")))
 }
 
 /// Start the pinned aria2 sidecar when one is present and verified.
@@ -388,10 +383,13 @@ pub async fn install_instance(
         }
     };
 
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(60))
+    let client = settings
+        .download
+        .to_engine_settings()
+        .configure_client(
+            reqwest::Client::builder().user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION"))),
+        )
+        .map_err(|error| RuntimeError::message(error.to_string()))?
         .build()
         .map_err(|error| RuntimeError::message(format!("无法创建网络客户端：{error}")))?;
 

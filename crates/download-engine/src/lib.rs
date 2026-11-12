@@ -1,7 +1,9 @@
 pub mod aria2;
 mod control;
+pub mod network;
 mod progress;
 pub use control::DownloadControl;
+pub use network::ProxyMode;
 pub use progress::{TaskProgress, TaskProgressSnapshot};
 
 use futures_util::StreamExt;
@@ -83,6 +85,8 @@ pub enum DownloadError {
     UnsafeUrl,
     #[error("invalid HTTP range response")]
     InvalidRange,
+    #[error("invalid download configuration: {0}")]
+    Configuration(String),
 }
 
 /// 同时进行的**文件**下载数上限。
@@ -105,6 +109,15 @@ pub struct DownloadSettings {
     pub max_concurrent_downloads: u16,
     pub connections_per_file: u16,
     pub aria2_enabled: bool,
+    #[serde(default)]
+    pub proxy_mode: ProxyMode,
+    #[serde(default)]
+    pub proxy_url: String,
+    #[serde(default = "network::default_timeout_sec")]
+    pub timeout_sec: u16,
+    /// Additional attempts per source; zero still performs the initial request.
+    #[serde(default = "network::default_retries")]
+    pub retries: u8,
 }
 impl Default for DownloadSettings {
     fn default() -> Self {
@@ -113,6 +126,10 @@ impl Default for DownloadSettings {
             max_concurrent_downloads: 16,
             connections_per_file: 256,
             aria2_enabled: true,
+            proxy_mode: ProxyMode::None,
+            proxy_url: String::new(),
+            timeout_sec: network::DEFAULT_TIMEOUT_SEC,
+            retries: network::DEFAULT_RETRIES,
         }
     }
 }
@@ -180,19 +197,28 @@ pub struct DownloadEngine {
 }
 
 impl DownloadEngine {
-    pub fn new(settings: DownloadSettings) -> Result<Self, reqwest::Error> {
-        let client = Client::builder()
-            .user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(300))
+    pub fn new(settings: DownloadSettings) -> Result<Self, DownloadError> {
+        let client = settings
+            .configure_client(
+                Client::builder().user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION"))),
+            )?
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if !safe_url(attempt.url())
-                    || attempt.previous().len() >= 10
-                    || (attempt
-                        .previous()
-                        .last()
-                        .is_some_and(|u| u.scheme() == "https")
-                        && attempt.url().scheme() != "https")
+                /*
+                 * 镜像（bmclapi）会用 302 把请求分发到自己的镜像节点
+                 * （`bmclapi*.hurtmc.com`、`mirrors.*` 等），这些主机名不固定。
+                 * 之前只按 `safe_url` 判断，虽然能跟随，但元数据客户端把跳转目标
+                 * 写死成单一主机——两处规则不一致，表现为「版本列不出来」或
+                 * 「文件下不动」。
+                 *
+                 * 这里统一成：允许有限次 HTTPS 跳转，拒绝降级到明文，也拒绝
+                 * 带凭据的地址（凭据只应出现在我们构造的请求里）。
+                 */
+                let url = attempt.url();
+                if attempt.previous().len() >= 10
+                    || url.scheme() != "https"
+                    || url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
                 {
                     attempt.error("unsafe download redirect")
                 } else {
@@ -216,8 +242,12 @@ impl DownloadEngine {
             task_progress: Arc::new(TaskProgress::new()),
         })
     }
+    /// System proxy discovery stays on reqwest; explicit and disabled proxy modes
+    /// can be represented exactly in aria2's per-download options.
     pub fn with_aria2(mut self, session: aria2::Aria2Session) -> Self {
-        self.aria2 = Some(session);
+        if self.settings.proxy_mode != ProxyMode::System {
+            self.aria2 = Some(session);
+        }
         self
     }
     /// 与同一任务的其他引擎克隆共享整体进度累计器。
@@ -412,8 +442,22 @@ impl DownloadEngine {
                         return Ok(artifact.destination.clone());
                     }
                     Err(error) => {
-                        // A broken RPC must never leave a writer racing the native fallback.
-                        let _ = session.shutdown().await;
+                        /*
+                         * 单个文件失败**不能**关掉共享的 aria2 会话。
+                         *
+                         * `session` 是所有并发下载共用的同一个守护进程。以前这里
+                         * 无条件 `shutdown()`，于是任何一个文件出错（镜像 429、某个
+                         * 条目缺 SHA、临时文件被占用）都会连带杀死其余 15 个正在跑
+                         * 的 aria2 下载——它们逐个收到 RPC 不可用，再逐个 shutdown。
+                         * 用户看到的就是「装到 90% 之后完全不动，CPU 归零、没有连接」，
+                         * 而界面上任务还挂着。
+                         *
+                         * 只有 RPC 本身坏了才需要重启它；其余错误交给下面那条 native
+                         * HTTP 兜底路径即可，会话保持存活。
+                         */
+                        if matches!(error, DownloadError::Aria2(_)) {
+                            let _ = session.shutdown().await;
+                        }
                         cleanup_partial(&aria_temporary).await;
                         let _ = fs::remove_file(aria_temporary.with_extension(format!(
                             "{}.aria2",
@@ -429,7 +473,7 @@ impl DownloadEngine {
                     }
                 }
             }
-            for attempt in 0..3_u32 {
+            for attempt in 0..=u32::from(self.settings.retries) {
                 self.control.checkpoint().await?;
                 match self
                     .download_one(artifact, &source, &temporary, segments, progress)
@@ -460,12 +504,12 @@ impl DownloadEngine {
                             cleanup_partial(&temporary).await;
                         }
                         last_error = error;
-                        if !retry || attempt == 2 {
+                        if !retry || attempt == u32::from(self.settings.retries) {
                             break;
                         }
                         self.control
                             .wait_for(tokio::time::sleep(Duration::from_millis(
-                                200 * (1 << attempt),
+                                (200 * (1_u64 << attempt)).min(5_000),
                             )))
                             .await?;
                     }
@@ -720,21 +764,29 @@ impl DownloadEngine {
         // 按起始偏移排序是为了让「不支持 Range」的判定优先来自第一个分片。
         tasks.sort_by_key(|(start, _)| *start);
         let mut unsupported = false;
+        let mut first_error = None;
         for (_, task) in tasks {
-            match task.await {
-                Ok(Ok(SegmentOutcome::Written)) => {}
-                Ok(Ok(SegmentOutcome::RangeUnsupported)) => unsupported = true,
-                Ok(Err(error)) => {
-                    cleanup_partial(temporary).await;
-                    return Err(error);
-                }
+            let result = match task.await {
+                Ok(result) => result,
+                Err(error) => Err(DownloadError::Io(std::io::Error::other(format!(
+                    "segment task failed: {error}"
+                )))),
+            };
+            match result {
+                Ok(SegmentOutcome::Written) => {}
+                Ok(SegmentOutcome::RangeUnsupported) => unsupported = true,
                 Err(error) => {
-                    cleanup_partial(temporary).await;
-                    return Err(DownloadError::Io(std::io::Error::other(format!(
-                        "segment task failed: {error}"
-                    ))));
+                    abort.store(true, Ordering::Relaxed);
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
                 }
             }
+        }
+        // Every writer must be joined before cleanup/retry can reuse the partial path.
+        if let Some(error) = first_error {
+            cleanup_partial(temporary).await;
+            return Err(error);
         }
         if unsupported {
             cleanup_partial(temporary).await;
@@ -903,6 +955,7 @@ impl DownloadEngine {
                     .connections_per_file
                     .clamp(1, MAX_CONNECTIONS_PER_FILE_LIMIT)
                     .min(GLOBAL_CONNECTION_BUDGET as u16),
+                &self.settings,
             )
             .await
             .map_err(|_| DownloadError::Aria2("RPC unavailable".into()))?;
@@ -927,7 +980,7 @@ impl DownloadEngine {
                     .await
                     .map_err(|_| DownloadError::Aria2("RPC unavailable".into()))?;
             }
-            if started.elapsed() > Duration::from_secs(1800) {
+            if started.elapsed() > Duration::from_secs(u64::from(self.settings.timeout_sec)) {
                 return Err(DownloadError::Aria2("download timed out".into()));
             }
             let status = session
@@ -1122,27 +1175,11 @@ pub fn source_candidates_with_mirror(
     if !safe_url(&original) || (is_mirror_host(&original) && !checksum_available) {
         return Vec::new();
     }
+    if preference == SourcePreference::Official {
+        return vec![original];
+    }
     let mut candidates = Vec::new();
-    /*
-     * 显式给定的镜像优先，且不受 `checksum_available` 限制。
-     *
-     * ## 为什么显式镜像可以没有校验值
-     *
-     * 自动推导的镜像（`bmclapi_url`）只在有校验值时才用：那是「随手把一个地址换成
-     * 镜像」，没有校验就等于信任一个第三方转发，不该默认发生。
-     *
-     * 但调用方显式给出的镜像是另一回事——加载器安装器就属于这类：Forge 发布
-     * `.sha1`，NeoForge 不发布，而官方域名在部分网络下完全不可达。没有镜像就没有
-     * 任何成功路径，此时「宁可失败也不用镜像」等于让功能不可用。安全边界因此
-     * 落在别处：`safe_mirror_url` 仍只允许 HTTPS 与已知镜像主机，且下载后仍会
-     * 走 ZIP/JAR 结构校验。
-     *
-     * ## 为什么 `Official` 偏好下也放行
-     *
-     * 「只走官方」对加载器安装是做不到的：Forge/NeoForge 没有官方镜像之外的替代
-     * 路径，官方不可达时功能直接消失。而显式镜像是调用方**针对这一项**给出的
-     * 兜底，不是全局换源。忽略它会让「自动」之外的任何设置都装不上加载器。
-     */
+    // Explicit mirrors are eligible only when the user selected a mirror-capable policy.
     if let Some(mirror) = explicit_mirror
         .and_then(|s| Url::parse(s).ok())
         .filter(safe_mirror_url)

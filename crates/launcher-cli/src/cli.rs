@@ -186,12 +186,9 @@ impl DownloadArgs {
             None => (raw, None),
         };
         let kind = kind.to_ascii_lowercase();
-        if !matches!(
-            kind.as_str(),
-            "vanilla" | "fabric" | "quilt" | "forge" | "neoforge"
-        ) {
+        if kind != "vanilla" && launcher_core::loaders::LoaderKind::from_name(&kind).is_none() {
             return Err(format!(
-                "未识别的加载器 {kind}；可用：vanilla、fabric、quilt、forge、neoforge。"
+                "未识别的加载器 {kind}；可用：vanilla、fabric、quilt、forge、neoforge、liteloader、cleanroom、legacyfabric、optifine。"
             ));
         }
         if kind == "vanilla" {

@@ -93,9 +93,8 @@ impl ProcessRegistry {
 
 /// Everything needed to launch one instance.
 ///
-/// `java_path` is resolved by the caller when it knows the instance's Java rule
-/// (the desktop UI evaluates "version range"/"folder" settings client-side).
-/// `None` falls back to the global setting and then to auto-detection.
+/// `java_path` is a one-launch forced override. `None` uses the persisted instance
+/// rule and global candidate order shared with the desktop UI.
 pub struct LaunchRequest {
     pub instance_id: String,
     pub account_id: String,
@@ -136,6 +135,18 @@ pub async fn launch(
     registry: &ProcessRegistry,
     sink: Arc<dyn EventSink>,
     request: LaunchRequest,
+) -> Result<RunningGame> {
+    launch_with_java_selection(context, store, registry, sink, request, None).await
+}
+
+/// `None` inherits persisted rules; `Some(Auto)` overrides a persisted explicit mode.
+pub async fn launch_with_java_selection(
+    context: &RuntimeContext,
+    store: &LauncherStore,
+    registry: &ProcessRegistry,
+    sink: Arc<dyn EventSink>,
+    request: LaunchRequest,
+    java_selection: Option<launcher_core::java_runtime::JavaSelectionRequest>,
 ) -> Result<RunningGame> {
     let LaunchRequest {
         instance_id,
@@ -201,12 +212,36 @@ pub async fn launch(
     let overrides = store.load_instance_overrides(&instance_id)?;
     let settings = resolve_settings(&settings, &overrides);
 
-    let effective_java = java_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| settings.java_path.clone());
+    let request = store.resolve_java_selection(
+        &instance_id,
+        java_selection,
+        java_path,
+        settings.java_path.as_deref(),
+    )?;
+    let selected = launcher_core::java_runtime::select_java(
+        context.data_root(),
+        &instance,
+        &metadata,
+        &request,
+    )
+    .map_err(|error| RuntimeError::message(error.to_string()))?;
+    let runtime = if let Some(runtime) = selected.runtime {
+        runtime
+    } else {
+        if !selected.can_auto_install {
+            return Err(RuntimeError::message("找不到符合设置的 Java。"));
+        }
+        report("java_installing", 0.12);
+        launcher_core::java_runtime::install_official_java_with_settings(
+            context.data_root(),
+            &selected.requirement,
+            &download_engine::DownloadControl::new(),
+            &settings.download,
+        )
+        .await
+        .map_err(|error| RuntimeError::message(error.to_string()))?
+    };
+    let effective_java = Some(std::path::PathBuf::from(runtime.path));
 
     let mut secrets: Vec<Zeroizing<String>> = Vec::new();
     let mut prepared = if account.kind == AccountKind::Offline {

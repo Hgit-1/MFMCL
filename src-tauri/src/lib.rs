@@ -4,6 +4,7 @@ mod crash_ai;
 mod crash_ai_model;
 mod curseforge;
 mod downloads;
+mod java_runtime;
 mod llama_runtime;
 mod management;
 mod plugin_install;
@@ -14,7 +15,7 @@ mod updates;
 
 use chrono::Utc;
 use download_engine::{
-    DownloadEngine, DownloadSettings as EngineDownloadSettings,
+    DownloadEngine,
     aria2::{Aria2Options, Aria2Session},
 };
 use launcher_core::{
@@ -131,11 +132,12 @@ async fn aria2_status(app: tauri::AppHandle) -> Result<sidecar::Aria2Availabilit
 }
 #[tauri::command]
 fn save_settings(
-    settings: LauncherSettings,
+    mut settings: LauncherSettings,
     store: State<'_, LauncherStore>,
     app: tauri::AppHandle,
     log: State<'_, launcher_core::launcher_log::LauncherLog>,
 ) -> Result<(), String> {
+    launcher_core::settings::normalize_settings(&mut settings);
     validate_settings(&settings, Some(system_memory_info().maximum_game_mb))?;
     store.save_settings(&settings).map_err(|e| e.to_string())?;
     /*
@@ -309,8 +311,15 @@ fn reset_instance_settings(
 }
 
 #[tauri::command]
-fn list_java_runtimes() -> Vec<JavaRuntimeInfo> {
-    discover_java_runtimes()
+fn list_java_runtimes(app: tauri::AppHandle) -> Vec<JavaRuntimeInfo> {
+    let mut runtimes = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|root| launcher_core::java_runtime::managed_java_runtimes(&root))
+        .unwrap_or_default();
+    runtimes.extend(discover_java_runtimes());
+    runtimes
 }
 #[tauri::command]
 fn inspect_java_path(path: String) -> Result<JavaRuntimeInfo, String> {
@@ -497,13 +506,6 @@ fn create_instance(
     store: State<'_, LauncherStore>,
 ) -> Result<launcher_core::InstanceRecord, String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    /*
-     * 游戏根目录来自设置，默认为 `~/.minecraft`（在 `create_instance` 内部解析）。
-     *
-     * 这里不再自己算一遍：三条创建路径（新建、整合包导入、备份还原）都走
-     * `create_instance`，把根目录的解析集中在那儿，漏传一处就不会出现
-     * 「同一启动器建的实例分散在两个目录」。
-     */
     let record = store
         .create_instance(
             &CreateInstanceInput {
@@ -574,13 +576,8 @@ async fn install_instance(
     );
     let settings = store.load_settings().map_err(|e| e.to_string())?;
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut engine = DownloadEngine::new(EngineDownloadSettings {
-        source: settings.download.source,
-        max_concurrent_downloads: settings.download.max_concurrent_downloads,
-        connections_per_file: settings.download.connections_per_file,
-        aria2_enabled: settings.download.aria2_enabled,
-    })
-    .map_err(|e| e.to_string())?;
+    let mut engine =
+        DownloadEngine::new(settings.download.to_engine_settings()).map_err(|e| e.to_string())?;
     let mut aria2_session = None;
     if settings.download.aria2_enabled
         && let Ok(resource_dir) = app.path().resource_dir()
@@ -605,10 +602,13 @@ async fn install_instance(
             }
         }
     }
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(60))
+    let client = settings
+        .download
+        .to_engine_settings()
+        .configure_client(
+            reqwest::Client::builder().user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION"))),
+        )
+        .map_err(|e| e.to_string())?
         .build()
         .map_err(|e| e.to_string())?;
     let handle = downloads.start(
@@ -820,17 +820,9 @@ async fn launch_instance(
     instance_id: String,
     account_id: String,
     offline_confirmed: bool,
-    /*
-     * 前端解析出的 Java 可执行文件，来自实例级设置。
-     *
-     * 为什么由前端给：实例的 Java 设置可能是「版本范围」「按目录查找」这类规则，
-     * 需要运行时列表才能解析成具体路径，而列表与这些规则都在界面侧。后端只拿到
-     * 一个确定的路径即可，不必理解「范围」这种概念。
-     *
-     * `None` 表示实例跟随全局，或前端没有解析出可用路径——那时退回
-     * `settings.java_path` 与自动探测，行为与之前完全一致。
-     */
     java_path: Option<String>,
+    java_selection: Option<launcher_core::java_runtime::JavaSelectionRequest>,
+    java_installs: State<'_, java_runtime::JavaInstalls>,
     app: tauri::AppHandle,
     store: State<'_, LauncherStore>,
     processes: State<'_, ProcessRegistry>,
@@ -920,21 +912,23 @@ async fn launch_instance(
         .load_instance_overrides(&instance_id)
         .map_err(|e| e.to_string())?;
     let settings = resolve_settings(&settings, &overrides);
-    /*
-     * 实例级 Java 路径优先于全局设置。
-     *
-     * `java_path` 由前端按实例的 Java 设置（自动 / 版本范围 / 目录 / 指定路径）
-     * 解析得出。它为空时保持原来的行为：用全局 `java_path`，再由后端自动探测。
-     *
-     * 只在这个位置替换一次，后面两个分支都读 `effective_java`，不会再出现「离线
-     * 走一个值、在线走另一个值」这种分叉。
-     */
-    let effective_java = java_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| settings.java_path.clone());
+    let java_request = java_runtime::selection_request(
+        &store,
+        &instance_id,
+        java_selection,
+        java_path,
+        settings.java_path.as_deref(),
+    )?;
+    let runtime = java_runtime::ensure_for_launch(
+        &app,
+        &java_installs,
+        &root,
+        &instance,
+        &metadata,
+        &java_request,
+    )
+    .await?;
+    let effective_java = Some(std::path::PathBuf::from(runtime.path));
     let mut secrets = Vec::new();
     let mut prepared = if account.kind == AccountKind::Offline {
         // 离线档案不联网，这一步很快；仍给一个明确的阶段，避免进度条停在原地。
@@ -1434,6 +1428,7 @@ pub fn run() {
             }
             app.manage(store);
             app.manage(ProcessRegistry::default());
+            app.manage(java_runtime::JavaInstalls::default());
             app.manage(management::Operations::default());
             app.manage(Arc::new(downloads::Downloads::default()));
             app.manage(authentication::AuthState::default());
@@ -1557,6 +1552,7 @@ pub fn run() {
             management::download_mod_version,
             management::delete_instance,
             management::preview_modpack,
+            management::discard_modpack_source,
             management::import_modpack,
             management::download_and_import_modpack,
             management::download_and_import_modrinth_pack,
@@ -1573,6 +1569,13 @@ pub fn run() {
             detect_java,
             list_java_runtimes,
             inspect_java_path,
+            java_runtime::get_java_preferences,
+            java_runtime::save_java_preferences,
+            java_runtime::migrate_legacy_java_preferences,
+            java_runtime::list_preferred_java_runtimes,
+            java_runtime::select_instance_java,
+            java_runtime::install_instance_java,
+            java_runtime::cancel_java_install,
             get_system_info,
             open_instance_folder,
             open_download_folder,

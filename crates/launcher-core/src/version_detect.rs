@@ -404,4 +404,43 @@ mod tests {
         assert_eq!(found.version.as_deref(), Some("1.19.2"));
         assert_eq!(found.confidence, Some(VersionConfidence::Inferred));
     }
+
+    /*
+     * 隔离实例的共享根就是实例目录，所以安装完成后 `instance_dir/versions/` 一定
+     * 存在，里面装的是新布局的 `versions/<实例目录名>/<mc 版本>/`。
+     * 只看 `versions/` 是否存在会把它误判成旧布局，`version_dir()` 于是少一层，
+     * 启动和 Java 选择都会报「系统找不到指定的路径」。
+     */
+    #[test]
+    fn nested_layout_is_not_mistaken_for_the_legacy_one() {
+        let root = std::env::temp_dir().join(format!("mfmcl-detect-{}", uuid::Uuid::new_v4()));
+        let mut record = instance("1.20.1 forge 1.20.1-47.4.29", "1.20.1", "vanilla", &root);
+        record.isolated = true;
+        record.instance_dir = root.join("instances").join("1.20.1 forge 1.20.1-47.4.29");
+        record.game_dir = record.instance_dir.join("game");
+        let nested = record
+            .instance_dir
+            .join("versions")
+            .join("1.20.1 forge 1.20.1-47.4.29")
+            .join("1.20.1");
+        write_profile(&nested, "1.20.1.json", r#"{"id":"1.20.1"}"#);
+
+        assert_eq!(record.version_dir(), nested);
+        assert!(record.version_dir().join("1.20.1.json").is_file());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_layout_is_still_read_from_the_instance_directory() {
+        let root = std::env::temp_dir().join(format!("mfmcl-detect-{}", uuid::Uuid::new_v4()));
+        let mut record = instance("legacy", "1.20.1", "vanilla", &root);
+        record.isolated = true;
+        record.instance_dir = root.join("instances").join("legacy");
+        record.game_dir = record.instance_dir.join("game");
+        let legacy = record.instance_dir.join("versions").join("1.20.1");
+        write_profile(&legacy, "1.20.1.json", r#"{"id":"1.20.1"}"#);
+
+        assert_eq!(record.version_dir(), legacy);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

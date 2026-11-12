@@ -16,11 +16,14 @@ use crate::{InstanceRecord, InstanceState, LauncherStore, installer::maven_path}
 use download_engine::{ArtifactSpec, DownloadEngine, DownloadProgress};
 use mc_metadata::{Artifact, GameVersionMetadata, Library, LibraryDownloads};
 use serde::{Deserialize, Serialize};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
+
+#[path = "loaders_legacy.rs"]
+pub(crate) mod legacy;
+#[path = "loaders_optifine.rs"]
+pub mod optifine;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -29,6 +32,10 @@ pub enum LoaderKind {
     Quilt,
     Forge,
     NeoForge,
+    LiteLoader,
+    Cleanroom,
+    LegacyFabric,
+    OptiFine,
 }
 
 impl LoaderKind {
@@ -38,12 +45,20 @@ impl LoaderKind {
             Self::Quilt => "quilt",
             Self::Forge => "forge",
             Self::NeoForge => "neoforge",
+            Self::LiteLoader => "liteloader",
+            Self::Cleanroom => "cleanroom",
+            Self::LegacyFabric => "legacyfabric",
+            Self::OptiFine => "optifine",
         }
     }
     fn meta(self) -> &'static str {
         match self {
             Self::Fabric => "https://meta.fabricmc.net/v2/",
             Self::Quilt => "https://meta.quiltmc.org/v3/",
+            Self::LegacyFabric => "https://meta.legacyfabric.net/v2/",
+            Self::LiteLoader => "https://dl.liteloader.com/versions/",
+            Self::Cleanroom => "https://repo.cleanroommc.com/releases/com/cleanroommc/cleanroom/",
+            Self::OptiFine => "https://optifine.net/",
             // Forge 与 NeoForge 没有 meta 服务，版本列表与配置都来自 maven 的
             // promotions / 安装器 jar，见各自的 `list_*_versions` 实现。
             Self::Forge => "https://maven.minecraftforge.net/net/minecraftforge/forge/",
@@ -52,7 +67,7 @@ impl LoaderKind {
     }
     /// 这一族加载器是否走 installer processor 安装。
     fn uses_installer(self) -> bool {
-        matches!(self, Self::Forge | Self::NeoForge)
+        matches!(self, Self::Forge | Self::NeoForge | Self::Cleanroom)
     }
 
     /// 从实例记录里的 `loader` 字段前缀还原出类型（`fabric` / `quilt` / …）。
@@ -65,6 +80,10 @@ impl LoaderKind {
             "quilt" => Some(Self::Quilt),
             "forge" => Some(Self::Forge),
             "neoforge" => Some(Self::NeoForge),
+            "liteloader" => Some(Self::LiteLoader),
+            "cleanroom" => Some(Self::Cleanroom),
+            "legacyfabric" => Some(Self::LegacyFabric),
+            "optifine" => Some(Self::OptiFine),
             _ => None,
         }
     }
@@ -106,6 +125,13 @@ pub fn safe_version(value: &str) -> Result<(), String> {
     }
     crate::modpacks::safe_pack_path(value)?;
     Ok(())
+}
+
+pub async fn list_loader_versions(
+    kind: LoaderKind,
+    game: &str,
+) -> Result<Vec<LoaderVersion>, String> {
+    list_loader_versions_with_settings(kind, game, &crate::DownloadSettings::default()).await
 }
 
 const LOADER_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
@@ -233,8 +259,11 @@ pub async fn list_loader_versions_cached(
     safe_version(game)?;
     let path = cache_path(kind, game, settings, cache_root);
     let game = game.to_owned();
-    // Keep the existing metadata fetch policy; source preferences partition cached results.
-    cached_loader_versions(path, async move { list_loader_versions(kind, &game).await }).await
+    let settings = settings.clone();
+    cached_loader_versions(path, async move {
+        list_loader_versions_with_settings(kind, &game, &settings).await
+    })
+    .await
 }
 
 async fn cached_loader_versions(
@@ -262,15 +291,24 @@ async fn cached_loader_versions(
     Ok(versions)
 }
 
-pub async fn list_loader_versions(
+pub async fn list_loader_versions_with_settings(
     kind: LoaderKind,
     game: &str,
+    settings: &crate::DownloadSettings,
 ) -> Result<Vec<LoaderVersion>, String> {
     safe_version(game)?;
-    if kind.uses_installer() {
-        return list_installer_versions(kind, game).await;
+    let network = settings.to_engine_settings();
+    match kind {
+        LoaderKind::OptiFine => return optifine::list_versions(game, &network).await,
+        LoaderKind::LiteLoader | LoaderKind::Cleanroom => {
+            return legacy::list_versions(kind, game, &network).await;
+        }
+        _ => {}
     }
-    let client = metadata_client()?;
+    let client = metadata_client(&network)?;
+    if kind.uses_installer() {
+        return list_installer_versions(kind, game, &client, &network).await;
+    }
     let response = client
         .get(format!("{}versions/loader/{game}", kind.meta()))
         .send()
@@ -311,10 +349,12 @@ pub async fn list_loader_versions(
 async fn list_installer_versions(
     kind: LoaderKind,
     game: &str,
+    client: &reqwest::Client,
+    network: &download_engine::DownloadSettings,
 ) -> Result<Vec<LoaderVersion>, String> {
     match kind {
-        LoaderKind::Forge => forge_versions(game).await,
-        LoaderKind::NeoForge => neoforge_versions(game).await,
+        LoaderKind::Forge => forge_versions(game, client).await,
+        LoaderKind::NeoForge => neoforge_versions(game, client, network).await,
         _ => Err("该加载器不使用安装器。".into()),
     }
 }
@@ -329,32 +369,57 @@ async fn list_installer_versions(
 /// 这正是 PCL2 等启动器提供完整列表的原因。
 ///
 /// 所以：**maven-metadata.xml 给全量**，`promotions_slim.json` **只用来标记哪一个
-/// 是稳定版**。全量列表必须可用；只缺 promotions 时仍返回列表，但没有稳定版标记。
-async fn forge_versions(game: &str) -> Result<Vec<LoaderVersion>, String> {
-    collect_forge_versions(forge_maven_versions(game), forge_promoted(game)).await
+/// 是稳定版**。两个来源都失败才报错；只缺 promotions 时列表仍然可用，只是没有
+/// 稳定版标记。
+async fn forge_versions(
+    game: &str,
+    client: &reqwest::Client,
+) -> Result<Vec<LoaderVersion>, String> {
+    let prefix = format!("{game}-");
+
+    /*
+     * 两个来源并行拉取。
+     *
+     * 全量版本与稳定版标记互不依赖，串行执行会让「打开对话框」白白多等一个
+     * 完整往返（实测各约 2 秒）。`join!` 让它们同时发出，总耗时取两者的较大值。
+     *
+     * 失败处理保持各自独立：全量列表失败才算整体失败，promotions 失败只是没有
+     * 稳定版徽标——把两者绑在一起会让一个可选装饰拖垮整个列表。
+     */
+    collect_forge_versions(
+        forge_maven_versions(&prefix, client),
+        forge_promoted(game, client),
+    )
+    .await
 }
 
 async fn collect_forge_versions(
     maven: impl std::future::Future<Output = Result<Vec<String>, String>>,
     promotions: impl std::future::Future<Output = Result<std::collections::BTreeSet<String>, String>>,
 ) -> Result<Vec<LoaderVersion>, String> {
-    let (versions, promoted) = tokio::join!(maven, promotions);
-    let mut versions = versions?;
+    let (versions_result, promoted) = tokio::join!(maven, promotions);
+    let mut versions = versions_result?;
     let promoted = promoted.unwrap_or_default();
     versions.sort_by(|a, b| compare_versions(b, a));
     versions.dedup();
+
     Ok(versions
         .into_iter()
-        .map(|version| LoaderVersion {
-            stable: promoted.contains(&version),
-            version,
+        .map(|version| {
+            let stable = promoted.contains(&version);
+            LoaderVersion { version, stable }
         })
         .collect())
 }
 
-async fn forge_maven_versions(game: &str) -> Result<Vec<String>, String> {
-    let prefix = format!("{game}-");
-    let client = metadata_client()?;
+/// 从 maven 元数据里抓出该 MC 版本的全部 Forge 构建号。
+///
+/// 单独拆出来是为了能和 `forge_promoted` 并行执行：两者互不依赖，串行会让
+/// 「打开对话框」白白多等一个往返。
+async fn forge_maven_versions(
+    prefix: &str,
+    client: &reqwest::Client,
+) -> Result<Vec<String>, String> {
     let response = client
         .get("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml")
         .send()
@@ -372,13 +437,16 @@ async fn forge_maven_versions(game: &str) -> Result<Vec<String>, String> {
             break;
         };
         let value = after[..end].trim();
-        if value.starts_with(&prefix) && safe_version(value).is_ok() {
+        if value.starts_with(prefix) && safe_version(value).is_ok() {
             versions.push(value.to_owned());
         }
         rest = &after[end + "</version>".len()..];
     }
     if versions.is_empty() {
-        return Err(format!("Minecraft {game} 没有可用的 Forge 版本。"));
+        return Err(format!(
+            "Minecraft {} 没有可用的 Forge 版本。",
+            prefix.trim_end_matches('-')
+        ));
     }
     Ok(versions)
 }
@@ -387,8 +455,10 @@ async fn forge_maven_versions(game: &str) -> Result<Vec<String>, String> {
 ///
 /// 取失败时返回空集合而不是错误：这只是「给某一项加个徽标」，不值得让它挡住
 /// 整个版本列表。
-async fn forge_promoted(game: &str) -> Result<std::collections::BTreeSet<String>, String> {
-    let client = metadata_client()?;
+async fn forge_promoted(
+    game: &str,
+    client: &reqwest::Client,
+) -> Result<std::collections::BTreeSet<String>, String> {
     let response = client
         .get("https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json")
         .send()
@@ -423,7 +493,17 @@ async fn forge_promoted(game: &str) -> Result<std::collections::BTreeSet<String>
     Ok(out)
 }
 
-async fn neoforge_versions(game: &str) -> Result<Vec<LoaderVersion>, String> {
+/// 记录「本进程内官方 NeoForge 源已确认不可达」，避免 `Mixed` 每次都白等一轮超时。
+///
+/// 只在超时（而不是 4xx/5xx）时置位：4xx/5xx 说明主机可达，下次仍值得尝试。
+/// 进程重启后自动重置。
+static OFFICIAL_UNREACHABLE: AtomicBool = AtomicBool::new(false);
+
+async fn neoforge_versions(
+    game: &str,
+    client: &reqwest::Client,
+    network: &download_engine::DownloadSettings,
+) -> Result<Vec<LoaderVersion>, String> {
     /*
      * NeoForge 的版本号不是 `<mc>-<loader>`，而是 `<mc 次版本>.<mc 补丁版>.<构建号>`：
      *   1.21.1 → 21.1.x
@@ -443,38 +523,120 @@ async fn neoforge_versions(game: &str) -> Result<Vec<LoaderVersion>, String> {
     }
     let prefix = format!("{minor}.{patch}.");
 
-    let client = metadata_client()?;
     /*
-     * 先官方，失败再走镜像。
+     * 顺序跟着用户的下载源设置走，而不是写死「官方优先」。
      *
-     * `maven.neoforged.net` 在部分网络下完全不可达（DNS 被劫持、TLS 被中断），
-     * 而 BMCLAPI 镜像了同一份 `maven-metadata.xml`。之前这里只有官方一条路，
-     * 于是「NeoForge 一个版本都列不出来」——用户连点都点不下去，更谈不上安装。
+     * 实测（中文区常见网络）：`maven.neoforged.net` 连接会一直挂到超时，
+     * 而 bmclapi 0.1 秒就能连上。写死官方优先时，每次列版本都要先白等一个
+     * 完整超时（实测 21 秒）才轮到镜像，用户看到的就是「NeoForge 特别慢」。
      *
-     * 顺序不能反：镜像通常更快，但它可能滞后于官方（新版本晚几小时同步）。
-     * 官方可达时用它是对的；只有它失败时才退到镜像。
+     * 用户选了镜像或混合，就说明他希望优先用镜像；只有选「官方」才保持
+     * 只用官方——那条路径下不该偷偷回退到镜像，否则同一个设置在不同加载器
+     * 上会有两种含义。
      */
     const OFFICIAL: &str =
         "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml";
     const MIRROR: &str =
         "https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/maven-metadata.xml";
 
+    let mirror = mirror_client(network)?;
+    /*
+     * 每个设置只列出真正要尝试的源，不做「重复同一个源两次」这种占位：
+     * 那会让镜像模式在第一次超时后再白等一次，用户看到的仍是慢。
+     *
+     * `Mixed` 把镜像放前面：它通常快一个数量级，且 302 跳转链偶发要几秒。
+     * 官方只在镜像彻底失败后才尝试，且各自独立计时——一个源卡住不会吃掉
+     * 另一个源的时间。
+     */
+    let order: Vec<(&str, &reqwest::Client)> = match network.source {
+        mc_metadata::SourcePreference::Official => vec![(OFFICIAL, client)],
+        mc_metadata::SourcePreference::Bmclapi => vec![(MIRROR, &mirror)],
+        mc_metadata::SourcePreference::Mixed => {
+            /*
+             * 官方源一旦在本进程里超时过，就不再为它重复付一次完整超时。
+             *
+             * 实测：某些网络下 `maven.neoforged.net` 完全不可达，每次都要等满
+             * 超时才轮空。`Mixed` 的语义是「镜像优先、官方兜底」，而一个已经
+             * 证明不可达的兜底只会让每次列版本都多等 20 秒——那正是用户感知到的
+             * 「NeoForge 特别慢」。进程重启后会自动重新尝试。
+             */
+            if OFFICIAL_UNREACHABLE.load(Ordering::Relaxed) {
+                vec![(MIRROR, &mirror)]
+            } else {
+                vec![(MIRROR, &mirror), (OFFICIAL, client)]
+            }
+        }
+    };
+
     let mut fetched = None;
     let mut last_error = String::new();
-    for (url, client) in [(OFFICIAL, &client), (MIRROR, &mirror_client()?)] {
-        match client.get(url).send().await {
-            Ok(response) if response.status().is_success() => {
-                match bounded_response(response, 8 * 1024 * 1024).await {
-                    Ok(bytes) => {
-                        fetched = Some(bytes);
-                        break;
+    let mut first_source = true;
+    for (url, client) in order {
+        if fetched.is_some() {
+            break;
+        }
+        /*
+         * 首选源（镜像）失败时重试一次，兜底源不重试。
+         *
+         * BMCLAPI 会 302 到多个节点（`open-bmcl-api.lunar.cc`、`bmclapi2.hurtmc.com`
+         * 等），其中部分节点在特定网络下 DNS 解析失败。实测同一地址连续请求，
+         * 有的跳转到可用节点（200，1.4 秒），有的跳转到解析不了的节点——这是
+         * 瞬时故障，重试一次就能换一个节点。
+         *
+         * 只重试一次：BMCLAPI 的限流窗口是 57 秒内 10 次（响应头
+         * `X-RateLimit-Limit-short: 10`），多轮重试会把配额烧光、直接收到 429，
+         * 那比慢更糟。
+         *
+         * ## 兜底源的窗口要短
+         *
+         * 首选源给满预算：它通常是能用的那个，值得等。
+         *
+         * 兜底源只给 5 秒。它存在的意义是「首选源真的坏了」时还能救一次，而不是
+         * 让用户为一个已经证明不可达的主机付 20 秒。实测 `maven.neoforged.net`
+         * 在中文区常见网络下完全不可达（3/3 次 21 秒超时），等满 20 秒再报错，
+         * 用户看到的就是「点开对话框，转半分钟，然后失败」——比直接失败更糟。
+         */
+        let budget = if first_source {
+            std::time::Duration::from_secs(u64::from(network.timeout_sec).min(20))
+        } else {
+            std::time::Duration::from_secs(5)
+        };
+        let attempts = if first_source { 2 } else { 1 };
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                // 给 DNS/连接一点恢复时间，但别让用户感知到停顿。
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            match tokio::time::timeout(budget, client.get(url).send()).await {
+                Ok(Ok(response)) if response.status().is_success() => {
+                    match bounded_response(response, 8 * 1024 * 1024).await {
+                        Ok(bytes) => {
+                            fetched = Some(bytes);
+                            break;
+                        }
+                        Err(error) => last_error = error,
                     }
-                    Err(error) => last_error = error,
+                }
+                /*
+                 * 4xx/5xx 不重试：429 说明配额已经用完，再打只会更糟；其余状态码
+                 * 是稳定的服务端答复，重试不会改变结果。
+                 */
+                Ok(Ok(response)) => {
+                    last_error = format!("HTTP {}", response.status());
+                    break;
+                }
+                Ok(Err(_)) => last_error = "无法连接".to_owned(),
+                Err(_) => {
+                    last_error = "连接超时".to_owned();
+                    if url == OFFICIAL {
+                        OFFICIAL_UNREACHABLE.store(true, Ordering::Relaxed);
+                    }
+                    // 超时说明主机真的不可达，重试也只是再等一个完整超时。
+                    break;
                 }
             }
-            Ok(response) => last_error = format!("HTTP {}", response.status()),
-            Err(_) => last_error = "无法连接".to_owned(),
         }
+        first_source = false;
     }
     let bytes = fetched
         .ok_or_else(|| format!("无法连接 NeoForge 版本服务（官方与镜像均失败：{last_error}）。"))?;
@@ -531,28 +693,73 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     std::cmp::Ordering::Equal
 }
 
-fn metadata_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent("MFMCL/0.1.0")
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::none())
+fn metadata_client(network: &download_engine::DownloadSettings) -> Result<reqwest::Client, String> {
+    network
+        .configure_metadata_client(
+            reqwest::Client::builder()
+                .user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION")))
+                .https_only(true)
+                .redirect(reqwest::redirect::Policy::none()),
+            &[
+                "meta.fabricmc.net",
+                "meta.quiltmc.org",
+                "meta.legacyfabric.net",
+                "maven.legacyfabric.net",
+                "maven.minecraftforge.net",
+                "files.minecraftforge.net",
+                "maven.neoforged.net",
+                "maven.fabricmc.net",
+                "maven.quiltmc.org",
+                "libraries.minecraft.net",
+                "repo1.maven.org",
+                "repo.maven.apache.org",
+            ],
+        )
+        .map_err(|e| e.to_string())?
         .build()
         .map_err(|_| "无法初始化 HTTPS 客户端。".into())
 }
 
 /// 允许跟随重定向的客户端，只用于镜像。
 ///
-/// BMCLAPI 对文件与元数据都返回 302，跳到 `*.sakura.sld.tw` 上的短时签名地址。
-/// 默认客户端设了 `Policy::none()`（安全考虑：不跟随任何跳转），所以镜像永远
-/// 拿到 302 而不是内容。这里单独开一个允许有限跳转的实例，并且仍然限制在 HTTPS。
-fn mirror_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent("MFMCL/0.1.0")
-        .https_only(true)
-        // 限制跳转次数：镜像正常只用一次 302，多跳说明对方在绕圈。
-        .redirect(reqwest::redirect::Policy::limited(3))
+/// BMCLAPI 对文件与元数据都返回 302，跳到 `*.hurtmc.com` / `mirrors.*` 上的
+/// 短时签名地址。默认客户端设了 `Policy::none()`（安全考虑：不跟随任何跳转），
+/// 所以镜像永远拿到 302 而不是内容。
+///
+/// 这里单独开一个允许有限跳转的实例，并且仍然限制在 HTTPS。跳转目标不固定：
+/// bmclapi 会按负载把请求分发到 `bmclapi.hurtmc.com`、`mirrors.qlu.edu.cn` 等
+/// 镜像节点，写死单一主机就会时好时坏——这正是「镜像能力差」的来源。
+///
+/// ## 为什么要允许几跳，而不是一跳
+///
+/// 实测 bmclapi 的元数据地址会经过**两级**跳转（`bmclapi2` → 某个节点 →
+/// 最终地址）。只允许一跳时，第二次跳转会被当成错误，镜像永远拿不到内容——
+/// 表现为「镜像配了反而全都失败」。
+///
+/// ## 为什么跳转预算不能太大
+///
+/// `bmclapi.hurtmc.com` 这类跳转目标在部分网络下 DNS 解析失败。追得太多，每次
+/// 失败都要重新解析、重新连接，把整个请求预算耗在追一个根本到不了的主机上。
+/// 3 跳够覆盖正常链路，又不至于在死路上绕圈。
+fn mirror_client(network: &download_engine::DownloadSettings) -> Result<reqwest::Client, String> {
+    network
+        .configure_metadata_client(
+            reqwest::Client::builder()
+                .user_agent(concat!("MFMCL/", env!("CARGO_PKG_VERSION")))
+                .https_only(true)
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() >= 3 {
+                        return attempt.error("mirror redirected too many times");
+                    }
+                    // 只允许 HTTPS，避免被降级到明文。
+                    if attempt.url().scheme() != "https" {
+                        return attempt.error("insecure mirror redirect");
+                    }
+                    attempt.follow()
+                })),
+            &["bmclapi2.bangbang93.com"],
+        )
+        .map_err(|e| e.to_string())?
         .build()
         .map_err(|_| "无法初始化镜像客户端。".into())
 }
@@ -621,6 +828,18 @@ async fn install_loader_inner(
             ));
         }
     }
+    if kind == LoaderKind::OptiFine {
+        return optifine::install(
+            root,
+            instance,
+            store,
+            engine,
+            version,
+            progress,
+            allow_same_loader && instance.loader != "vanilla",
+        )
+        .await;
+    }
     if kind.uses_installer() {
         return crate::forge_install::install_with_processor(
             root,
@@ -635,21 +854,28 @@ async fn install_loader_inner(
         )
         .await;
     }
-    let client = metadata_client()?;
-    let response = client
-        .get(format!(
-            "{}versions/loader/{}/{version}/profile/json",
-            kind.meta(),
-            instance.game_version
-        ))
-        .send()
-        .await
-        .map_err(|_| "无法获取加载器配置。")?
-        .error_for_status()
-        .map_err(|_| "此加载器与游戏版本组合不可用。")?;
-    let bytes = bounded_response(response, 4 * 1024 * 1024).await?;
-    let patch: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|_| "加载器配置格式无效。")?;
+    let client = if matches!(kind, LoaderKind::LiteLoader | LoaderKind::LegacyFabric) {
+        legacy::client(engine.settings())?
+    } else {
+        metadata_client(engine.settings())?
+    };
+    let patch: serde_json::Value = if kind == LoaderKind::LiteLoader {
+        legacy::lite_profile(&instance.game_version, version, &client).await?
+    } else {
+        let response = client
+            .get(format!(
+                "{}versions/loader/{}/{version}/profile/json",
+                kind.meta(),
+                instance.game_version
+            ))
+            .send()
+            .await
+            .map_err(|_| "无法获取加载器配置。")?
+            .error_for_status()
+            .map_err(|_| "此加载器与游戏版本组合不可用。")?;
+        let bytes = bounded_response(response, 4 * 1024 * 1024).await?;
+        serde_json::from_slice(&bytes).map_err(|_| "加载器配置格式无效。")?
+    };
     if patch.get("processors").is_some() {
         return Err("加载器配置包含不支持的处理器；不会执行任意程序。".into());
     }
@@ -694,6 +920,12 @@ async fn install_loader_inner(
         if !coordinates.insert(name.to_owned()) {
             return Err("加载器依赖清单包含重复 Maven 坐标。".into());
         }
+        if library.get("natives").is_some() {
+            libraries.push(
+                legacy::native_library(root, library, engine, &client, progress.clone()).await?,
+            );
+            continue;
+        }
         let repository = library
             .get("url")
             .and_then(|v| v.as_str())
@@ -707,6 +939,10 @@ async fn install_loader_inner(
                 Some(
                     "maven.fabricmc.net"
                         | "maven.quiltmc.org"
+                        | "maven.legacyfabric.net"
+                        | "dl.liteloader.com"
+                        | "repo.mumfrey.com"
+                        | "repo.spongepowered.org"
                         | "libraries.minecraft.net"
                         | "repo1.maven.org"
                         | "repo.maven.apache.org"
@@ -720,10 +956,19 @@ async fn install_loader_inner(
         if !repository.path().ends_with('/') {
             repository.set_path(&format!("{}/", repository.path()));
         }
-        let url = repository
-            .join(&relative)
-            .map_err(|e| e.to_string())?
-            .to_string();
+        let url = if kind == LoaderKind::LiteLoader && name.starts_with("com.mumfrey:liteloader:") {
+            let value = library
+                .get("mfmclDownloadUrl")
+                .and_then(|v| v.as_str())
+                .ok_or("LiteLoader 缺少下载地址。")?;
+            legacy::allowed_url(&reqwest::Url::parse(value).map_err(|e| e.to_string())?)?;
+            value.to_owned()
+        } else {
+            repository
+                .join(&relative)
+                .map_err(|e| e.to_string())?
+                .to_string()
+        };
         let sha1 = if let Some(value) = library.get("sha1") {
             value
                 .as_str()
@@ -823,21 +1068,24 @@ async fn install_loader_inner(
     )
 }
 
-fn publish_profile(
+pub(crate) fn publish_profile(
     directory: &Path,
     bytes: &[u8],
     replace_existing: bool,
     commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     use std::io::Write;
-    let temp = directory.join(format!(".launch-{}.pending", uuid::Uuid::new_v4()));
     let target = directory.join("launch.json");
-    if replace_existing {
-        match std::fs::remove_file(&target) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("无法替换加载器配置：{error}")),
-        }
+    let temp = directory.join(format!(".launch-{}.pending", uuid::Uuid::new_v4()));
+    let backup = directory.join(format!(".launch-{}.backup", uuid::Uuid::new_v4()));
+    let old = match std::fs::symlink_metadata(&target) {
+        Ok(meta) if meta.file_type().is_file() && meta.len() <= 16 * 1024 * 1024 => true,
+        Ok(_) => return Err("启动配置必须是普通文件。".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.to_string()),
+    };
+    if old && !replace_existing {
+        return Err("已有启动配置；不会覆盖。".into());
     }
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -848,24 +1096,44 @@ fn publish_profile(
     let result = (|| {
         file.write_all(bytes).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
-        std::fs::hard_link(&temp, &target)
-            .map_err(|e| format!("无法发布加载器配置（不会覆盖已有文件）：{e}"))?;
+        if old {
+            std::fs::hard_link(&target, &backup).map_err(|e| e.to_string())?;
+        }
+        if old {
+            std::fs::rename(&temp, &target).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::hard_link(&temp, &target).map_err(|e| e.to_string())?;
+        }
         published = true;
         commit()
     })();
     drop(file);
-    if let Err(error) = result {
-        let mut error = error;
-        if published && let Err(rollback) = std::fs::remove_file(&target) {
-            error = format!("{error}；加载器配置回滚失败：{rollback}");
+    if let Err(mut error) = result {
+        if published {
+            let rollback = if old {
+                std::fs::rename(&backup, &target)
+            } else {
+                std::fs::remove_file(&target)
+            };
+            if let Err(rollback) = rollback {
+                let _ = std::fs::remove_file(&temp);
+                return Err(format!(
+                    "{error}；回滚失败：{rollback}；原配置备份为 {}",
+                    backup.display()
+                ));
+            }
         }
         if let Err(cleanup) = std::fs::remove_file(&temp) {
-            error = format!("{error}；清理临时配置失败：{cleanup}");
+            if cleanup.kind() != std::io::ErrorKind::NotFound {
+                error = format!("{error}；{cleanup}");
+            }
         }
+        let _ = std::fs::remove_file(&backup);
         return Err(error);
     }
-    // Once committed, cleanup can be retried without reinstalling the loader.
-    std::fs::remove_file(&temp).map_err(|e| format!("加载器已安装，但清理临时配置失败：{e}"))
+    let _ = std::fs::remove_file(&temp);
+    let _ = std::fs::remove_file(&backup);
+    Ok(())
 }
 
 async fn bounded_response(
@@ -1060,7 +1328,43 @@ fn is_loader_side_library(name: &str) -> bool {
         || group.starts_with("net.minecraftforge")
         || group.starts_with("net.neoforged")
         || group.starts_with("cpw.mods")
+        || matches!(
+            group,
+            "net.legacyfabric" | "com.mumfrey" | "com.cleanroommc" | "top.outlands" | "optifine"
+        )
         || group == "de.oceanlabs.mcp"
+}
+
+pub(crate) fn library_module(name: &str) -> String {
+    let parts: Vec<_> = name.split(':').collect();
+    format!(
+        "{}:{}:{}",
+        parts.first().unwrap_or(&""),
+        parts.get(1).unwrap_or(&""),
+        parts.get(3).unwrap_or(&"")
+    )
+}
+
+pub(crate) fn modernize_arguments(base: &mut GameVersionMetadata) -> Result<(), String> {
+    if base.arguments.is_none() {
+        let game = shlex::split(base.minecraft_arguments.as_deref().unwrap_or(""))
+            .ok_or("旧版本启动参数无效。")?;
+        base.arguments = Some(mc_metadata::LaunchArguments {
+            game: game
+                .into_iter()
+                .map(mc_metadata::ArgumentEntry::Literal)
+                .collect(),
+            jvm: vec![
+                "-Djava.library.path=${natives_directory}",
+                "-cp",
+                "${classpath}",
+            ]
+            .into_iter()
+            .map(|v| mc_metadata::ArgumentEntry::Literal(v.into()))
+            .collect(),
+        });
+    }
+    Ok(())
 }
 
 fn merge_loader_profile(
@@ -1081,20 +1385,13 @@ fn merge_loader_profile(
     );
     // Replace conflicting Maven module versions instead of adding duplicate classpath entries.
     for library in libraries {
-        let key = library
-            .name
-            .split(':')
-            .take(2)
-            .collect::<Vec<_>>()
-            .join(":");
+        let key = library_module(&library.name);
         base.libraries
-            .retain(|old| old.name.split(':').take(2).collect::<Vec<_>>().join(":") != key);
+            .retain(|old| library_module(&old.name) != key);
         base.libraries.push(library);
     }
     if let Some(args) = patch.get("arguments") {
-        if base.arguments.is_none() {
-            return Err("当前加载器适配器需要现代版本启动参数；此旧版本暂不支持。".into());
-        }
+        modernize_arguments(&mut base)?;
         let extra: mc_metadata::LaunchArguments =
             serde_json::from_value(args.clone()).map_err(|_| "加载器启动参数无效。")?;
         let base_args = base.arguments.get_or_insert_with(Default::default);
@@ -1110,6 +1407,7 @@ mod tests {
 
     mod discovery {
         use super::*;
+        use std::time::Duration;
 
         struct CacheFixture(PathBuf);
 
@@ -1187,6 +1485,67 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(result[0].version, "21.1.251");
+        }
+
+        #[tokio::test]
+        async fn cold_miss_and_background_refresh_keep_the_configured_proxy() {
+            use crate::catalog::network_tests::MockProxy;
+
+            let cache = CacheFixture::new();
+            let proxy = MockProxy::new("502 Bad Gateway", Duration::ZERO).await;
+            let settings = proxy.settings(0);
+            let path = cache_path(LoaderKind::Fabric, "1.21.1", &settings, Some(&cache.0)).unwrap();
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_secs(3),
+                    list_loader_versions_cached(
+                        LoaderKind::Fabric,
+                        "1.21.1",
+                        &settings,
+                        Some(&cache.0),
+                    ),
+                )
+                .await
+                .unwrap()
+                .is_err()
+            );
+            assert_eq!(proxy.requests.lock().unwrap().len(), 1);
+            tokio::fs::create_dir_all(path.parent().unwrap())
+                .await
+                .unwrap();
+            let stale = serde_json::to_vec(&CachedVersions {
+                fetched_at: now_secs() - LOADER_CACHE_TTL_SECS - 60,
+                versions: versions("0.16.10"),
+            })
+            .unwrap();
+            tokio::fs::write(&path, &stale).await.unwrap();
+            let result = tokio::time::timeout(
+                Duration::from_secs(3),
+                list_loader_versions_cached(
+                    LoaderKind::Fabric,
+                    "1.21.1",
+                    &settings,
+                    Some(&cache.0),
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            drop(settings);
+            assert_eq!(result[0].version, "0.16.10");
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while proxy.requests.lock().unwrap().len() < 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(
+                proxy.requests.lock().unwrap().iter().all(|request| {
+                    request.starts_with("CONNECT meta.fabricmc.net:443 HTTP/1.1")
+                })
+            );
+            assert_eq!(tokio::fs::read(&path).await.unwrap(), stale);
         }
 
         #[tokio::test]
@@ -1455,6 +1814,199 @@ mod tests {
     }
 
     #[test]
+    fn legacy_arguments_and_classifier_libraries_survive_overlay() {
+        let base: GameVersionMetadata = serde_json::from_value(serde_json::json!({"id":"1.8.9", "minecraftArguments":"--username ${auth_player_name}", "libraries":[]})).unwrap();
+        let patch = serde_json::json!({"inheritsFrom":"1.8.9", "mainClass":"net.minecraft.launchwrapper.Launch", "arguments":{"game":["--tweakClass","com.mumfrey.liteloader.launch.LiteLoaderTweaker"]}});
+        let libraries = [
+            "org.lwjgl:lwjgl:3:natives-windows",
+            "org.lwjgl:lwjgl:3:natives-linux",
+            "org.lwjgl:lwjgl:3",
+        ]
+        .into_iter()
+        .map(|name| Library {
+            name: name.into(),
+            ..Default::default()
+        })
+        .collect();
+        let merged = merge_loader_profile(base, &patch, libraries).unwrap();
+        assert_eq!(merged.libraries.len(), 3);
+        let args = merged.arguments.unwrap();
+        assert_eq!(args.game.len(), 4);
+        assert_eq!(args.jvm.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn every_loader_discovery_path_uses_the_proxy_including_neoforge_fallback() {
+        use crate::catalog::network_tests::MockProxy;
+        use std::time::Duration;
+
+        for (kind, hosts) in [
+            (LoaderKind::Fabric, vec!["meta.fabricmc.net"]),
+            (LoaderKind::Quilt, vec!["meta.quiltmc.org"]),
+            /*
+             * Forge 要读两个来源：maven 元数据给全量版本，promotions 给稳定版
+             * 标记。两者并行发出，所以这里列全两个主机。
+             */
+            (
+                LoaderKind::Forge,
+                vec!["maven.minecraftforge.net", "files.minecraftforge.net"],
+            ),
+            /*
+             * 默认设置是 `Mixed`，NeoForge 先走镜像、失败再回退官方。
+             * 顺序反了会让中文区用户每次都先白等官方超时。
+             */
+            (
+                LoaderKind::NeoForge,
+                vec!["bmclapi2.bangbang93.com", "maven.neoforged.net"],
+            ),
+        ] {
+            let proxy = MockProxy::new("502 Bad Gateway", Duration::ZERO).await;
+            assert!(
+                list_loader_versions_with_settings(kind, "1.21.4", &proxy.settings(1))
+                    .await
+                    .is_err()
+            );
+            let requests = proxy.requests.lock().unwrap();
+            /*
+             * 断言「每条发现路径都经过代理、且只访问该访问的主机」，而不是具体
+             * 请求次数或顺序。
+             *
+             * 次数取决于重试策略（首选源会重试一次，兜底源不会），顺序取决于
+             * 并行调度——两者都是实现细节，不是这个测试要保护的行为。这里真正
+             * 要守住的是：**没有请求绕过代理、也没有打到不该打的主机**。
+             */
+            for request in requests.iter() {
+                assert!(
+                    hosts
+                        .iter()
+                        .any(|host| request.starts_with(&format!("CONNECT {host}:443 HTTP/1.1"))),
+                    "{kind:?} contacted an unexpected host: {request:?}"
+                );
+            }
+            for host in &hosts {
+                assert!(
+                    requests
+                        .iter()
+                        .any(|request| request
+                            .starts_with(&format!("CONNECT {host}:443 HTTP/1.1"))),
+                    "{kind:?} never reached {host}: {requests:?}"
+                );
+            }
+        }
+    }
+
+    /// 选「官方」时不能偷偷回退到镜像：同一个设置在不同加载器上必须是同一种含义。
+    #[tokio::test]
+    async fn neoforge_official_only_never_contacts_the_mirror() {
+        use crate::catalog::network_tests::MockProxy;
+        use std::time::Duration;
+
+        let proxy = MockProxy::new("502 Bad Gateway", Duration::ZERO).await;
+        let mut settings = proxy.settings(0);
+        settings.source = mc_metadata::SourcePreference::Official;
+        assert!(
+            list_loader_versions_with_settings(LoaderKind::NeoForge, "1.21.4", &settings)
+                .await
+                .is_err()
+        );
+        let requests = proxy.requests.lock().unwrap();
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.starts_with("CONNECT maven.neoforged.net:443 HTTP/1.1")),
+            "official-only must not touch the mirror: {requests:?}"
+        );
+    }
+
+    /// 选「镜像」时不能先打官方：那正是「NeoForge 特别慢」的直接原因。
+    #[tokio::test]
+    async fn neoforge_mirror_only_never_contacts_official() {
+        use crate::catalog::network_tests::MockProxy;
+        use std::time::Duration;
+
+        let proxy = MockProxy::new("502 Bad Gateway", Duration::ZERO).await;
+        let mut settings = proxy.settings(0);
+        settings.source = mc_metadata::SourcePreference::Bmclapi;
+        assert!(
+            list_loader_versions_with_settings(LoaderKind::NeoForge, "1.21.4", &settings)
+                .await
+                .is_err()
+        );
+        let requests = proxy.requests.lock().unwrap();
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.starts_with("CONNECT bmclapi2.bangbang93.com:443 HTTP/1.1")),
+            "mirror-only must not touch the official host: {requests:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn forge_promotions_and_loader_hash_reads_keep_the_configured_proxy() {
+        use crate::catalog::network_tests::MockProxy;
+        use std::time::Duration;
+
+        let proxy = MockProxy::new("502 Bad Gateway", Duration::ZERO).await;
+        let client = metadata_client(&proxy.settings(0).to_engine_settings()).unwrap();
+        assert!(forge_promoted("1.21.4", &client).await.is_err());
+        assert!(
+            client
+                .get("https://maven.fabricmc.net/example.jar.sha1")
+                .send()
+                .await
+                .is_err()
+        );
+        let requests = proxy.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("CONNECT files.minecraftforge.net:443 HTTP/1.1"));
+        assert!(requests[1].starts_with("CONNECT maven.fabricmc.net:443 HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn invalid_loader_network_settings_fail_before_any_discovery_or_fallback() {
+        let settings = crate::DownloadSettings {
+            proxy_mode: download_engine::ProxyMode::Http,
+            proxy_url: "http://user:secret@proxy.test".into(),
+            ..Default::default()
+        };
+        let expected = settings
+            .to_engine_settings()
+            .validate_network()
+            .unwrap_err()
+            .to_string();
+        for kind in [
+            LoaderKind::Fabric,
+            LoaderKind::Quilt,
+            LoaderKind::Forge,
+            LoaderKind::NeoForge,
+        ] {
+            assert_eq!(
+                list_loader_versions_with_settings(kind, "1.21.4", &settings)
+                    .await
+                    .unwrap_err(),
+                expected
+            );
+        }
+        assert!(mirror_client(&settings.to_engine_settings()).is_err());
+    }
+
+    #[tokio::test]
+    async fn loader_clients_keep_https_only_after_applying_network_settings() {
+        let settings = download_engine::DownloadSettings::default();
+        for client in [
+            metadata_client(&settings).unwrap(),
+            mirror_client(&settings).unwrap(),
+        ] {
+            let error = client
+                .get("http://127.0.0.1:9/metadata")
+                .send()
+                .await
+                .unwrap_err();
+            assert!(error.is_builder());
+        }
+    }
+
+    #[test]
     fn publishing_is_atomic_and_rolls_back_store_failure() {
         let directory = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir(&directory).unwrap();
@@ -1494,10 +2046,12 @@ mod tests {
             std::fs::read(directory.join("launch.json")).unwrap(),
             b"repaired"
         );
-        // 替换模式下提交失败要能回滚到「没有配置」而不是留下半份。
         assert!(publish_profile(&directory, b"next", true, || Err("store".into())).is_err());
-        assert!(!directory.join("launch.json").exists());
-        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read(directory.join("launch.json")).unwrap(),
+            b"repaired"
+        );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
         std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]

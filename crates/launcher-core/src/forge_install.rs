@@ -37,7 +37,7 @@
 use crate::loaders::{LoaderKind, safe_version};
 use crate::{InstanceRecord, LauncherStore};
 use download_engine::{ArtifactSpec, DownloadEngine, DownloadProgress};
-use mc_metadata::{Artifact, GameVersionMetadata, Library, LibraryDownloads};
+use mc_metadata::{Artifact, GameVersionMetadata, Library};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -292,11 +292,14 @@ pub fn maven_repository_for(coord: &str, kind: LoaderKind) -> Result<String, Str
     let neoforged = "https://maven.neoforged.net/releases/";
     let forge = match kind {
         LoaderKind::Forge | LoaderKind::NeoForge => "https://maven.minecraftforge.net/",
+        LoaderKind::Cleanroom => "https://repo.cleanroommc.com/releases/",
         _ => return Err("该加载器不使用安装器仓库。".into()),
     };
     let mojang = "https://libraries.minecraft.net/";
 
-    let repository = if group.starts_with("net.minecraftforge")
+    let repository = if kind == LoaderKind::Cleanroom {
+        "https://repo.cleanroommc.com/releases/"
+    } else if group.starts_with("net.minecraftforge")
         || group.starts_with("cpw.mods")
         || group == "de.oceanlabs.mcp"
         || group == "com.github.jponge"
@@ -396,14 +399,18 @@ pub async fn install_with_processor(
     replace_existing: bool,
 ) -> Result<(), String> {
     use crate::loaders::LoaderKind as K;
-    if !matches!(kind, K::Forge | K::NeoForge) {
+    if !matches!(kind, K::Forge | K::NeoForge | K::Cleanroom) {
         return Err("此加载器不走安装器流程。".into());
     }
     let version_id = installer_version_id(kind, &instance.game_version, version)?;
 
     // --- 1. 安装器 jar -----------------------------------------------------
-    let (installer_url, installer_sha1) =
+    let (installer_url, mut installer_sha1) =
         installer_artifact(kind, &instance.game_version, version)?;
+    if kind == LoaderKind::Cleanroom {
+        installer_sha1 =
+            Some(crate::loaders::legacy::checksum(&installer_url, engine.settings()).await?);
+    }
     let work = std::env::temp_dir().join(format!("mfmcl-loader-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&work).map_err(|e| format!("无法创建临时目录：{e}"))?;
     // 无论成败都清理临时目录：里面只有安装器的中间产物。
@@ -545,7 +552,40 @@ async fn install_from_installer(
      */
     let mut needed: Vec<String> = Vec::new();
     for library in &profile.libraries {
-        needed.push(library.name.clone());
+        let relative = crate::loaders::safe_maven_path(&library.name)?;
+        let bundled = extract_root.join("maven").join(&relative);
+        if bundled.is_file() {
+            let hash =
+                profile_artifact_sha1(&profile, &library.name).ok_or("安装器内嵌库缺少 SHA-1。")?;
+            let size = library
+                .downloads
+                .as_ref()
+                .and_then(|d| d.artifact.as_ref())
+                .and_then(|a| a.size);
+            download_engine::verify_file(&bundled, size, Some(&hash), None)
+                .await
+                .map_err(|e| e.to_string())?;
+            let destination = root.join("libraries").join(relative);
+            if destination.exists() {
+                download_engine::verify_file(&destination, size, Some(&hash), None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            } else {
+                std::fs::create_dir_all(destination.parent().ok_or("库路径无效。")?)
+                    .map_err(|e| e.to_string())?;
+                let mut input = std::fs::File::open(&bundled).map_err(|e| e.to_string())?;
+                let mut output = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&destination)
+                    .map_err(|e| e.to_string())?;
+                std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+                output.sync_all().map_err(|e| e.to_string())?;
+            }
+            resolved.insert(library.name.clone(), destination);
+        } else {
+            needed.push(library.name.clone());
+        }
     }
     for processor in profile.processors.iter().filter(|p| p.runs_on_client()) {
         needed.push(processor.jar.clone());
@@ -654,15 +694,40 @@ async fn install_from_installer(
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
     }
-    let java = crate::launch::detect_java_runtime(None)
-        .map_err(|e| format!("找不到可用的 Java 运行时：{e}"))?
-        .path;
+    let settings = store.load_settings().map_err(|e| e.to_string())?;
+    let mut java_instance = instance.clone();
+    java_instance.loader = format!("{}@{version}", kind.name());
+    let metadata: GameVersionMetadata = serde_json::from_slice(
+        &std::fs::read(version_dir.join(format!("{}.json", instance.game_version)))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let request = store
+        .resolve_java_selection(&instance.id, None, None, settings.java_path.as_deref())
+        .map_err(|e| e.to_string())?;
+    let selected = crate::java_runtime::select_java(root, &java_instance, &metadata, &request)
+        .map_err(|e| e.to_string())?;
+    let runtime = if let Some(runtime) = selected.runtime {
+        runtime
+    } else if selected.can_auto_install {
+        crate::java_runtime::install_official_java_with_settings(
+            root,
+            &selected.requirement,
+            &engine.control(),
+            &settings.download,
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        return Err("找不到符合加载器要求的 Java。".into());
+    };
+    let java = runtime.path;
     let client_processors: Vec<&Processor> = profile
         .processors
         .iter()
         .filter(|p| p.runs_on_client())
         .collect();
-    if client_processors.is_empty() {
+    if client_processors.is_empty() && kind != LoaderKind::Cleanroom {
         return Err("安装器没有声明客户端处理器，无法完成安装。".into());
     }
     let control = engine.control();
@@ -710,10 +775,14 @@ async fn install_from_installer(
         install_version_libraries(engine, root, &patch, kind, progress.clone()).await?;
 
     let base_path = version_dir.join(format!("{}.json", instance.game_version));
-    let base: GameVersionMetadata = serde_json::from_slice(
+    let mut base: GameVersionMetadata = serde_json::from_slice(
         &std::fs::read(&base_path).map_err(|e| format!("读取原版配置失败：{e}"))?,
     )
     .map_err(|e| format!("原版配置解析失败：{e}"))?;
+    // Cleanroom publishes a complete replacement library set, including LWJGL 3.
+    if kind == LoaderKind::Cleanroom {
+        base.libraries.clear();
+    }
     let merged = merge_installer_profile(base, &patch, runtime_libraries)?;
     let merged_bytes = serde_json::to_vec_pretty(&merged).map_err(|e| e.to_string())?;
     control
@@ -761,6 +830,12 @@ fn installer_artifact(
                 None,
             ))
         }
+        LoaderKind::Cleanroom if game == "1.12.2" => Ok((
+            format!(
+                "https://repo.cleanroommc.com/releases/com/cleanroommc/cleanroom/{version}/cleanroom-{version}-installer.jar"
+            ),
+            None,
+        )),
         LoaderKind::NeoForge => Ok((
             format!(
                 "https://maven.neoforged.net/releases/net/neoforged/neoforge/{version}/neoforge-{version}-installer.jar"
@@ -794,6 +869,8 @@ fn extract_installer(source: &Path, target: &Path) -> Result<(), String> {
     if archive.len() > 20_000 {
         return Err("安装器条目数量异常。".into());
     }
+    let mut expanded = 0u64;
+    let mut seen = std::collections::HashSet::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
         let Some(raw_name) = entry.enclosed_name().map(|path| path.to_path_buf()) else {
@@ -801,8 +878,24 @@ fn extract_installer(source: &Path, target: &Path) -> Result<(), String> {
             return Err("安装器包含不安全的路径。".into());
         };
         let name = raw_name.to_string_lossy().replace('\\', "/");
-        let wanted =
-            name == "install_profile.json" || name == "version.json" || name.starts_with("data/");
+        crate::modpacks::safe_pack_path(name.trim_end_matches('/'))?;
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+            || !seen.insert(name.to_ascii_lowercase())
+        {
+            return Err("安装器含符号链接或重复路径。".into());
+        }
+        expanded = expanded
+            .checked_add(entry.size())
+            .ok_or("安装器展开大小溢出。")?;
+        if entry.size() > 128 * 1024 * 1024 || expanded > 512 * 1024 * 1024 {
+            return Err("安装器展开内容过大。".into());
+        }
+        let wanted = name == "install_profile.json"
+            || name == "version.json"
+            || name.starts_with("data/")
+            || name.starts_with("maven/");
         if !wanted || entry.is_dir() {
             continue;
         }
@@ -810,8 +903,18 @@ fn extract_installer(source: &Path, target: &Path) -> Result<(), String> {
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let mut out = File::create(&destination).map_err(|e| e.to_string())?;
-        std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .map_err(|e| e.to_string())?;
+        use std::io::Read;
+        let size = entry.size();
+        let copied =
+            std::io::copy(&mut (&mut entry).take(size + 1), &mut out).map_err(|e| e.to_string())?;
+        if copied != size {
+            return Err("安装器条目大小与声明不符。".into());
+        }
     }
     if !target.join("install_profile.json").is_file() {
         return Err("安装器缺少 install_profile.json。".into());
@@ -1050,85 +1153,122 @@ async fn install_version_libraries(
         return Err("加载器依赖数量超过限制。".into());
     }
     let mut libraries = Vec::new();
-    for library in list {
-        let name = library
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or("加载器依赖坐标无效。")?;
-        let relative = crate::loaders::safe_maven_path(name)?;
-        let destination = root.join("libraries").join(&relative);
-        if let Some(artifact) = library.get("downloads").and_then(|d| d.get("artifact")) {
-            let url = artifact
-                .get("url")
-                .and_then(|v| v.as_str())
-                .ok_or("加载器依赖缺少下载地址。")?;
-            // 只信任白名单仓库：这里的 URL 来自安装器提供的配置。
-            let parsed = reqwest::Url::parse(url).map_err(|_| "加载器依赖地址无效。")?;
-            let host = parsed.host_str().unwrap_or_default();
-            if parsed.scheme() != "https"
-                || !matches!(
-                    host,
-                    "maven.minecraftforge.net"
-                        | "maven.neoforged.net"
-                        | "libraries.minecraft.net"
-                        | "repo1.maven.org"
-                        | "repo.maven.apache.org"
-                )
-            {
-                return Err(format!("加载器依赖引用了未获准的仓库：{host}"));
+    for raw in list {
+        let mut library: Library =
+            serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
+        crate::loaders::safe_maven_path(&library.name)?;
+        if crate::installer::library_allowed(&library) {
+            if let Some(artifact) = &mut library.downloads.artifact {
+                let relative = crate::loaders::safe_maven_path(&library.name)?;
+                artifact.path.get_or_insert(relative);
+                install_runtime_artifact(engine, root, &library.name, artifact, progress.clone())
+                    .await?;
             }
-            let sha1 = artifact
-                .get("sha1")
-                .and_then(|v| v.as_str())
-                .filter(|sha1| sha1.len() == 40 && sha1.chars().all(|c| c.is_ascii_hexdigit()))
-                .map(str::to_owned);
-            let size = artifact.get("size").and_then(|v| v.as_u64());
-            if !destination.is_file() {
-                engine
-                    .download(
-                        &ArtifactSpec {
-                            id: format!("loader-lib:{name}"),
-                            label: format!("加载器依赖 {name}"),
-                            url: url.to_owned(),
-                            /*
-                             * 版本 JSON 里的库也补镜像。
-                             * Forge 的 launch profile 会引用 `net.minecraftforge.*` 与自己
-                             * 的 asm/mixin 补丁，这些在断网环境下同样需要镜像兜底。
-                             */
-                            mirror_url: mirror_for(url),
-                            destination: destination.clone(),
-                            size,
-                            sha1: sha1.clone(),
-                            sha256: None,
-                        },
-                        progress.clone(),
-                    )
-                    .await
-                    .map_err(|e| format!("下载加载器依赖 {name} 失败：{e}"))?;
+            let os = if cfg!(windows) {
+                "windows"
+            } else if cfg!(target_os = "macos") {
+                "osx"
+            } else {
+                "linux"
+            };
+            if let Some(classifier) = library.natives.get(os) {
+                let classifier = classifier.replace(
+                    "${arch}",
+                    if cfg!(target_pointer_width = "64") {
+                        "64"
+                    } else {
+                        "32"
+                    },
+                );
+                let artifact = library
+                    .downloads
+                    .classifiers
+                    .get_mut(&classifier)
+                    .ok_or("缺少加载器 Native 下载项。")?;
+                let relative =
+                    crate::loaders::safe_maven_path(&format!("{}:{classifier}", library.name))?;
+                artifact.path.get_or_insert(relative);
+                install_runtime_artifact(engine, root, &library.name, artifact, progress.clone())
+                    .await?;
             }
-            libraries.push(Library {
-                name: name.to_owned(),
-                downloads: LibraryDownloads {
-                    artifact: Some(Artifact {
-                        path: Some(relative),
-                        url: url.to_owned(),
-                        sha1,
-                        size,
-                    }),
-                    ..Default::default()
-                },
-                ..Default::default()
-            });
-        } else {
-            // 没有 artifact 的条目（例如仅 natives）保留声明，由启动阶段按规则处理。
-            libraries.push(Library {
-                name: name.to_owned(),
-                ..Default::default()
-            });
         }
-        let _ = kind;
+        libraries.push(library);
     }
+    let _ = kind;
     Ok(libraries)
+}
+
+async fn install_runtime_artifact(
+    engine: &DownloadEngine,
+    root: &Path,
+    name: &str,
+    artifact: &Artifact,
+    progress: Option<mpsc::UnboundedSender<DownloadProgress>>,
+) -> Result<(), String> {
+    let relative =
+        crate::modpacks::safe_pack_path(artifact.path.as_deref().ok_or("加载器库路径缺失。")?)?;
+    let destination = root.join("libraries").join(relative);
+    if artifact
+        .sha1
+        .as_deref()
+        .is_some_and(|v| v.len() != 40 || !v.bytes().all(|b| b.is_ascii_hexdigit()))
+        || artifact.size.is_some_and(|v| v > 512 * 1024 * 1024)
+    {
+        return Err("加载器库的校验或大小无效。".into());
+    }
+    if artifact.url.is_empty() {
+        if artifact.sha1.is_none() {
+            return Err("内嵌或生成的加载器库缺少校验值。".into());
+        }
+        return download_engine::verify_file(
+            &destination,
+            artifact.size,
+            artifact.sha1.as_deref(),
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string());
+    }
+    let url = reqwest::Url::parse(&artifact.url).map_err(|e| e.to_string())?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !matches!(
+            url.host_str(),
+            Some(
+                "maven.minecraftforge.net"
+                    | "maven.neoforged.net"
+                    | "repo.cleanroommc.com"
+                    | "maven.cleanroommc.com"
+                    | "nexus.jsdu.cn"
+                    | "libraries.minecraft.net"
+                    | "repo1.maven.org"
+                    | "repo.maven.apache.org"
+            )
+        )
+    {
+        return Err("加载器库不在获准的仓库中。".into());
+    }
+    engine
+        .download(
+            &ArtifactSpec {
+                id: format!("loader-lib:{name}"),
+                label: format!("加载器依赖 {name}"),
+                url: artifact.url.clone(),
+                mirror_url: mirror_for(&artifact.url),
+                destination,
+                size: artifact.size,
+                sha1: artifact.sha1.clone(),
+                sha256: None,
+            },
+            progress,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// 把安装器的 `version.json` 合并进原版配置。
@@ -1155,20 +1295,26 @@ fn merge_installer_profile(
             .to_owned(),
     );
     for library in libraries {
-        let key = library
-            .name
-            .split(':')
-            .take(2)
-            .collect::<Vec<_>>()
-            .join(":");
+        let key = crate::loaders::library_module(&library.name);
         base.libraries
-            .retain(|old| old.name.split(':').take(2).collect::<Vec<_>>().join(":") != key);
+            .retain(|old| crate::loaders::library_module(&old.name) != key);
         base.libraries.push(library);
     }
-    if let Some(arguments) = patch.get("arguments") {
-        if base.arguments.is_none() {
-            return Err("此加载器需要现代版本启动参数；当前实例版本过旧。".into());
+    if let Some(java) = patch.get("javaVersion") {
+        let value: mc_metadata::JavaVersionInfo =
+            serde_json::from_value(java.clone()).map_err(|_| "加载器 Java 版本声明无效。")?;
+        if !(8..=30).contains(&value.major_version) {
+            return Err("加载器 Java 版本不受支持。".into());
         }
+        base.java_version = Some(value);
+    }
+    if let Some(arguments) = patch.get("minecraftArguments").and_then(|v| v.as_str()) {
+        shlex::split(arguments).ok_or("加载器旧版本启动参数无效。")?;
+        base.minecraft_arguments = Some(arguments.into());
+        base.arguments = None;
+    }
+    if let Some(arguments) = patch.get("arguments") {
+        crate::loaders::modernize_arguments(&mut base)?;
         let extra: mc_metadata::LaunchArguments =
             serde_json::from_value(arguments.clone()).map_err(|_| "加载器启动参数无效。")?;
         let base_args = base.arguments.get_or_insert_with(Default::default);
@@ -1188,41 +1334,7 @@ fn publish_loader_profile(
     replace_existing: bool,
     commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
-    use std::io::Write;
-    let temp = directory.join(format!(".launch-{}.pending", uuid::Uuid::new_v4()));
-    let target = directory.join("launch.json");
-    if replace_existing {
-        match std::fs::remove_file(&target) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("无法替换加载器配置：{error}")),
-        }
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|e| e.to_string())?;
-    let mut published = false;
-    let result = (|| {
-        file.write_all(bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        std::fs::hard_link(&temp, &target)
-            .map_err(|e| format!("无法发布加载器配置（不会覆盖已有文件）：{e}"))?;
-        published = true;
-        commit()
-    })();
-    drop(file);
-    if let Err(mut error) = result {
-        if published && let Err(rollback) = std::fs::remove_file(&target) {
-            error = format!("{error}；加载器配置回滚失败：{rollback}");
-        }
-        if let Err(cleanup) = std::fs::remove_file(&temp) {
-            error = format!("{error}；清理临时配置失败：{cleanup}");
-        }
-        return Err(error);
-    }
-    std::fs::remove_file(temp).map_err(|e| format!("加载器已安装，但清理临时配置失败：{e}"))
+    crate::loaders::publish_profile(directory, bytes, replace_existing, commit)
 }
 
 /// 从一段文本里提取形如 `[group:artifact:version(@ext)]` 的 Maven 坐标。
@@ -1253,6 +1365,7 @@ pub fn installer_version_id(
     Ok(match loader {
         LoaderKind::Forge => format!("{game}-forge-{version}"),
         LoaderKind::NeoForge => format!("neoforge-{version}"),
+        LoaderKind::Cleanroom if game == "1.12.2" => format!("cleanroom-{version}"),
         _ => return Err("该加载器不使用安装器。".into()),
     })
 }
@@ -1417,6 +1530,32 @@ mod tests {
         assert!(finish.is_closed());
     }
 
+    #[test]
+    #[ignore = "requires MFMCL_CLEANROOM_INSPECT_JAR pointing to an official installer"]
+    fn inspect_official_cleanroom_manifest() {
+        use std::io::Read;
+        let path = std::env::var("MFMCL_CLEANROOM_INSPECT_JAR").expect("installer path");
+        let mut jar = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+        for name in ["install_profile.json", "version.json"] {
+            let mut bytes = Vec::new();
+            jar.by_name(name)
+                .unwrap()
+                .take(4 * 1024 * 1024)
+                .read_to_end(&mut bytes)
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            println!(
+                "{} spec={} minecraft={} java={} libraries={} processors={}",
+                name,
+                value["spec"],
+                value["minecraft"],
+                value["javaVersion"],
+                value["libraries"].as_array().map_or(0, Vec::len),
+                value["processors"].as_array().map_or(0, Vec::len)
+            );
+        }
+    }
+
     /// Forge 的版本号自带游戏版本前缀，不能再拼一次。
     ///
     /// 这条守的是一个真实故障：`installer_artifact` 曾无条件拼 `{game}-{version}`，
@@ -1445,6 +1584,9 @@ mod tests {
             url,
             "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.265/neoforge-21.1.265-installer.jar"
         );
+        assert!(installer_artifact(LoaderKind::Cleanroom, "1.21.4", "0.7.14-alpha").is_err());
+        let (url, _) = installer_artifact(LoaderKind::Cleanroom, "1.12.2", "0.7.14-alpha").unwrap();
+        assert!(url.ends_with("/0.7.14-alpha/cleanroom-0.7.14-alpha-installer.jar"));
     }
 
     #[test]

@@ -417,6 +417,10 @@ async fn loaders(
             ))
         })?;
     let download = session.store.load_settings()?.download;
+    /*
+     * 与桌面端共用同一份缓存：版本清单一天最多变几次，命令行里连着查两次
+     * 不该第二次还去联网。
+     */
     let versions = launcher_core::loaders::list_loader_versions_cached(
         kind,
         game,

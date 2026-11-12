@@ -27,6 +27,14 @@ pub enum LaunchSettingsError {
     UnsupportedGarbageCollector(String),
 }
 
+/// Normalize legacy, unsupported process options before persistence, not on a discarded clone.
+/// Hosts should call this on the actual payload before validate_settings and saving it.
+pub fn normalize_settings(settings: &mut LauncherSettings) {
+    settings.optimize_memory = false;
+    settings.process_priority = ProcessPriority::Normal;
+    settings.close_after_launch = false;
+}
+
 /// Validate settings that can affect persistence or game execution.
 /// `maximum_game_mb` is supplied by the host when the machine-specific limit is known.
 pub fn validate_settings(
@@ -52,6 +60,11 @@ pub fn validate_settings(
     {
         return Err("下载并发数必须在 1–64（同时任务）与 1–1024（单文件连接）之间。".to_owned());
     }
+    settings
+        .download
+        .to_engine_settings()
+        .validate_network()
+        .map_err(|error| error.to_string())?;
     if !(512..=u32::MAX).contains(&settings.memory_mb) {
         return Err("游戏内存必须至少为 512 MB。".to_owned());
     }
@@ -80,23 +93,21 @@ pub fn validate_settings(
     if settings.pre_launch_command.contains(['\n', '\r', '\0']) {
         return Err("启动前命令不能包含换行或 NUL 字符。".to_owned());
     }
-    /*
-     * 不支持的能力：静默归零，而不是拒绝整份保存。
-     *
-     * 这三项（内存优化、进程优先级、启动后关闭）在界面上有开关，但后端没有实现。
-     * 之前这里是 `return Err(...)`——结果是用户改动**任何**无关设置（比如换个主题）
-     * 都会因为界面带着 `optimizeMemory: false` 之外的值而整份保存失败，而报错
-     * 说的是「内存优化暂不支持」，与他的操作毫无关系。
-     *
-     * 改成归零：这些字段被当成「没有实现」，保存其余部分。用户看到的是设置生效了，
-     * 而那个没有实现的开关保持关闭——这比「改主题失败」诚实得多。
-     */
-    let mut settings = settings.clone();
-    settings.optimize_memory = false;
-    settings.process_priority = ProcessPriority::Normal;
-    settings.close_after_launch = false;
-    if !settings.default_isolated {
-        return Err("共享游戏目录暂不支持；实例必须保持隔离。".to_owned());
+    if settings.optimize_memory
+        || settings.process_priority != ProcessPriority::Normal
+        || settings.close_after_launch
+    {
+        return Err("内存优化、非默认进程优先级和启动后关闭暂不支持；请先正规化设置。".to_owned());
+    }
+    if let Some(root) = &settings.game_root {
+        if !root.is_absolute()
+            || root.as_os_str().is_empty()
+            || root
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err("游戏目录必须是绝对路径。".into());
+        }
     }
     if !settings.verify_ssl {
         return Err("TLS 证书校验必须保持开启。".to_owned());
@@ -588,20 +599,104 @@ mod tests {
         assert!(validate_settings(&settings, Some(8192)).is_err());
         settings.verify_ssl = true;
         settings.default_isolated = false;
-        // 共享游戏目录同样影响安全性/正确性，仍然拒绝。
-        assert!(validate_settings(&settings, Some(8192)).is_err());
+        assert!(validate_settings(&settings, Some(8192)).is_ok());
         settings.default_isolated = true;
-        /*
-         * 未实现的选项改为静默归零，不再让整份保存失败。
-         *
-         * 之前 `process_priority = High` 会让 validate 返回错误——而界面上这个
-         * 开关一直是可点的，用户改任何无关设置都会连带撞上它。现在验证的是
-         * 「被归零」而不是「被拒绝」。
-         */
         settings.process_priority = ProcessPriority::High;
         settings.optimize_memory = true;
         settings.close_after_launch = true;
+        assert!(validate_settings(&settings, Some(8192)).is_err());
+        normalize_settings(&mut settings);
+        assert!(!settings.optimize_memory);
+        assert_eq!(settings.process_priority, ProcessPriority::Normal);
+        assert!(!settings.close_after_launch);
         assert!(validate_settings(&settings, Some(8192)).is_ok());
+    }
+
+    #[test]
+    fn download_network_settings_reject_invalid_values_without_dropping_valid_preferences() {
+        let mut settings = LauncherSettings::default();
+        settings.download.proxy_mode = download_engine::ProxyMode::Http;
+        settings.download.proxy_url = "http://127.0.0.1:7890".into();
+        settings.download.timeout_sec = 600;
+        settings.download.retries = 10;
+        settings.speed_limit_kbps = 123;
+        settings.community_source = "custom-source".into();
+        normalize_settings(&mut settings);
+        assert!(validate_settings(&settings, None).is_ok());
+        assert_eq!(settings.speed_limit_kbps, 123);
+        assert_eq!(settings.community_source, "custom-source");
+        assert_eq!(settings.download.proxy_url, "http://127.0.0.1:7890");
+        for invalid in [
+            "",
+            "socks5://127.0.0.1:7890",
+            "http://user:secret@proxy.test",
+            "http://proxy.test/path",
+        ] {
+            settings.download.proxy_url = invalid.into();
+            assert!(validate_settings(&settings, None).is_err());
+        }
+        settings.download.proxy_mode = download_engine::ProxyMode::None;
+        settings.download.proxy_url = "unfinished draft".into();
+        assert!(validate_settings(&settings, None).is_ok());
+        settings.download.timeout_sec = 0;
+        assert!(validate_settings(&settings, None).is_err());
+        settings.download.timeout_sec = 601;
+        assert!(validate_settings(&settings, None).is_err());
+        settings.download.timeout_sec = 60;
+        settings.download.retries = 11;
+        assert!(validate_settings(&settings, None).is_err());
+    }
+
+    #[test]
+    fn old_download_settings_default_and_round_trip_network_policy() {
+        let mut value = serde_json::to_value(LauncherSettings::default()).unwrap();
+        let download = value["download"].as_object_mut().unwrap();
+        for field in ["proxyMode", "proxyUrl", "timeoutSec", "retries"] {
+            download.remove(field);
+        }
+        let mut settings: LauncherSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            settings.download.proxy_mode,
+            download_engine::ProxyMode::None
+        );
+        assert_eq!(settings.download.timeout_sec, 60);
+        assert_eq!(settings.download.retries, 2);
+        settings.download.proxy_mode = download_engine::ProxyMode::Http;
+        settings.download.proxy_url = "http://127.0.0.1:7890".into();
+        settings.download.timeout_sec = 123;
+        settings.download.retries = 4;
+        let settings: LauncherSettings =
+            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
+        let engine = settings.download.to_engine_settings();
+        assert_eq!(engine.proxy_mode, download_engine::ProxyMode::Http);
+        assert_eq!(engine.proxy_url, "http://127.0.0.1:7890");
+        assert_eq!(engine.timeout_sec, 123);
+        assert_eq!(engine.retries, 4);
+    }
+
+    #[test]
+    fn network_policy_survives_store_save_and_reload_and_invalid_values_are_not_persisted() {
+        let directory =
+            std::env::temp_dir().join(format!("mfmcl-network-settings-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        {
+            let store = crate::LauncherStore::open(directory.join("settings.sqlite")).unwrap();
+            let mut settings = LauncherSettings::default();
+            settings.download.proxy_mode = download_engine::ProxyMode::Http;
+            settings.download.proxy_url = "http://127.0.0.1:7890".into();
+            settings.download.timeout_sec = 123;
+            settings.download.retries = 4;
+            store.save_settings(&settings).unwrap();
+            let loaded = store.load_settings().unwrap();
+            assert_eq!(loaded.download.proxy_mode, download_engine::ProxyMode::Http);
+            assert_eq!(loaded.download.proxy_url, "http://127.0.0.1:7890");
+            assert_eq!(loaded.download.timeout_sec, 123);
+            assert_eq!(loaded.download.retries, 4);
+            settings.download.timeout_sec = 0;
+            assert!(store.save_settings(&settings).is_err());
+            assert_eq!(store.load_settings().unwrap().download.timeout_sec, 123);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -788,7 +883,12 @@ mod tests {
         );
 
         let absolute = InstanceOverrides {
-            game_dir: Some("/home/someone/.minecraft/shared".into()),
+            game_dir: Some(
+                std::env::temp_dir()
+                    .join("mfmcl-settings-test/shared")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             ..InstanceOverrides::default()
         };
         assert!(validate_instance_overrides(&absolute).is_ok());
@@ -809,7 +909,12 @@ mod tests {
     #[test]
     fn game_directory_counts_as_one_customisation() {
         let overrides = InstanceOverrides {
-            game_dir: Some("/tmp/separate".into()),
+            game_dir: Some(
+                std::env::temp_dir()
+                    .join("mfmcl-settings-test/separate")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             ..InstanceOverrides::default()
         };
         assert_eq!(count_instance_overrides(&overrides), 1);

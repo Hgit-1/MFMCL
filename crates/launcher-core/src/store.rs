@@ -91,6 +91,17 @@ impl LauncherStore {
                 state TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS java_candidate_priority (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS instance_java_rules (
+                instance_id TEXT PRIMARY KEY REFERENCES instances(id) ON DELETE CASCADE,
+                json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS java_legacy_migration (
+                id INTEGER PRIMARY KEY CHECK (id = 1)
+            );
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
@@ -321,6 +332,151 @@ impl LauncherStore {
         Ok(())
     }
 
+    pub fn load_java_preferences(
+        &self,
+    ) -> Result<crate::java_runtime::JavaPreferences, StoreError> {
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let transaction = connection.unchecked_transaction()?;
+        let result = read_java_preferences(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
+    /// Settings and Java preferences commit together, so a rejected rule cannot leave a half-saved form.
+    pub fn save_java_preferences(
+        &self,
+        update: &crate::java_runtime::JavaPreferencesUpdate,
+        settings: Option<&LauncherSettings>,
+    ) -> Result<crate::java_runtime::JavaPreferences, StoreError> {
+        use crate::java_runtime::validate_java_priority;
+        if let Some(paths) = &update.ordered_paths {
+            validate_java_priority(paths).map_err(StoreError::Invalid)?;
+        }
+        if update.instance_id.is_some() != update.rule.is_some() {
+            return Err(StoreError::Invalid(
+                "instanceId and rule must be provided together".into(),
+            ));
+        }
+        if let Some(rule) = &update.rule {
+            rule.validate().map_err(StoreError::Invalid)?;
+        }
+        if let Some(settings) = settings {
+            crate::validate_settings(settings, None).map_err(StoreError::Invalid)?;
+        }
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let transaction = connection.unchecked_transaction()?;
+        if let (Some(instance_id), Some(rule)) = (&update.instance_id, &update.rule) {
+            let exists = transaction
+                .query_row(
+                    "SELECT 1 FROM instances WHERE id = ?1",
+                    [instance_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !exists {
+                return Err(StoreError::Invalid("Instance not found".into()));
+            }
+            // Auto also keeps a row: a later legacy migration must not resurrect an old forced rule.
+            transaction.execute(
+                "INSERT INTO instance_java_rules(instance_id, json) VALUES (?1, ?2)
+                 ON CONFLICT(instance_id) DO UPDATE SET json = excluded.json",
+                params![instance_id, serde_json::to_string(rule)?],
+            )?;
+        }
+        if let Some(paths) = &update.ordered_paths {
+            transaction.execute(
+                "INSERT INTO java_candidate_priority(id, json) VALUES (1, ?1)
+                 ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+                [serde_json::to_string(paths)?],
+            )?;
+        }
+        if let Some(settings) = settings {
+            transaction.execute(
+                "INSERT INTO app_settings(id, schema_version, json, updated_at) VALUES (1, ?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET schema_version = excluded.schema_version,
+                 json = excluded.json, updated_at = excluded.updated_at",
+                params![settings.schema_version, serde_json::to_string(settings)?, Utc::now().to_rfc3339()],
+            )?;
+        }
+        let result = read_java_preferences(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
+    /// Import only absent values, once per database, under the same write transaction as the marker.
+    pub fn migrate_legacy_java_preferences(
+        &self,
+        legacy: &crate::java_runtime::JavaPreferences,
+    ) -> Result<crate::java_runtime::JavaPreferences, StoreError> {
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let transaction = connection.unchecked_transaction()?;
+        let current = read_java_preferences(&transaction)?;
+        if current.legacy_migrated {
+            return Ok(current);
+        }
+        if legacy.instance_rules.len() > 10000 {
+            return Err(StoreError::Invalid("too many instance Java rules".into()));
+        }
+        let has_priority = transaction
+            .query_row(
+                "SELECT 1 FROM java_candidate_priority WHERE id = 1",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !has_priority {
+            crate::java_runtime::validate_java_priority(&legacy.ordered_paths)
+                .map_err(StoreError::Invalid)?;
+            transaction.execute(
+                "INSERT INTO java_candidate_priority(id, json) VALUES (1, ?1)",
+                [serde_json::to_string(&legacy.ordered_paths)?],
+            )?;
+        }
+        for (instance_id, rule) in &legacy.instance_rules {
+            if current.instance_rules.contains_key(instance_id) {
+                continue;
+            }
+            let exists = transaction
+                .query_row(
+                    "SELECT 1 FROM instances WHERE id = ?1",
+                    [instance_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !exists {
+                continue;
+            }
+            rule.validate().map_err(StoreError::Invalid)?;
+            transaction.execute(
+                "INSERT INTO instance_java_rules(instance_id, json) VALUES (?1, ?2)",
+                params![instance_id, serde_json::to_string(rule)?],
+            )?;
+        }
+        transaction.execute("INSERT INTO java_legacy_migration(id) VALUES (1)", [])?;
+        let result = read_java_preferences(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
+    pub fn resolve_java_selection(
+        &self,
+        instance_id: &str,
+        selection: Option<crate::java_runtime::JavaSelectionRequest>,
+        legacy_path: Option<String>,
+        global_path: Option<&Path>,
+    ) -> Result<crate::java_runtime::JavaSelectionRequest, StoreError> {
+        Ok(crate::java_runtime::resolve_java_selection(
+            &self.load_java_preferences()?,
+            instance_id,
+            selection,
+            legacy_path,
+            global_path,
+        ))
+    }
+
     pub fn load_settings(&self) -> Result<LauncherSettings, StoreError> {
         let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
         let json: Option<String> = connection
@@ -333,6 +489,7 @@ impl LauncherStore {
                 let mut settings: LauncherSettings = serde_json::from_str(&json)?;
                 let before = settings.schema_version;
                 migrate_settings(&mut settings);
+                crate::settings::normalize_settings(&mut settings);
                 /*
                  * 迁移后立即写回。
                  *
@@ -358,45 +515,36 @@ impl LauncherStore {
         }
     }
 
-    /// 创建实例。
-    ///
-    /// `data_root` 是启动器数据目录（`<app-data>`），实例的元数据与版本文件放在
-    /// `<data_root>/instances/<id>`；游戏目录则放到共享根目录 `game_root` 下。
-    ///
-    /// 为什么游戏目录不跟实例目录走：`game_root` 默认是 `~/.minecraft`，那里是
-    /// 玩家既有的安装位置。把每个实例的游戏目录指向它，存档、资源包和手动装的
-    /// 模组才能在启动器与官方启动器之间共用。`instances/<id>/versions` 仍然是
-    /// 实例私有的，所以两个实例用同一个游戏版本也不会互相覆盖。
-    ///
-    /// `isolated` 为真时游戏目录改回实例私有目录：需要完全隔离（例如用不同模组
-    /// 组合测试）的用户仍然拿得到旧行为。
+    /// Create a new instance without changing any existing directory mapping.
     pub fn create_instance(
         &self,
         input: &CreateInstanceInput,
         data_root: &Path,
     ) -> Result<InstanceRecord, StoreError> {
-        /*
-         * 默认走共享根目录。
-         *
-         * 让 `create_instance` 自己解析 `~/.minecraft`，而不是要求每个调用点传：
-         * 新建实例、整合包导入、备份还原三条路径都从这里走，漏传一处就会出现
-         * 「同一个启动器创建的两个实例，一个在 .minecraft 一个在私有目录」。
-         *
-         * 设置里显式指定过 `game_root` 时优先用它。
-         */
-        let configured = self
-            .load_settings()
-            .ok()
-            .and_then(|settings| settings.game_root);
-        let default_root = crate::launch::default_game_root();
-        let game_root = configured.or(default_root);
-        self.create_instance_in(input, data_root, game_root.as_deref())
+        let settings = self.load_settings()?;
+        let root = settings.game_root.as_deref().unwrap_or(data_root);
+        if settings.default_isolated {
+            self.create_instance_in(input, root, None)
+        } else {
+            self.create_instance_in(input, root, Some(root))
+        }
     }
 
-    /// 同上，但显式指定共享游戏根目录。
-    ///
-    /// 单独一个函数而不是给 `create_instance` 加参数：现有调用点（备份还原、
-    /// 整合包导入、测试）都只想沿用默认布局，不该被迫关心根目录从哪来。
+    /// Imports and restores always receive a private target regardless of the global default.
+    pub fn create_isolated_instance(
+        &self,
+        input: &CreateInstanceInput,
+        data_root: &Path,
+    ) -> Result<InstanceRecord, StoreError> {
+        let settings = self.load_settings()?;
+        self.create_instance_in(
+            input,
+            settings.game_root.as_deref().unwrap_or(data_root),
+            None,
+        )
+    }
+
+    /// Create an instance at an explicit storage root; a shared game root is opt-in.
     pub fn create_instance_in(
         &self,
         input: &CreateInstanceInput,
@@ -416,19 +564,16 @@ impl LauncherStore {
          * 所以第二个同名实例得到 `名字-1`，再冲突就是 `-2`，与用户要求一致。
          */
         let base_name = crate::model::directory_name_for(input.name.trim());
-        /*
-         * 已占用的目录：读一次性读全，不要每轮循环查库（那会在持锁期间开新查询）。
-         * 读失败按「没有记录」处理——宁可让目录名冲突被文件系统判断兜住，
-         * 也不要因为一次查询失败而拒绝创建实例。
-         */
-        let taken: Vec<String> = self
-            .list_instances()
-            .map(|list| {
-                list.into_iter()
-                    .map(|item| path_to_string(&item.instance_dir))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Reserve the readable directory and insert its row under one transaction;
+        // concurrent creates must not choose the same not-yet-created directory.
+        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let transaction = connection.unchecked_transaction()?;
+        let taken: Vec<String> = {
+            let mut statement = transaction.prepare("SELECT instance_dir FROM instances")?;
+            statement
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?
+        };
         let instance_dir = unique_directory(data_root.join("instances"), &base_name, &taken)?;
         /*
          * 共享根目录下的游戏目录。
@@ -456,8 +601,7 @@ impl LauncherStore {
             // 刚创建的实例还没启动过。
             last_launched_at: None,
         };
-        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
-        connection.execute(
+        transaction.execute(
             "INSERT INTO instances(id, name, game_version, loader, instance_dir, game_dir, isolated, state, created_at)
              VALUES (?1, ?2, ?3, 'vanilla', ?4, ?5, ?6, 'not_installed', ?7)",
             params![
@@ -470,6 +614,7 @@ impl LauncherStore {
                 now,
             ],
         )?;
+        transaction.commit()?;
         Ok(instance)
     }
 
@@ -890,6 +1035,49 @@ impl LauncherStore {
     }
 }
 
+fn read_java_preferences(
+    connection: &Connection,
+) -> Result<crate::java_runtime::JavaPreferences, StoreError> {
+    use crate::java_runtime::{JavaPreferences, JavaRule, validate_java_priority};
+    let priority: Option<String> = connection
+        .query_row(
+            "SELECT json FROM java_candidate_priority WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let ordered_paths: Vec<String> = match priority {
+        Some(json) => serde_json::from_str(&json)?,
+        None => Vec::new(),
+    };
+    validate_java_priority(&ordered_paths).map_err(StoreError::Invalid)?;
+    let mut statement = connection
+        .prepare("SELECT instance_id, json FROM instance_java_rules ORDER BY instance_id")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut instance_rules = std::collections::BTreeMap::new();
+    for row in rows {
+        let (id, json) = row?;
+        let rule: JavaRule = serde_json::from_str(&json)?;
+        rule.validate().map_err(StoreError::Invalid)?;
+        instance_rules.insert(id, rule);
+    }
+    let legacy_migrated = connection
+        .query_row(
+            "SELECT 1 FROM java_legacy_migration WHERE id = 1",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(JavaPreferences {
+        ordered_paths,
+        instance_rules,
+        legacy_migrated,
+    })
+}
+
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -911,7 +1099,12 @@ fn unique_directory(parent: PathBuf, base: &str, taken: &[String]) -> Result<Pat
             parent.join(format!("{base}-{index}"))
         };
         let candidate_text = path_to_string(&candidate);
-        if !candidate.exists() && !taken.iter().any(|used| used == &candidate_text) {
+        if !candidate.exists()
+            && !taken.iter().any(|used| {
+                used == &candidate_text
+                    || (cfg!(windows) && used.to_lowercase() == candidate_text.to_lowercase())
+            })
+        {
             return Ok(candidate);
         }
     }
@@ -923,6 +1116,97 @@ fn unique_directory(parent: PathBuf, base: &str, taken: &[String]) -> Result<Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn java_settings_transaction_rolls_back_rules_priority_and_settings_on_database_failure() {
+        use crate::java_runtime::{JavaPreferencesUpdate, JavaRule, JavaSelectionMode};
+        let store = LauncherStore::open(":memory:").unwrap();
+        let root = std::env::temp_dir().join(format!("java-transaction-{}", Uuid::new_v4()));
+        let instance = store
+            .create_instance(
+                &CreateInstanceInput {
+                    name: "Atomic Java".into(),
+                    game_version: "1.21.4".into(),
+                },
+                &root,
+            )
+            .unwrap();
+        let before = LauncherSettings::default();
+        store.save_settings(&before).unwrap();
+        store.connection.lock().unwrap().execute_batch(
+            "CREATE TRIGGER reject_java_settings BEFORE UPDATE ON app_settings BEGIN SELECT RAISE(ABORT, 'fixture disk failure'); END;",
+        ).unwrap();
+        let update = JavaPreferencesUpdate {
+            instance_id: Some(instance.id),
+            rule: Some(JavaRule {
+                mode: JavaSelectionMode::Range,
+                range: "21".into(),
+                ..Default::default()
+            }),
+            ordered_paths: Some(vec![root.join("java").display().to_string()]),
+        };
+        assert!(
+            store
+                .save_java_preferences(
+                    &update,
+                    Some(&LauncherSettings {
+                        memory_mb: 4096,
+                        ..before.clone()
+                    })
+                )
+                .is_err()
+        );
+        let loaded = store.load_java_preferences().unwrap();
+        assert!(loaded.ordered_paths.is_empty());
+        assert!(loaded.instance_rules.is_empty());
+        assert_eq!(store.load_settings().unwrap().memory_mb, before.memory_mb);
+    }
+
+    #[test]
+    fn malformed_java_storage_is_an_error_not_permission_to_launch_automatically() {
+        let store = LauncherStore::open(":memory:").unwrap();
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO java_candidate_priority(id, json) VALUES (1, ?1)",
+                [r#"["relative/java"]"#],
+            )
+            .unwrap();
+        assert!(store.load_java_preferences().is_err());
+        assert!(
+            store
+                .resolve_java_selection("fixture", None, None, None)
+                .is_err()
+        );
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM java_candidate_priority", [])
+            .unwrap();
+        let root = std::env::temp_dir().join(format!("java-corrupt-{}", Uuid::new_v4()));
+        let instance = store
+            .create_instance(
+                &CreateInstanceInput {
+                    name: "Corrupt Java".into(),
+                    game_version: "1.21.4".into(),
+                },
+                &root,
+            )
+            .unwrap();
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO instance_java_rules(instance_id, json) VALUES (?1, ?2)",
+                params![instance.id, r#"{"mode":"range","range":"not-a-range"}"#],
+            )
+            .unwrap();
+        assert!(store.load_java_preferences().is_err());
+    }
 
     #[test]
     fn download_tasks_persist_and_interrupted_work_is_marked_truthfully() {
@@ -1248,12 +1532,62 @@ mod tests {
         assert_eq!(store.list_instances().unwrap().len(), 1);
     }
 
-    /// 默认创建走共享根目录，游戏目录落在 `<root>/shared` 下。
-    ///
-    /// 这是「默认安装到 ~/.minecraft」的核心约定：测试里显式传根目录，
-    /// 避免依赖运行测试的机器有没有主目录。
     #[test]
-    fn instances_share_the_game_root_by_default() {
+    fn default_creation_is_private_and_does_not_migrate_shared_instances() {
+        let root = std::env::temp_dir().join(format!("mfmcl-private-{}", Uuid::new_v4()));
+        let shared = root.join("minecraft");
+        let database = root.join("launcher.sqlite");
+        let store = LauncherStore::open(&database).unwrap();
+        let input = CreateInstanceInput {
+            name: "Legacy".into(),
+            game_version: "1.21.4".into(),
+        };
+        let legacy = store
+            .create_instance_in(&input, &root, Some(&shared))
+            .unwrap();
+        std::fs::create_dir_all(&legacy.game_dir).unwrap();
+        std::fs::write(legacy.game_dir.join("keep.txt"), b"legacy data").unwrap();
+        let settings = LauncherSettings {
+            game_root: Some(shared.clone()),
+            ..LauncherSettings::default()
+        };
+        store.save_settings(&settings).unwrap();
+        let first = store.create_instance(&input, &root).unwrap();
+        let second = store.create_instance(&input, &root).unwrap();
+        assert!(first.isolated && second.isolated);
+        assert_eq!(first.game_dir, first.instance_dir.join("game"));
+        assert_ne!(first.game_dir, second.game_dir);
+        assert!(first.instance_dir.starts_with(shared.join("instances")));
+        assert!(!first.game_dir.exists());
+        let mut shared_settings = store.load_settings().unwrap();
+        shared_settings.default_isolated = false;
+        store.save_settings(&shared_settings).unwrap();
+        let explicit = store.create_instance(&input, &root).unwrap();
+        assert_eq!(explicit.game_dir, shared.join("shared"));
+        assert!(!explicit.isolated);
+        let restored = store.create_isolated_instance(&input, &root).unwrap();
+        assert!(restored.isolated);
+        assert_eq!(restored.game_dir, restored.instance_dir.join("game"));
+        drop(store);
+        let reopened = LauncherStore::open(&database).unwrap();
+        let old = reopened
+            .list_instances()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == legacy.id)
+            .unwrap();
+        assert!(!old.isolated);
+        assert_eq!(old.game_dir, legacy.game_dir);
+        assert_eq!(
+            std::fs::read(old.game_dir.join("keep.txt")).unwrap(),
+            b"legacy data"
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_shared_root_remains_supported() {
         let store = LauncherStore::open(":memory:").unwrap();
         let instance = store
             .create_instance_in(
@@ -1286,6 +1620,38 @@ mod tests {
     ///
     /// 共用目录意味着两个实例会互相覆盖 `versions/`、`mods/` 与存档——
     /// 这是最难排查的一类数据损坏。
+    #[test]
+    fn concurrent_default_creates_never_share_a_directory() {
+        let store = LauncherStore::open(":memory:").unwrap();
+        let root = std::env::temp_dir().join(format!("mfmcl-concurrent-{}", Uuid::new_v4()));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                let root = root.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .create_instance(
+                            &CreateInstanceInput {
+                                name: "Same".into(),
+                                game_version: "1.21.4".into(),
+                            },
+                            &root,
+                        )
+                        .unwrap()
+                        .game_dir
+                })
+            })
+            .collect();
+        let paths: std::collections::BTreeSet<_> = handles
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 8);
+    }
+
     #[test]
     fn duplicate_names_get_numbered_directories() {
         let root = std::env::temp_dir().join(format!("mfmcl-dup-{}", Uuid::new_v4()));
