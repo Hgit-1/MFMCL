@@ -29,14 +29,16 @@ impl Drop for Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("MFMCL JVM 测试 {}", uuid::Uuid::new_v4()));
+        // Windows JDK tools can narrow command-line paths through the system code page.
+        // Keep build artifacts ASCII while exercising Unicode in the JVM working directory.
+        let root = std::env::temp_dir().join(format!("MFMCL JVM fixture {}", uuid::Uuid::new_v4()));
         let instance = InstanceRecord {
             id: "test".into(),
             name: "JVM fixture".into(),
             game_version: "1.21.4".into(),
             loader: "vanilla".into(),
             instance_dir: root.join("instance"),
-            game_dir: root.join("instance/game"),
+            game_dir: root.join("instance/game 测试"),
             isolated: true,
             state: InstanceState::Ready,
             created_at: String::new(),
