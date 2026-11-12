@@ -108,6 +108,160 @@ pub fn safe_version(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+const LOADER_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
+const LOADER_CACHE_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+const LOADER_CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedVersions {
+    fetched_at: u64,
+    versions: Vec<LoaderVersion>,
+}
+
+fn cache_path(
+    kind: LoaderKind,
+    game: &str,
+    settings: &crate::DownloadSettings,
+    cache_root: Option<&Path>,
+) -> Option<PathBuf> {
+    safe_version(game).ok()?;
+    let source = match settings.source {
+        mc_metadata::SourcePreference::Official => "official",
+        mc_metadata::SourcePreference::Bmclapi => "bmclapi",
+        mc_metadata::SourcePreference::Mixed => "mixed",
+    };
+    Some(
+        cache_root?
+            .join("loader-versions")
+            .join(format!("{}-{game}-{source}.json", kind.name())),
+    )
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+async fn read_cache(path: &Path) -> Option<(Vec<LoaderVersion>, bool)> {
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::File::open(path).await.ok()?;
+    if file.metadata().await.ok()?.len() > LOADER_CACHE_MAX_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(LOADER_CACHE_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    if bytes.len() as u64 > LOADER_CACHE_MAX_BYTES {
+        return None;
+    }
+    let cached: CachedVersions = serde_json::from_slice(&bytes).ok()?;
+    if cached.versions.is_empty()
+        || cached
+            .versions
+            .iter()
+            .any(|entry| safe_version(&entry.version).is_err())
+    {
+        return None;
+    }
+    let age = now_secs().checked_sub(cached.fetched_at)?;
+    if age > LOADER_CACHE_MAX_AGE_SECS {
+        return None;
+    }
+    Some((cached.versions, age <= LOADER_CACHE_TTL_SECS))
+}
+
+async fn write_cache(path: &Path, versions: &[LoaderVersion]) {
+    use tokio::io::AsyncWriteExt;
+
+    if versions.is_empty()
+        || versions
+            .iter()
+            .any(|entry| safe_version(&entry.version).is_err())
+    {
+        return;
+    }
+    let payload = CachedVersions {
+        fetched_at: now_secs(),
+        versions: versions.to_vec(),
+    };
+    let Ok(bytes) = serde_json::to_vec(&payload) else {
+        return;
+    };
+    if bytes.len() as u64 > LOADER_CACHE_MAX_BYTES {
+        return;
+    }
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if tokio::fs::create_dir_all(parent).await.is_err() {
+        return;
+    }
+    // Readers must see a complete old or new document, never a partially written list.
+    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
+    let Ok(mut file) = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .await
+    else {
+        return;
+    };
+    let written = async {
+        file.write_all(&bytes).await?;
+        file.flush().await
+    }
+    .await;
+    drop(file);
+    if written.is_err() || tokio::fs::rename(&temporary, path).await.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+}
+
+/// Fresh entries avoid the network; entries up to one day old return immediately
+/// while a background request refreshes them. Cache failures never hide network results.
+pub async fn list_loader_versions_cached(
+    kind: LoaderKind,
+    game: &str,
+    settings: &crate::DownloadSettings,
+    cache_root: Option<&Path>,
+) -> Result<Vec<LoaderVersion>, String> {
+    safe_version(game)?;
+    let path = cache_path(kind, game, settings, cache_root);
+    let game = game.to_owned();
+    // Keep the existing metadata fetch policy; source preferences partition cached results.
+    cached_loader_versions(path, async move { list_loader_versions(kind, &game).await }).await
+}
+
+async fn cached_loader_versions(
+    path: Option<PathBuf>,
+    fetch: impl std::future::Future<Output = Result<Vec<LoaderVersion>, String>> + Send + 'static,
+) -> Result<Vec<LoaderVersion>, String> {
+    let cached = match path.as_deref() {
+        Some(path) => read_cache(path).await,
+        None => None,
+    };
+    if let Some((versions, fresh)) = cached {
+        if !fresh {
+            tokio::spawn(async move {
+                if let (Some(path), Ok(versions)) = (path, fetch.await) {
+                    write_cache(&path, &versions).await;
+                }
+            });
+        }
+        return Ok(versions);
+    }
+    let versions = fetch.await?;
+    if let Some(path) = path {
+        write_cache(&path, &versions).await;
+    }
+    Ok(versions)
+}
+
 pub async fn list_loader_versions(
     kind: LoaderKind,
     game: &str,
@@ -175,13 +329,32 @@ async fn list_installer_versions(
 /// 这正是 PCL2 等启动器提供完整列表的原因。
 ///
 /// 所以：**maven-metadata.xml 给全量**，`promotions_slim.json` **只用来标记哪一个
-/// 是稳定版**。两个来源都失败才报错；只缺 promotions 时列表仍然可用，只是没有
-/// 稳定版标记。
+/// 是稳定版**。全量列表必须可用；只缺 promotions 时仍返回列表，但没有稳定版标记。
 async fn forge_versions(game: &str) -> Result<Vec<LoaderVersion>, String> {
+    collect_forge_versions(forge_maven_versions(game), forge_promoted(game)).await
+}
+
+async fn collect_forge_versions(
+    maven: impl std::future::Future<Output = Result<Vec<String>, String>>,
+    promotions: impl std::future::Future<Output = Result<std::collections::BTreeSet<String>, String>>,
+) -> Result<Vec<LoaderVersion>, String> {
+    let (versions, promoted) = tokio::join!(maven, promotions);
+    let mut versions = versions?;
+    let promoted = promoted.unwrap_or_default();
+    versions.sort_by(|a, b| compare_versions(b, a));
+    versions.dedup();
+    Ok(versions
+        .into_iter()
+        .map(|version| LoaderVersion {
+            stable: promoted.contains(&version),
+            version,
+        })
+        .collect())
+}
+
+async fn forge_maven_versions(game: &str) -> Result<Vec<String>, String> {
     let prefix = format!("{game}-");
     let client = metadata_client()?;
-
-    // 1) 全量版本：maven 元数据里的 `<mc>-<forge>` 条目。
     let response = client
         .get("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml")
         .send()
@@ -207,19 +380,7 @@ async fn forge_versions(game: &str) -> Result<Vec<LoaderVersion>, String> {
     if versions.is_empty() {
         return Err(format!("Minecraft {game} 没有可用的 Forge 版本。"));
     }
-    versions.sort_by(|a, b| compare_versions(b, a));
-    versions.dedup();
-
-    // 2) 稳定版标记。失败不影响主流程：列表本身已经可用。
-    let promoted = forge_promoted(game).await.unwrap_or_default();
-
-    Ok(versions
-        .into_iter()
-        .map(|version| {
-            let stable = promoted.contains(&version);
-            LoaderVersion { version, stable }
-        })
-        .collect())
+    Ok(versions)
 }
 
 /// 该 MC 版本被官方标为 latest / recommended 的 Forge 构建。
@@ -946,6 +1107,353 @@ fn merge_loader_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod discovery {
+        use super::*;
+
+        struct CacheFixture(PathBuf);
+
+        impl CacheFixture {
+            fn new() -> Self {
+                let root = std::env::temp_dir()
+                    .join(format!("mfmcl-loader-cache-{}", uuid::Uuid::new_v4()));
+                std::fs::create_dir_all(&root).unwrap();
+                Self(root)
+            }
+
+            fn path(&self) -> PathBuf {
+                cache_path(
+                    LoaderKind::NeoForge,
+                    "1.21.1",
+                    &crate::DownloadSettings::default(),
+                    Some(&self.0),
+                )
+                .unwrap()
+            }
+
+            async fn seed(&self, fetched_at: u64, versions: Vec<LoaderVersion>) {
+                let path = self.path();
+                tokio::fs::create_dir_all(path.parent().unwrap())
+                    .await
+                    .unwrap();
+                tokio::fs::write(
+                    path,
+                    serde_json::to_vec(&CachedVersions {
+                        fetched_at,
+                        versions,
+                    })
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            }
+        }
+
+        impl Drop for CacheFixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        fn versions(version: &str) -> Vec<LoaderVersion> {
+            vec![LoaderVersion {
+                version: version.into(),
+                stable: true,
+            }]
+        }
+
+        #[tokio::test]
+        async fn fresh_cache_returns_through_public_api_without_network() {
+            let cache = CacheFixture::new();
+            write_cache(&cache.path(), &versions("21.1.251")).await;
+            let settings = crate::DownloadSettings::default();
+            let result = tokio::time::timeout(
+                Duration::from_secs(3),
+                list_loader_versions_cached(
+                    LoaderKind::NeoForge,
+                    "1.21.1",
+                    &settings,
+                    Some(&cache.0),
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(result[0].version, "21.1.251");
+            assert!(result[0].stable);
+            let result = cached_loader_versions(Some(cache.path()), async {
+                panic!("fresh cache must not poll the network future");
+            })
+            .await
+            .unwrap();
+            assert_eq!(result[0].version, "21.1.251");
+        }
+
+        #[tokio::test]
+        async fn cache_keys_separate_sources_games_and_loaders() {
+            let cache = CacheFixture::new();
+            write_cache(&cache.path(), &versions("21.1.251")).await;
+            let settings = crate::DownloadSettings {
+                source: mc_metadata::SourcePreference::Official,
+                ..Default::default()
+            };
+            for path in [
+                cache_path(LoaderKind::NeoForge, "1.21.1", &settings, Some(&cache.0)),
+                cache_path(
+                    LoaderKind::Forge,
+                    "1.21.1",
+                    &crate::DownloadSettings::default(),
+                    Some(&cache.0),
+                ),
+                cache_path(
+                    LoaderKind::NeoForge,
+                    "1.21.2",
+                    &crate::DownloadSettings::default(),
+                    Some(&cache.0),
+                ),
+            ] {
+                assert!(read_cache(&path.unwrap()).await.is_none());
+            }
+        }
+
+        #[tokio::test]
+        async fn invalid_game_is_rejected_before_cache_access_or_fetch() {
+            let cache = CacheFixture::new();
+            for game in ["", "../1.21.1", "1.21.1/../../outside", "C:\\outside"] {
+                let settings = crate::DownloadSettings::default();
+                assert!(cache_path(LoaderKind::Fabric, game, &settings, Some(&cache.0)).is_none());
+                assert!(
+                    list_loader_versions_cached(
+                        LoaderKind::Fabric,
+                        game,
+                        &settings,
+                        Some(&cache.0)
+                    )
+                    .await
+                    .is_err()
+                );
+            }
+            assert!(!cache.0.join("loader-versions").exists());
+        }
+
+        #[tokio::test]
+        async fn corrupt_oversized_expired_future_or_invalid_entries_are_cache_misses() {
+            let cache = CacheFixture::new();
+            for (fetched_at, entries) in [
+                (
+                    now_secs() - LOADER_CACHE_MAX_AGE_SECS - 60,
+                    versions("21.1.1"),
+                ),
+                (now_secs() + 3600, versions("21.1.1")),
+                (now_secs(), Vec::new()),
+                (now_secs(), versions("../../outside")),
+            ] {
+                cache.seed(fetched_at, entries).await;
+                assert!(read_cache(&cache.path()).await.is_none());
+            }
+            for bytes in [
+                b"{ broken json".to_vec(),
+                vec![b' '; LOADER_CACHE_MAX_BYTES as usize + 1],
+            ] {
+                tokio::fs::write(cache.path(), bytes).await.unwrap();
+                assert!(read_cache(&cache.path()).await.is_none());
+            }
+        }
+
+        #[tokio::test]
+        async fn stale_cache_returns_before_refresh_finishes_then_is_replaced() {
+            let cache = CacheFixture::new();
+            cache
+                .seed(
+                    now_secs() - LOADER_CACHE_TTL_SECS - 60,
+                    versions("21.1.250"),
+                )
+                .await;
+            assert!(!read_cache(&cache.path()).await.unwrap().1);
+            let (release, wait) = tokio::sync::oneshot::channel();
+            let result = tokio::time::timeout(
+                Duration::from_secs(3),
+                cached_loader_versions(Some(cache.path()), async move {
+                    wait.await.unwrap();
+                    Ok(versions("21.1.251"))
+                }),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(result[0].version, "21.1.250");
+            release.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let (entries, fresh) = read_cache(&cache.path()).await.unwrap();
+                    if fresh && entries[0].version == "21.1.251" {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn failed_background_refresh_keeps_the_stale_document() {
+            let cache = CacheFixture::new();
+            cache
+                .seed(
+                    now_secs() - LOADER_CACHE_TTL_SECS - 60,
+                    versions("21.1.250"),
+                )
+                .await;
+            let before = tokio::fs::read(cache.path()).await.unwrap();
+            let (done, finished) = tokio::sync::oneshot::channel();
+            let result = cached_loader_versions(Some(cache.path()), async move {
+                done.send(()).unwrap();
+                Err("offline".into())
+            })
+            .await
+            .unwrap();
+            assert_eq!(result[0].version, "21.1.250");
+            finished.await.unwrap();
+            assert_eq!(tokio::fs::read(cache.path()).await.unwrap(), before);
+        }
+
+        #[tokio::test]
+        async fn cold_miss_fetches_and_persists_the_list() {
+            let cache = CacheFixture::new();
+            let result =
+                cached_loader_versions(Some(cache.path()), async { Ok(versions("21.1.251")) })
+                    .await
+                    .unwrap();
+            assert_eq!(result[0].version, "21.1.251");
+            let (entries, fresh) = read_cache(&cache.path()).await.unwrap();
+            assert_eq!(entries[0].version, "21.1.251");
+            assert!(fresh);
+        }
+
+        #[tokio::test]
+        async fn absent_cache_root_preserves_network_success_and_failure() {
+            assert!(
+                cache_path(
+                    LoaderKind::NeoForge,
+                    "1.21.1",
+                    &crate::DownloadSettings::default(),
+                    None
+                )
+                .is_none()
+            );
+            assert_eq!(
+                cached_loader_versions(None, async { Ok(versions("21.1.251")) })
+                    .await
+                    .unwrap()[0]
+                    .version,
+                "21.1.251"
+            );
+            assert_eq!(
+                cached_loader_versions(None, async { Err("offline".into()) })
+                    .await
+                    .unwrap_err(),
+                "offline"
+            );
+        }
+
+        #[tokio::test]
+        async fn cache_write_failure_does_not_hide_a_network_result() {
+            let cache = CacheFixture::new();
+            let blocked = cache.0.join("blocked");
+            tokio::fs::write(&blocked, b"not a directory")
+                .await
+                .unwrap();
+            let result = cached_loader_versions(Some(blocked.join("entry.json")), async {
+                Ok(versions("21.1.251"))
+            })
+            .await
+            .unwrap();
+            assert_eq!(result[0].version, "21.1.251");
+        }
+
+        #[tokio::test]
+        async fn replacement_and_concurrent_writes_leave_complete_json_without_temp_files() {
+            let cache = CacheFixture::new();
+            let path = cache.path();
+            write_cache(&path, &versions("21.1.250")).await;
+            write_cache(&path, &versions("21.1.251")).await;
+            assert_eq!(read_cache(&path).await.unwrap().0[0].version, "21.1.251");
+            let a = versions("21.1.252");
+            let b = versions("21.1.253");
+            tokio::join!(write_cache(&path, &a), write_cache(&path, &b));
+            let entries = read_cache(&path).await.unwrap().0;
+            assert!(["21.1.252", "21.1.253"].contains(&entries[0].version.as_str()));
+            assert_eq!(
+                std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+                1
+            );
+        }
+
+        #[tokio::test]
+        async fn empty_or_unsafe_results_do_not_replace_valid_cache() {
+            let cache = CacheFixture::new();
+            write_cache(&cache.path(), &versions("21.1.251")).await;
+            write_cache(&cache.path(), &[]).await;
+            write_cache(&cache.path(), &versions("../unsafe")).await;
+            assert_eq!(
+                read_cache(&cache.path()).await.unwrap().0[0].version,
+                "21.1.251"
+            );
+        }
+
+        #[tokio::test]
+        async fn forge_requests_run_concurrently_and_keep_sorting_deduplication_and_stability() {
+            let (maven_started, maven_ready) = tokio::sync::oneshot::channel();
+            let (promotions_started, promotions_ready) = tokio::sync::oneshot::channel();
+            let maven = async move {
+                maven_started.send(()).unwrap();
+                promotions_ready.await.unwrap();
+                Ok(vec![
+                    "1.20.1-47.4.9".into(),
+                    "1.20.1-47.4.10".into(),
+                    "1.20.1-47.4.9".into(),
+                ])
+            };
+            let promotions = async move {
+                promotions_started.send(()).unwrap();
+                maven_ready.await.unwrap();
+                Ok(std::collections::BTreeSet::from(["1.20.1-47.4.10".into()]))
+            };
+            let result = tokio::time::timeout(
+                Duration::from_secs(3),
+                collect_forge_versions(maven, promotions),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(result.len(), 2);
+            assert_eq!(result[0].version, "1.20.1-47.4.10");
+            assert!(result[0].stable);
+            assert!(!result[1].stable);
+        }
+
+        #[tokio::test]
+        async fn forge_promotions_are_optional_but_maven_failure_is_not_hidden() {
+            let result =
+                collect_forge_versions(async { Ok(vec!["1.20.1-47.4.10".into()]) }, async {
+                    Err("offline".into())
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.len(), 1);
+            assert!(!result[0].stable);
+            assert_eq!(
+                collect_forge_versions(async { Err("maven offline".into()) }, async {
+                    Ok(Default::default())
+                })
+                .await
+                .unwrap_err(),
+                "maven offline"
+            );
+        }
+    }
+
     #[test]
     fn publishing_is_atomic_and_rolls_back_store_failure() {
         let directory = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());

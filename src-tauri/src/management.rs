@@ -96,8 +96,18 @@ pub(crate) fn engine(store: &LauncherStore) -> Result<DownloadEngine, String> {
 pub async fn loader_versions(
     kind: LoaderKind,
     game_version: String,
+    app: AppHandle,
+    store: State<'_, LauncherStore>,
 ) -> Result<Vec<LoaderVersion>, String> {
-    loaders::list_loader_versions(kind, &game_version).await
+    let settings = store.load_settings().map_err(|error| error.to_string())?;
+    let cache_root = app.path().app_data_dir().ok();
+    loaders::list_loader_versions_cached(
+        kind,
+        &game_version,
+        &settings.download,
+        cache_root.as_deref(),
+    )
+    .await
 }
 #[tauri::command]
 pub async fn install_loader(

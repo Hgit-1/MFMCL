@@ -52,7 +52,7 @@ pub async fn run(session: &Session<'_>, args: &ListArgs) -> Outcome {
             loader,
             game,
             limit,
-        } => loaders(&palette, json, loader, game, *limit).await,
+        } => loaders(session, &palette, json, loader, game, *limit).await,
     }
 }
 
@@ -402,16 +402,29 @@ async fn versions(
     Ok(())
 }
 
-async fn loaders(palette: &Palette, json: bool, loader: &str, game: &str, limit: usize) -> Outcome {
+async fn loaders(
+    session: &Session<'_>,
+    palette: &Palette,
+    json: bool,
+    loader: &str,
+    game: &str,
+    limit: usize,
+) -> Outcome {
     let kind = launcher_core::loaders::LoaderKind::from_name(&loader.to_ascii_lowercase())
         .ok_or_else(|| {
             Failure::message(format!(
                 "未识别的加载器 {loader}；可用：fabric、quilt、forge、neoforge。"
             ))
         })?;
-    let versions = launcher_core::loaders::list_loader_versions(kind, game)
-        .await
-        .map_err(Failure::from)?;
+    let download = session.store.load_settings()?.download;
+    let versions = launcher_core::loaders::list_loader_versions_cached(
+        kind,
+        game,
+        &download,
+        Some(session.context.data_root()),
+    )
+    .await
+    .map_err(Failure::from)?;
     if json {
         println!(
             "{}",
