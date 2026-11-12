@@ -38,14 +38,27 @@ If a mobile client becomes viable before local game execution, prioritize safe i
 
 ## Aria with You: seasonal artwork plugin
 
-**Shipped.** This section previously described the plugin as planned. It is now installed
-by default and listed in `BUNDLED_PLUGINS`, so the gates below are historical. What
-changed: the three hooks it needed (`theme`, `background`, `sidebar`) are now triggered by
-`App.tsx`, and its artwork is generated, audited and packed by `design/tools/aria/`
-(`gen.py`, `audit.py`, `seg.py`, `pack.py`).
+**Independent installation only.** Aria with You is not preinstalled and its plugin
+body or artwork is not distributed in the launcher repository or releases. The launcher
+retains host compatibility for seasonal accents and artwork placements; that code alone
+neither installs the plugin nor makes artwork available. Only `launch-logger` and
+`download-mirror` are built in; `BUNDLED_PLUGINS` remains empty.
 
-The original reasoning is kept below because it is the template for the next plugin that
-needs a capability the launcher does not have.
+Users install an independent `.mflp` package into the application data directory's
+`plugins/aria-with-you/`. Artwork lives under that package's `assets/` and is read through
+Tauri's scoped asset protocol. `installedAriaArtwork` identifies the installed package;
+`activeAriaArtwork` additionally checks whether it is enabled. `seasonArt` and `pageArt`
+resolve only those local assets, with no automatic public-directory or CDN loading.
+
+Authoring helpers remain in `design/tools/aria/` (`gen.py`, `audit.py`, `seg.py`, `pack.py`).
+Generation, audit and segmentation require `MFMCL_ARIA_OUT_DIR` to identify an external
+assets directory. Reports and preview images stay in its excluded `.tool-output/` directory.
+Packaging requires explicit external `--source` (artwork directory) and `--out` paths;
+all four tools reject launcher-repository paths after resolving links. Do not clone the
+independent plugin workspace inside the launcher repository.
+
+The original capability requirements below explain the host integration, not a promise
+to include third-party plugins in launcher builds.
 
 ### Why it could not ship as a normal plugin at the time
 
