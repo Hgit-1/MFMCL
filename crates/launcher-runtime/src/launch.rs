@@ -168,6 +168,7 @@ pub async fn launch_with_java_selection(
     };
     report("preparing", 0.05);
 
+    let instance_operation = store.lock_instance_operation(&instance_id)?;
     let instance = crate::install::find_instance(store, &instance_id)?;
     if instance.state != InstanceState::Ready {
         return Err(RuntimeError::message("此实例尚未安装完成。"));
@@ -304,6 +305,10 @@ pub async fn launch_with_java_selection(
     .map_err(|error| RuntimeError::message(error.to_string()))?;
     report("building", 0.75);
 
+    let game_directory_lock = Arc::new(
+        launcher_core::operation_lock::GameDirectoryLock::acquire(&prepared.working_directory)
+            .map_err(RuntimeError::message)?,
+    );
     let secrets = Arc::new(secrets);
     if let Some(parent) = prepared.log_path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -323,7 +328,7 @@ pub async fn launch_with_java_selection(
      * because that call reorders arguments and inserts `-Xmx`; the insertion
      * point for plugin JVM flags must agree with the final ordering.
      */
-    let plugin_state = store.load_plugin_state().unwrap_or_default();
+    let plugin_state = launcher_core::plugin_approval::approved_state(store, context.data_root());
     let plugin_definitions = crate::plugins::catalog(&plugin_state);
     let plan = launcher_core::build_plan(&plugin_definitions, &plugin_state, &instance, &settings);
     if !plan.jvm_args.is_empty() {
@@ -343,8 +348,9 @@ pub async fn launch_with_java_selection(
     for (plugin_id, directory) in &plan.backups {
         let target = instance.clone();
         let dest = directory.clone();
+        let lock = game_directory_lock.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            launcher_core::backups::create_backup(&target, &dest)
+            launcher_core::backups::create_backup_with_game_lock(&target, &dest, &lock)
         })
         .await;
         match outcome {
@@ -401,6 +407,14 @@ pub async fn launch_with_java_selection(
             return Err(RuntimeError::message(format!("无法启动 Java：{error}")));
         }
     };
+
+    if let Some(pid) = child.id()
+        && let Err(error) = game_directory_lock.record_game_process(pid)
+    {
+        let _ = child.kill().await;
+        registry.clear(&instance_id);
+        return Err(RuntimeError::message(error));
+    }
 
     /*
      * Record the launch only now that the JVM exists. A launch that failed to
@@ -478,6 +492,8 @@ pub async fn launch_with_java_selection(
     let log_path_for_event = log_path.clone();
 
     tokio::spawn(async move {
+        let _operation = instance_operation;
+        let _game_directory_lock = game_directory_lock;
         let mut stopped_by_user = false;
         let status = tokio::select! {
             status = child.wait() => status.ok(),

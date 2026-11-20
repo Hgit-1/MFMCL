@@ -221,6 +221,9 @@ pub async fn dispatch(cli: &Cli, sink: &TerminalSink) -> Outcome {
         .prepare()
         .map_err(|error| Failure::message(error.to_string()))?;
     let store = LauncherStore::open(data_root.join("mfmcl.sqlite"))?;
+    if matches!(&cli.command, Command::Download(_) | Command::Remove(_)) {
+        store.recover_interrupted_work()?;
+    }
     let session = Session {
         cli,
         sink,

@@ -52,6 +52,29 @@ pub async fn run(session: &Session<'_>, args: &DownloadArgs) -> Outcome {
             .find(|instance| instance.name.eq_ignore_ascii_case(&requested_name)),
     };
 
+    let resolved_loader = match kind {
+        Some(kind) => {
+            if let Some(instance) = &existing
+                && instance.loader != "vanilla"
+                && !instance
+                    .loader
+                    .split_once('@')
+                    .is_some_and(|(name, _)| name == kind.name())
+            {
+                return Err(Failure::message(format!(
+                    "实例已安装 {}，不能请求 {}。",
+                    instance.loader,
+                    kind.name()
+                )));
+            }
+            Some((
+                kind,
+                resolve_loader_version(&session.store, kind, &args.game, &version).await?,
+            ))
+        }
+        None => None,
+    };
+    let is_existing = existing.is_some();
     let instance = match existing {
         Some(instance) => {
             /*
@@ -74,11 +97,9 @@ pub async fn run(session: &Session<'_>, args: &DownloadArgs) -> Outcome {
             instance
         }
         None => {
-            let loader_marker = kind.map(|kind| {
-                // Resolve `latest` before creating anything: a bad version should
-                // not leave a half-made instance behind.
-                format!("{}@{version}", kind.name())
-            });
+            let loader_marker = resolved_loader
+                .as_ref()
+                .map(|(kind, version)| format!("{}@{version}", kind.name()));
             let record = launcher_runtime::install::create_instance(
                 &session.context,
                 &session.store,
@@ -94,38 +115,25 @@ pub async fn run(session: &Session<'_>, args: &DownloadArgs) -> Outcome {
         }
     };
 
+    let instance_operation = session.store.lock_instance_operation(&instance.id)?;
+    let instance = launcher_runtime::install::find_instance(&session.store, &instance.id)?;
+    if let Some((kind, version)) = &resolved_loader
+        && is_existing
+    {
+        // Validate compatibility before writing a request or changing the instance's state.
+        launcher_runtime::install_support::request_pack_loader(
+            &instance,
+            &format!("{}@{version}", kind.name()),
+        )
+        .map_err(Failure::from)?;
+    }
     if args.no_install {
         print_summary(session, &instance, &palette)?;
-        session.sink.note(
-            "按 --no-install 只创建了记录；稍后用 `mfmcl download --instance <名称>` 下载文件。",
-        );
+        session
+            .sink
+            .note("按 --no-install 只保存了记录；稍后可继续下载文件。");
         return Ok(());
     }
-
-    /*
-     * Resolve the loader version now, after the record exists. Doing it here means
-     * a network failure leaves a created-but-uninstalled instance that can be
-     * retried, rather than nothing at all.
-     */
-    let resolved_loader = match kind {
-        Some(kind) => {
-            let resolved =
-                resolve_loader_version(&session.store, kind, &args.game, &version).await?;
-            /*
-             * A newly created instance carries a marker file that the installer
-             * consumes. An existing instance has no marker, so the loader has to be
-             * requested explicitly by writing one — which is exactly what the
-             * runtime helper does.
-             */
-            launcher_runtime::install_support::request_pack_loader(
-                &instance,
-                &format!("{}@{resolved}", kind.name()),
-            )
-            .map_err(Failure::from)?;
-            Some((kind, resolved))
-        }
-        None => None,
-    };
 
     if let Some((kind, version)) = &resolved_loader {
         session
@@ -158,6 +166,7 @@ pub async fn run(session: &Session<'_>, args: &DownloadArgs) -> Outcome {
         install_mods(session, &installed, &args.mods, &palette).await?;
     }
 
+    drop(instance_operation);
     if args.launch {
         session.sink.note("");
         crate::commands::launch::run(

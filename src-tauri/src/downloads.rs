@@ -10,6 +10,7 @@ use std::{
 use tauri::{AppHandle, Emitter, State};
 
 struct ActiveJob {
+    _activity: launcher_core::operation_lock::OperationLock,
     control: DownloadControl,
     task: DownloadTask,
     last_saved: Instant,
@@ -165,12 +166,16 @@ impl Downloads {
             }
             return Err("正在取消旧任务，请稍候重试。".into());
         }
+        let activity = store
+            .lock_install_activity()
+            .map_err(|error| error.to_string())?;
         store.save_download_task(&task).map_err(|e| e.to_string())?;
         let control = DownloadControl::new();
         let progress = Arc::new(TaskProgress::new());
         jobs.insert(
             id.into(),
             ActiveJob {
+                _activity: activity,
                 control: control.clone(),
                 task: task.clone(),
                 last_saved: Instant::now(),
@@ -330,6 +335,10 @@ mod tests {
 
     fn job() -> ActiveJob {
         ActiveJob {
+            _activity: LauncherStore::open(":memory:")
+                .unwrap()
+                .lock_install_activity()
+                .unwrap(),
             control: DownloadControl::new(),
             task: DownloadTask {
                 id: "task".into(),

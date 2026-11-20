@@ -13,7 +13,9 @@ use crate::output::Palette;
 
 pub fn run(session: &Session<'_>, args: &RemoveArgs) -> Outcome {
     let palette = Palette::new(session.sink.palette().on);
-    let instance = resolve_instance(&session.store, &args.instance)?;
+    let id = resolve_instance(&session.store, &args.instance)?.id;
+    let _operation = session.store.lock_instance_operation(&id)?;
+    let instance = resolve_instance(&session.store, &id)?;
 
     let prompt = if args.files {
         format!(

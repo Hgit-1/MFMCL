@@ -47,6 +47,7 @@ pub async fn install_vanilla(
     instance: &InstanceRecord,
     progress: Option<mpsc::UnboundedSender<DownloadProgress>>,
 ) -> Result<InstanceRecord, InstallError> {
+    let _activity = store.lock_install_activity()?;
     store.set_instance_state(&instance.id, InstanceState::Installing)?;
     let result = install_inner(client, engine, data_root, instance, progress).await;
     match result {

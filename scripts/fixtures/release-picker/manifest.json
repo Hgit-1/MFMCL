@@ -1,0 +1,10 @@
+{
+  "id": "mfmcl-release-picker-smoke",
+  "name": "Release Picker Smoke Test",
+  "version": "1.0.0",
+  "description": "Native release acceptance fixture with one inert JVM system property and no scripts or assets.",
+  "hooks": ["launch"],
+  "permissions": ["launchHook"],
+  "enabledByDefault": true,
+  "contributions": [{ "kind": "jvmArgs", "value": "-Dmfmcl.releasePickerSmoke=true" }]
+}

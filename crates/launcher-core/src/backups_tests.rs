@@ -86,6 +86,39 @@ fn roundtrip_preserves_world_mods_and_options_without_launcher_secrets() {
     assert!(create_backup(&original, &original.game_dir).is_err());
 }
 #[test]
+fn shared_game_directory_blocks_backups_until_the_other_holder_releases_it() {
+    use crate::operation_lock::GameDirectoryLock;
+
+    let temp = Temp::new();
+    let first = instance(&temp.0, "first");
+    let mut second = instance(&temp.0, "second");
+    second.game_dir = first.game_dir.clone();
+    fs::create_dir_all(&second.instance_dir).unwrap();
+    fs::create_dir_all(first.game_dir.join("saves/World")).unwrap();
+    fs::write(first.game_dir.join("saves/World/level.dat"), b"world").unwrap();
+
+    let running = GameDirectoryLock::acquire(&first.game_dir).unwrap();
+    assert!(
+        create_backup(&second, &temp.0)
+            .unwrap_err()
+            .contains("正在被")
+    );
+    let pre_launch = create_backup_with_game_lock(&first, &temp.0, &running).unwrap();
+    assert_eq!(preview_backup(&pre_launch).unwrap().file_count, 1);
+    drop(running);
+    assert!(create_backup(&second, &temp.0).is_ok());
+
+    let detached = GameDirectoryLock::acquire(&first.game_dir).unwrap();
+    detached.record_game_process(std::process::id()).unwrap();
+    drop(detached);
+    assert!(
+        create_backup(&second, &temp.0)
+            .unwrap_err()
+            .contains("仍被")
+    );
+}
+
+#[test]
 fn corruption_and_archive_mutation_never_publish_a_target() {
     let temp = Temp::new();
     let path = temp.0.join("bad.zip");

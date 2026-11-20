@@ -49,20 +49,37 @@ pub(crate) fn task_progress(
 }
 
 #[derive(Default)]
-pub struct Operations(pub Arc<Mutex<HashSet<String>>>, Mutex<HashSet<PathBuf>>);
+pub struct Operations(
+    pub Arc<Mutex<HashSet<String>>>,
+    Mutex<HashSet<PathBuf>>,
+    Option<LauncherStore>,
+);
 pub struct Guard {
     key: String,
     registry: Arc<Mutex<HashSet<String>>>,
+    _process_lock: Option<launcher_core::operation_lock::OperationLock>,
 }
 impl Operations {
+    pub fn new(store: LauncherStore) -> Self {
+        Self(Arc::default(), Mutex::default(), Some(store))
+    }
+
     pub fn acquire(&self, key: &str) -> Result<Guard, String> {
         let mut registry = self.0.lock().map_err(|_| "操作状态不可用。")?;
-        if !registry.insert(key.to_owned()) {
+        if registry.contains(key) {
             return Err("此实例有安装、游戏或管理任务正在运行。".into());
         }
+        let process_lock = self
+            .2
+            .as_ref()
+            .map(|store| store.lock_instance_operation(key))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        registry.insert(key.to_owned());
         Ok(Guard {
             key: key.to_owned(),
             registry: self.0.clone(),
+            _process_lock: process_lock,
         })
     }
 }
@@ -1007,39 +1024,22 @@ pub async fn install_pending_pack_loader(
     let request = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| e.to_string())?;
-    if request == "vanilla" {
-        if instance.loader != "vanilla" {
-            return Err("整合包加载器请求与实例记录不一致。".into());
-        }
-    } else {
+    let latest = store
+        .list_instances()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|record| record.id == instance.id)
+        .ok_or("找不到实例。")?;
+    if latest.loader == "vanilla" && request != "vanilla" {
         let (kind, version) = request.split_once('@').ok_or("整合包加载器请求无效。")?;
-        /*
-         * 四种加载器都要认。
-         *
-         * 之前这里只映射 fabric/quilt，Forge 与 NeoForge 的整合包会在这一步被
-         * 拒绝（「整合包加载器暂不支持」），尽管 `install_loader` 早就支持它们。
-         * CurseForge 上大量整合包是 Forge 的，这个缺口等于把一整类整合包挡在门外。
-         */
         let kind = LoaderKind::from_name(kind).ok_or("整合包加载器暂不支持。")?;
         loaders::safe_version(version)?;
-        let latest = store
-            .list_instances()
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|record| record.id == instance.id)
-            .ok_or("找不到实例。")?;
-        if latest.loader == format!("{}@{version}", kind.name()) {
-            if !loaders::loader_overlay_is_installed(&latest, kind, version)? {
-                return Err("实例已记录加载器，但对应配置不存在或无效。".into());
-            }
-        } else if latest.loader == "vanilla" {
-            let mut target = latest;
-            target.state = InstanceState::Ready;
-            loaders::install_loader(root, &target, store, engine, kind, version, None).await?;
-        } else {
-            return Err("整合包加载器请求与已安装加载器不一致。".into());
-        }
+        let mut target = latest;
+        target.state = InstanceState::Ready;
+        loaders::install_loader(root, &target, store, engine, kind, version, None).await?;
     }
+    // Prior versions could leave an incompatible request; the installed loader
+    // takes precedence and will be diagnosed by the caller.
     tokio::fs::remove_file(path)
         .await
         .map_err(|e| format!("加载器已处理，但请求标记无法移除：{e}"))

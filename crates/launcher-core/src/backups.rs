@@ -122,6 +122,9 @@ fn collect(
 ) -> Result<(), String> {
     for item in fs::read_dir(root).map_err(|e| e.to_string())? {
         let item = item.map_err(|e| e.to_string())?;
+        if relative.is_empty() && item.file_name() == crate::operation_lock::GAME_LOCK_FILE {
+            continue;
+        }
         *visited += 1;
         if *visited > MAX_FILES {
             return Err("备份目录条目超过 50000 个。".into());
@@ -211,8 +214,22 @@ fn transfer<R: Read, W: Write>(
 
 /// Destination is a directory chosen by the user. No existing archive is replaced.
 pub fn create_backup(instance: &InstanceRecord, directory: &Path) -> Result<PathBuf, String> {
+    ordinary_dir(&instance.game_dir)?;
+    let lock = crate::operation_lock::GameDirectoryLock::acquire(&instance.game_dir)?;
+    create_backup_with_game_lock(instance, directory, &lock)
+}
+
+/// Pre-launch backups already hold the same directory lock through game exit.
+pub fn create_backup_with_game_lock(
+    instance: &InstanceRecord,
+    directory: &Path,
+    lock: &crate::operation_lock::GameDirectoryLock,
+) -> Result<PathBuf, String> {
     ordinary_dir(&instance.instance_dir)?;
     ordinary_dir(&instance.game_dir)?;
+    if !lock.matches(&instance.game_dir) {
+        return Err("备份目录与游戏目录锁不一致。".into());
+    }
     ordinary_dir(directory)?;
     if directory
         .canonicalize()

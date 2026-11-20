@@ -4,9 +4,9 @@ A Minecraft: Java Edition launcher for Windows, macOS and Linux, written from sc
 React. Chinese-first interface, isolated game instances, verified downloads, and a plugin system
 that can actually install plugins.
 
-> **Pre-release 0.1.0.** Builds are unsigned and not notarised. Expect rough edges, and expect your
-> operating system to warn you the first time you run one. See [Status](#status) for what has and has
-> not been verified.
+> **Pre-release development (0.1.2).** Builds are unsigned and not notarised. Your operating system may
+> warn you on first run. See [Status](#status) for verification limits and the
+> [release checklist](docs/RELEASING.md) for the difference between source and published builds.
 
 ![The home page, with the separately installed Aria seasonal theme enabled](docs/screenshots/home.png)
 

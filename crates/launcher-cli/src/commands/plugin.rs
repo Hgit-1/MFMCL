@@ -1,4 +1,4 @@
-﻿//! `mfmcl plugin` — inspect and manage the plugin catalogue.
+//! `mfmcl plugin` — inspect and manage the plugin catalogue.
 //!
 //! ## Why `inspect` exists
 //!
@@ -11,6 +11,9 @@ use crate::cli::{PluginAction, PluginArgs};
 use crate::commands::download::terminal_width;
 use crate::commands::{Failure, Outcome, Session};
 use crate::output::{Palette, Table, truncate};
+use launcher_core::plugin_approval::{
+    approved_state, definition_digest, explicit_cli_key, external_id,
+};
 use launcher_core::plugins::{Contribution, ContributionKind, PluginState};
 
 pub fn run(session: &Session<'_>, args: &PluginArgs) -> Outcome {
@@ -47,7 +50,7 @@ fn load(session: &Session<'_>) -> Outcome<PluginState> {
 }
 
 fn list(session: &Session<'_>, palette: &Palette) -> Outcome {
-    let state = load(session)?;
+    let state = approved_state(&session.store, session.context.data_root());
     let definitions = launcher_runtime::plugins::catalog(&state);
     if session.cli.json {
         println!(
@@ -94,8 +97,10 @@ fn list(session: &Session<'_>, palette: &Palette) -> Outcome {
 }
 
 fn set_enabled(session: &Session<'_>, palette: &Palette, id: &str, enabled: bool) -> Outcome {
+    let _lock = session.store.lock_instance_operation("plugin-packages")?;
     let mut state = load(session)?;
-    let known = launcher_runtime::plugins::catalog(&state)
+    let approved = approved_state(&session.store, session.context.data_root());
+    let known = launcher_runtime::plugins::catalog(&approved)
         .iter()
         .any(|definition| definition.id == id);
     if !known {
@@ -122,7 +127,7 @@ fn set_enabled(session: &Session<'_>, palette: &Palette, id: &str, enabled: bool
 }
 
 fn inspect(session: &Session<'_>, palette: &Palette, id: &str) -> Outcome {
-    let state = load(session)?;
+    let state = approved_state(&session.store, session.context.data_root());
     let preview = launcher_runtime::plugins::preview(&state, id).map_err(Failure::from)?;
     if session.cli.json {
         println!(
@@ -193,20 +198,28 @@ fn add(
     env: Vec<String>,
     pre_launch: Vec<String>,
 ) -> Outcome {
+    use launcher_core::plugin_approval::read_installed;
+    if !external_id(id) {
+        return Err(Failure::message("插件 ID 不合法或已被内置插件占用。"));
+    }
+    let _lock = session.store.lock_instance_operation("plugin-packages")?;
     let mut state = load(session)?;
-    if state.custom.iter().any(|item| item.id == id) {
+    let key = explicit_cli_key(id);
+    if state.custom.iter().any(|item| {
+        item.id == id
+            && session
+                .store
+                .plugin_approval_matches(&key, &definition_digest(item))
+                .unwrap_or(false)
+    }) {
         return Err(Failure::message(format!(
             "自定义插件「{id}」已存在；如需修改请先 `mfmcl plugin remove {id}`。"
         )));
     }
-    if launcher_runtime::plugins::catalog(&state)
-        .iter()
-        .any(|definition| definition.id == id)
-    {
-        return Err(Failure::message(format!(
-            "「{id}」是内置插件，不能用 add 覆盖。"
-        )));
+    if read_installed(&session.context.data_root().join("plugins"), id).is_ok() {
+        return Err(Failure::message(format!("「{id}」已作为插件包安装。")));
     }
+    state.custom.retain(|item| item.id != id);
 
     let mut contributions = Vec::new();
     for value in jvm_args {
@@ -251,7 +264,13 @@ fn add(
             "插件「{id}」未通过校验：{error}\n提示：注入 JVM 参数或启动前命令需要 --permission launchHook。"
         ))
     })?;
+    let digest = state
+        .custom
+        .last()
+        .map(definition_digest)
+        .expect("new CLI definition");
     session.store.save_plugin_state(&state)?;
+    session.store.approve_plugin_package(&key, &digest)?;
     if session.cli.json {
         println!(
             "{}",
@@ -265,6 +284,7 @@ fn add(
 }
 
 fn remove(session: &Session<'_>, palette: &Palette, id: &str) -> Outcome {
+    let _lock = session.store.lock_instance_operation("plugin-packages")?;
     let mut state = load(session)?;
     let before = state.custom.len();
     state.custom.retain(|item| item.id != id);

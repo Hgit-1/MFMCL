@@ -20,7 +20,19 @@ pub fn request_pack_loader(instance: &InstanceRecord, request: &str) -> Result<(
     let kind = loaders::LoaderKind::from_name(kind)
         .ok_or_else(|| RuntimeError::message("未识别的加载器。"))?;
     loaders::safe_version(version).map_err(RuntimeError::message)?;
-    write_pending_loader(instance, &format!("{}@{version}", kind.name()))
+    let request = format!("{}@{version}", kind.name());
+    if instance.loader != "vanilla" {
+        return if instance.loader == request {
+            // No new installation is needed. The normal repair path checks this loader.
+            Ok(())
+        } else {
+            Err(RuntimeError::message(format!(
+                "实例已安装 {}，不能请求不同的加载器 {}。",
+                instance.loader, request
+            )))
+        };
+    }
+    write_pending_loader(instance, &request)
 }
 
 fn write_pending_loader(instance: &InstanceRecord, loader: &str) -> Result<()> {
@@ -120,53 +132,30 @@ pub async fn install_pending_pack_loader(
     let request = tokio::fs::read_to_string(&path)
         .await
         .map_err(|error| RuntimeError::Io(error.to_string()))?;
-    if request == "vanilla" {
-        if instance.loader != "vanilla" {
-            return Err(RuntimeError::message("整合包加载器请求与实例记录不一致。"));
-        }
-    } else {
+    let latest = crate::install::find_instance(store, &instance.id)?;
+    // A previous release could leave an incompatible request on disk. An installed
+    // loader takes precedence over any old marker, including one left by a crash
+    // after a successful install. The caller diagnoses the recorded loader next.
+    if latest.loader == "vanilla" && request != "vanilla" {
         let (kind, version) = request
             .split_once('@')
             .ok_or_else(|| RuntimeError::message("整合包加载器请求无效。"))?;
         let kind = loaders::LoaderKind::from_name(kind)
             .ok_or_else(|| RuntimeError::message("整合包加载器暂不支持。"))?;
         loaders::safe_version(version).map_err(RuntimeError::message)?;
-        /*
-         * Re-read the record: the caller's copy may predate this install, and
-         * `install_vanilla` just changed the instance state.
-         */
-        let latest = store
-            .list_instances()?
-            .into_iter()
-            .find(|record| record.id == instance.id)
-            .ok_or_else(|| RuntimeError::message("找不到实例。"))?;
-        if latest.loader == format!("{}@{version}", kind.name()) {
-            if !loaders::loader_overlay_is_installed(&latest, kind, version)
-                .map_err(RuntimeError::message)?
-            {
-                return Err(RuntimeError::message(
-                    "实例已记录加载器，但对应配置不存在或无效。",
-                ));
-            }
-        } else if latest.loader == "vanilla" {
-            let mut target = latest;
-            target.state = InstanceState::Ready;
-            loaders::install_loader(
-                context.data_root(),
-                &target,
-                store,
-                engine,
-                kind,
-                version,
-                None,
-            )
-            .await
-            .map_err(RuntimeError::message)?;
-        } else {
-            return Err(RuntimeError::message(
-                "整合包加载器请求与已安装加载器不一致。",
-            ));
-        }
+        let mut target = latest;
+        target.state = InstanceState::Ready;
+        loaders::install_loader(
+            context.data_root(),
+            &target,
+            store,
+            engine,
+            kind,
+            version,
+            None,
+        )
+        .await
+        .map_err(RuntimeError::message)?;
     }
     tokio::fs::remove_file(path).await.map_err(|error| {
         RuntimeError::message(format!("加载器已处理，但请求标记无法移除：{error}"))
@@ -277,6 +266,46 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&marker).unwrap(),
             "neoforge@21.1.80"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_request_for_a_different_installed_loader_leaves_ready_state_and_no_marker() {
+        let (root, store, instance) = fixture();
+        store
+            .set_instance_loader(&instance.id, "fabric@0.16.10")
+            .unwrap();
+        store
+            .set_instance_state(&instance.id, InstanceState::Ready)
+            .unwrap();
+        let record = crate::install::find_instance(&store, &instance.id).unwrap();
+        assert!(request_pack_loader(&record, "fabric@0.20.1").is_err());
+        assert!(!record.instance_dir.join("pack-loader.txt").exists());
+        let record = crate::install::find_instance(&store, &instance.id).unwrap();
+        assert_eq!(record.state, InstanceState::Ready);
+        assert_eq!(record.loader, "fabric@0.16.10");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn retry_discards_a_legacy_incompatible_marker() {
+        let (root, store, instance) = fixture();
+        request_pack_loader(&instance, "quilt@0.27.0").unwrap();
+        store
+            .set_instance_loader(&instance.id, "fabric@0.16.10")
+            .unwrap();
+        let context = RuntimeContext::new(&root);
+        let engine = crate::install::engine_from_settings(&LauncherSettings::default()).unwrap();
+        install_pending_pack_loader(&context, &instance, &store, &engine)
+            .await
+            .unwrap();
+        assert!(!instance.instance_dir.join("pack-loader.txt").exists());
+        assert_eq!(
+            crate::install::find_instance(&store, &instance.id)
+                .unwrap()
+                .loader,
+            "fabric@0.16.10"
         );
         let _ = std::fs::remove_dir_all(root);
     }
