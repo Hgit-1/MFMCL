@@ -84,18 +84,12 @@ if WINDOWS:
         send_keys('{ESC}')
 
     def fill_panel(panel):
-        field = panel.child_window(control_type='Edit', auto_id='1148')
-        if field.exists(timeout=2):
-            field.set_edit_text(str(FIXTURE))
-        else:
-            panel.set_focus()
-            send_keys('%n')
-            send_keys(str(FIXTURE), with_spaces=True, vk_packet=True)
-        button = panel.child_window(control_type='Button', auto_id='1')
-        if button.exists(timeout=2):
-            click(button.wrapper_object())
-        else:
-            send_keys('{ENTER}')
+        panel.set_focus()
+        send_keys('%n')
+        send_keys('^a')
+        send_keys(str(FIXTURE), with_spaces=True, vk_packet=True)
+        time.sleep(0.4)
+        send_keys('{ENTER}')
 
     def evidence(proc):
         for i, win in enumerate(desktop.windows()):
@@ -258,7 +252,8 @@ def main():
     try:
         click(wait(lambda: app_find(proc, ACCEPT), 'terms prompt'))
         click(wait(lambda: app_find(proc, SKIP), 'skip setup'))
-        proc = restart(proc)
+        wait(lambda: app_find(proc, PLUGINS), 'launcher sidebar after setup')
+        time.sleep(8)
         click_import(open_plugins(proc))
         panel = wait(lambda: file_panel(proc), 'native file picker')
         dismiss_panel(panel)
