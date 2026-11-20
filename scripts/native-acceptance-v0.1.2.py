@@ -209,6 +209,14 @@ def start():
     return subprocess.Popen([os.environ['MFMCL_BIN']])
 
 
+def restart(proc):
+    stop(proc)
+    next_proc = start()
+    # Allow the real desktop backend's initial Java and settings refresh to settle.
+    time.sleep(8)
+    return next_proc
+
+
 def stop(proc):
     if proc.poll() is None:
         if not WINDOWS:
@@ -230,8 +238,15 @@ def stop(proc):
 
 
 def open_plugins(proc):
-    click(wait(lambda: app_find(proc, PLUGINS), 'Plugins'))
-    return wait(lambda: app_find(proc, IMPORT), 'Import plugin package')
+    for _ in range(4):
+        button = wait(lambda: app_find(proc, PLUGINS), 'Plugins')
+        try:
+            click(button)
+            return wait(lambda: app_find(proc, IMPORT), 'Import plugin package', timeout=5)
+        except RuntimeError:
+            # The startup refresh can select Home once after the first render.
+            continue
+    raise RuntimeError('Plugins page did not show its import button after startup')
 
 
 def main():
@@ -243,6 +258,7 @@ def main():
     try:
         click(wait(lambda: app_find(proc, ACCEPT), 'terms prompt'))
         click(wait(lambda: app_find(proc, SKIP), 'skip setup'))
+        proc = restart(proc)
         click_import(open_plugins(proc))
         panel = wait(lambda: file_panel(proc), 'native file picker')
         dismiss_panel(panel)
@@ -259,8 +275,7 @@ def main():
         assert counts() == 0
         click(wait(lambda: app_find(proc, CLOSE), 'dismiss approval'))
         wait(lambda: app_find(proc, REVIEW), 'review after dismissal')
-        stop(proc)
-        proc = start()
+        proc = restart(proc)
         open_plugins(proc)
         wait(lambda: app_find(proc, REVIEW), 'review after restart')
         assert counts() == 0
@@ -271,8 +286,7 @@ def main():
         click(wait(lambda: app_find(proc, APPROVE), 'explicit approval'))
         wait(lambda: counts() == 1, 'approval in native database')
         wait(lambda: app_find(proc, ENABLE), 'approved plugin switch')
-        stop(proc)
-        proc = start()
+        proc = restart(proc)
         open_plugins(proc)
         wait(lambda: app_find(proc, ENABLE), 'approved switch after restart')
         assert not app_find(proc, REVIEW) and counts() == 1
