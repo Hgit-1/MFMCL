@@ -52,7 +52,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          python -m pip install pywinauto==0.6.9
+          python -m pip install pywinauto==0.6.9 Pillow==12.2.0
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $installer = (Resolve-Path "candidate/$env:ASSET").Path
           $msi = Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /qn /norestart /l*v `"$PWD/evidence/installer.log`"" -Wait -PassThru
@@ -65,7 +65,7 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          python -m pip install 'pyobjc-framework-Quartz>=11,<12' 'pyobjc-framework-Cocoa>=11,<12' 'pyobjc-framework-Vision>=11,<12'
+          python -m pip install pyobjc-core==11.1 pyobjc-framework-Quartz==11.1 pyobjc-framework-Cocoa==11.1 pyobjc-framework-ApplicationServices==11.1
           mount=$(mktemp -d)
           hdiutil attach -readonly -nobrowse -mountpoint "$mount" "candidate/$ASSET"
           trap 'hdiutil detach "$mount"' EXIT

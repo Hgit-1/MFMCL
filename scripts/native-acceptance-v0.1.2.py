@@ -65,10 +65,15 @@ if WINDOWS:
             element.click_input()
 
     def file_panel(proc):
-        for window in desktop.windows(process=proc.pid, class_name='#32770'):
-            if window.is_visible() and window.element_info.name in IMPORT:
+        for window in desktop.windows(class_name='#32770'):
+            if window.is_visible() and (window.element_info.name in IMPORT or
+                                       (window.element_info.process_id == proc.pid and window.element_info.name == 'Open')):
                 return window
         return None
+
+    def click_import(element):
+        element.set_focus()
+        element.click_input()
 
     def dismiss_panel(panel):
         panel.set_focus()
@@ -89,18 +94,26 @@ if WINDOWS:
             send_keys('{ENTER}')
 
     def evidence(proc):
-        for i, win in enumerate(desktop.windows(process=proc.pid)):
-            win.capture_as_image().save(ROOT / 'evidence' / f'windows-{i}.png')
-            print('Window:', win.element_info.name, win.element_info.class_name, flush=True)
+        for i, win in enumerate(desktop.windows()):
+            print('Window:', win.element_info.process_id, win.element_info.name, win.element_info.class_name, flush=True)
+            if win.element_info.process_id != proc.pid and win.element_info.class_name != '#32770':
+                continue
+            try:
+                win.capture_as_image().save(ROOT / 'evidence' / f'windows-{i}.png')
+            except Exception as error:
+                print('Screenshot unavailable:', error, flush=True)
 
 else:
     import Quartz as Q
+    import ApplicationServices as AX
     import AppKit
+
+    click_import = lambda element: click(element)
 
     DATA = Path.home() / 'Library' / 'Application Support' / 'dev.mfmcl.launcher'
 
     def attr(element, key):
-        status, result = Q.AXUIElementCopyAttributeValue(element, key, None)
+        status, result = AX.AXUIElementCopyAttributeValue(element, key, None)
         return result if status == 0 else None
 
     def elements(root):
@@ -119,7 +132,7 @@ else:
                 if isinstance(label := attr(node, key), str) and label.strip()]
 
     def app_find(proc, names, role='control'):
-        for node in elements(Q.AXUIElementCreateApplication(proc.pid)):
+        for node in elements(AX.AXUIElementCreateApplication(proc.pid)):
             if role == 'control' and attr(node, 'AXRole') not in ('AXButton', 'AXCheckBox', 'AXSwitch', 'AXToggle', 'AXPopUpButton'):
                 continue
             if any(expected in label if role == 'text' else expected == label for label in labels(node) for expected in names):
@@ -127,12 +140,12 @@ else:
         return None
 
     def click(element):
-        status = Q.AXUIElementPerformAction(element, 'AXPress')
+        status = AX.AXUIElementPerformAction(element, 'AXPress')
         if status != 0:
             raise RuntimeError(f'AXPress failed ({status}) on {labels(element)}')
 
     def file_panel(proc):
-        root = Q.AXUIElementCreateApplication(proc.pid)
+        root = AX.AXUIElementCreateApplication(proc.pid)
         for node in elements(root):
             role = attr(node, 'AXRole')
             if role not in ('AXSheet', 'AXWindow', 'AXDialog'):
@@ -171,8 +184,8 @@ else:
 
     def evidence(proc):
         subprocess.run(['/usr/sbin/screencapture', '-x', str(ROOT / 'evidence' / 'macos.png')], check=False)
-        if Q.AXIsProcessTrusted():
-            for node in list(elements(Q.AXUIElementCreateApplication(proc.pid)))[:300]:
+        if AX.AXIsProcessTrusted():
+            for node in list(elements(AX.AXUIElementCreateApplication(proc.pid)))[:300]:
                 fields = labels(node)
                 if fields:
                     print(attr(node, 'AXRole'), fields, flush=True)
@@ -218,12 +231,12 @@ def main():
     print(platform.platform(), platform.machine(), os.environ['ASSET'], os.environ['EXPECTED_SHA256'], flush=True)
     assert not (DATA / 'mfmcl.sqlite').exists(), 'Test needs a fresh runner profile'
     if not WINDOWS:
-        assert Q.AXIsProcessTrusted(), 'Runner has not granted Accessibility permission to the test process'
+        assert AX.AXIsProcessTrusted(), 'Runner has not granted Accessibility permission to the test process'
     proc = start()
     try:
         click(wait(lambda: app_find(proc, ACCEPT), 'terms prompt'))
         click(wait(lambda: app_find(proc, SKIP), 'skip setup'))
-        click(open_plugins(proc))
+        click_import(open_plugins(proc))
         panel = wait(lambda: file_panel(proc), 'native file picker')
         dismiss_panel(panel)
         wait(lambda: not file_panel(proc), 'native picker to close')
@@ -231,7 +244,7 @@ def main():
         assert counts() == 0
         print('PASS: native picker opened; cancellation installed nothing', flush=True)
 
-        click(wait(lambda: app_find(proc, IMPORT), 'Import plugin package'))
+        click_import(wait(lambda: app_find(proc, IMPORT), 'Import plugin package'))
         fill_panel(wait(lambda: file_panel(proc), 'native file picker reopened'))
         wait(lambda: app_find(proc, APPROVE), 'approval confirmation')
         wait(lambda: app_find(proc, (CONTRIBUTION,), 'text'), 'exact JVM property in approval dialog')
