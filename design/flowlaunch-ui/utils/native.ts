@@ -1111,9 +1111,14 @@ export async function microsoftLogin(clientId = ''): Promise<AccountProfile> {
  * `trusted` 必须是用户明确勾选的结果：后端在没有确认时直接拒绝，因为凭据
  * 只会被发送到用户确认过的 HTTPS 地址。
  */
-export async function skinLogin(server: string, username: string, password: string, trusted: boolean): Promise<SkinLoginResult> {
+export async function skinLogin(server: string, username: string, password: string, confirmedServer: string): Promise<SkinLoginResult> {
   requireDesktop('皮肤站登录')
-  return invoke<SkinLoginResult>('skin_login', { server, username, password, trusted })
+  return invoke<SkinLoginResult>('skin_login', { server, username, password, confirmedServer })
+}
+
+export async function cancelSkinLogin(pendingId: string): Promise<void> {
+  requireDesktop('取消皮肤站登录')
+  await invoke('skin_cancel_login', { pendingId })
 }
 
 export async function skinSelectProfile(pendingId: string, profileId: string | null): Promise<AccountProfile> {

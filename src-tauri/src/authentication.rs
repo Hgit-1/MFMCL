@@ -60,6 +60,14 @@ fn root_url(value: &str) -> Result<reqwest::Url, String> {
     }
     Ok(root)
 }
+fn confirmed_skin_root(server: &str, confirmed_server: &str) -> Result<reqwest::Url, String> {
+    let root = root_url(server.trim())?;
+    if root_url(confirmed_server.trim()).ok().as_ref() != Some(&root) {
+        return Err("请重新确认此皮肤站；凭据仅发送到确认的 HTTPS 认证地址。".into());
+    }
+    Ok(root)
+}
+
 fn skin_client(root: &reqwest::Url) -> Result<YggdrasilClient, String> {
     let server = root.join("authserver/").map_err(auth_error)?;
     YggdrasilClient::new(server.clone(), &[server]).map_err(auth_error)
@@ -296,14 +304,11 @@ pub async fn skin_login(
     server: String,
     username: String,
     password: String,
-    trusted: bool,
+    confirmed_server: String,
     auth: State<'_, AuthState>,
 ) -> Result<SkinLoginResult, String> {
     let password = Zeroizing::new(password);
-    if !trusted {
-        return Err("请明确确认你信任此皮肤站；凭据仅发送到确认的 HTTPS 认证地址。".into());
-    }
-    let root = root_url(&server)?;
+    let root = confirmed_skin_root(&server, &confirmed_server)?;
     let client = skin_client(&root)?;
     let login = client
         .authenticate(&username, &password)
@@ -329,6 +334,15 @@ pub async fn skin_login(
         profiles,
     })
 }
+#[tauri::command]
+pub fn skin_cancel_login(pending_id: String, auth: State<'_, AuthState>) -> Result<(), String> {
+    auth.pending
+        .lock()
+        .map_err(|_| "登录状态不可用。")?
+        .remove(&pending_id);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn skin_select_profile(
     pending_id: String,
@@ -586,7 +600,31 @@ pub async fn injector(
 
 #[cfg(test)]
 mod client_id_tests {
-    use super::looks_like_client_id;
+    use super::{confirmed_skin_root, looks_like_client_id};
+
+    #[test]
+    fn skin_consent_matches_the_canonical_root_and_rejects_host_or_path_changes() {
+        let root = confirmed_skin_root(
+            " https://SKIN.example:443/api/yggdrasil ",
+            "https://skin.example/api/yggdrasil/",
+        )
+        .unwrap();
+        assert_eq!(root.as_str(), "https://skin.example/api/yggdrasil/");
+        for target in [
+            "https://other.example/api/yggdrasil/",
+            "https://skin.example/different/",
+            "https://skin.example:8443/api/yggdrasil/",
+            "http://skin.example/api/yggdrasil/",
+            "https://skin.example/api/yggdrasil/?different",
+            "https://user@skin.example/api/yggdrasil/",
+        ] {
+            assert!(
+                confirmed_skin_root(target, root.as_str()).is_err(),
+                "{target}"
+            );
+        }
+        assert!(confirmed_skin_root(root.as_str(), "").is_err());
+    }
 
     #[test]
     fn accepts_a_plain_guid() {

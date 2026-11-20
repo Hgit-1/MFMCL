@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from './Button';
 import { Input } from './Input';
 import { Modal } from './Modal';
@@ -6,7 +6,7 @@ import { AccountAvatar } from './AccountAvatar';
 import type { Account } from '../types';
 import type { SkinSetting } from './SkinSection';
 import { useI18n } from '../utils/i18n';
-import { addOfflineAccount, errorText, microsoftLogin, removeAccount, skinLogin, skinSelectProfile } from '../utils/native';
+import { addOfflineAccount, cancelSkinLogin, errorText, microsoftLogin, removeAccount, selectAccount, skinLogin, skinSelectProfile } from '../utils/native';
 import { confirmAction } from '../utils/confirm';
 import { MicrosoftClientIdCard } from './MicrosoftClientIdCard';
 import { toAccount } from '../utils/adapters';
@@ -91,6 +91,17 @@ function PlayerAvatar({
   );
 }
 
+function canonicalSkinServer(value: string): string | null {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.href.includes('?') || url.href.includes('#')) return null;
+    if (!url.pathname.endsWith('/')) url.pathname += '/';
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
 export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentAccounts = [], onNotice, onChanged, skin }: Props) {
   const { t } = useI18n();
   const [method, setMethod] = useState<LoginMethod | null>(null);
@@ -99,13 +110,15 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   /** 正在提交的后端操作；用于禁用按钮，避免重复提交。 */
   const [busy, setBusy] = useState(false);
-  const [hoveredAccountId, setHoveredAccountId] = useState<string | null>(null);
   const [showAddMenu, setShowAddMenu] = useState(false);
   /** 正在等待后端的登录方式；用它禁用按钮并显示进度，避免重复点击开两个授权流程。 */
   const [pending, setPending] = useState<LoginMethod | null>(null);
   /** 皮肤站登录返回的待选角色列表；为空时表示还没到选择角色那一步。 */
   const [skinProfiles, setSkinProfiles] = useState<{ pendingId: string; profiles: { id: string; name: string }[] } | null>(null);
-  const [skinTrusted, setSkinTrusted] = useState(false);
+  const [skinTrustedServer, setSkinTrustedServer] = useState<string | null>(null);
+  const skinGeneration = useRef(0);
+  const pendingSkinId = useRef<string | null>(null);
+  const skinTrusted = skinTrustedServer !== null && skinTrustedServer === canonicalSkinServer(serverUrl);
   const [skinPassword, setSkinPassword] = useState('');
   const [skinUsername, setSkinUsername] = useState('');
 
@@ -159,45 +172,80 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
    * 才真正写入账户。之所以不在第一步自动选第一个角色，是因为同一个皮肤站账号
    * 可以有多个游戏角色，替用户猜会让他启动到错误的名字。
    */
-  const handleThirdPartyLogin = () => {
-    if (skinProfiles) {
-      // 第二步：选择角色。`profileId` 为 null 时后端会拒绝，所以必须先选。
-      const first = skinProfiles.profiles[0];
-      if (!first) {
-        onNotice?.('此账户没有可用的角色。');
+  const discardSkinFlow = () => {
+    skinGeneration.current += 1;
+    const id = pendingSkinId.current;
+    pendingSkinId.current = null;
+    if (id) void cancelSkinLogin(id).catch(() => {});
+    setSkinProfiles(null);
+    setSkinTrustedServer(null);
+    setSkinPassword('');
+    setPending(current => current === 'thirdparty' ? null : current);
+  };
+
+  useEffect(() => {
+    if (!isOpen) discardSkinFlow();
+  }, [isOpen]);
+
+  const finishSkinLogin = async (id: string, profileId: string, generation: number) => {
+    try {
+      const profile = await skinSelectProfile(id, profileId);
+      if (generation !== skinGeneration.current) {
+        onChanged?.();
         return;
       }
-      setPending('thirdparty');
-      void skinSelectProfile(skinProfiles.pendingId, first.id)
-        .then(profile => {
-          onLogin(toAccount(profile));
-          onClose();
-        })
-        .catch(error => reportError(error, '无法选择角色。'))
-        .finally(() => setPending(null));
-      return;
+      pendingSkinId.current = null;
+      onLogin(toAccount(profile));
+      resetView();
+      onClose();
+    } catch (error) {
+      if (generation !== skinGeneration.current) return;
+      discardSkinFlow();
+      reportError(error, '无法选择角色，请重新登录。');
     }
+  };
 
-    if (!serverUrl.trim()) return;
-    if (!skinTrusted) {
-      onNotice?.('请先确认你信任此认证服务器。');
-      return;
-    }
+  const handleThirdPartyLogin = async () => {
+    const server = canonicalSkinServer(serverUrl);
+    if (!server || !skinTrustedServer || server !== skinTrustedServer || pending !== null) return;
+    const generation = ++skinGeneration.current;
     setPending('thirdparty');
-    void skinLogin(serverUrl.trim(), skinUsername.trim(), skinPassword, skinTrusted)
-      .then(result => {
-        // 只有一个角色时不必让用户多点一次，直接完成第二步。
-        if (result.profiles.length === 1) {
-          return skinSelectProfile(result.pendingId, result.profiles[0].id).then(profile => {
-            onLogin(toAccount(profile));
-            onClose();
-          });
-        }
+    try {
+      const result = await skinLogin(server, skinUsername.trim(), skinPassword, skinTrustedServer);
+      if (generation !== skinGeneration.current) {
+        void cancelSkinLogin(result.pendingId).catch(() => {});
+        return;
+      }
+      setSkinPassword('');
+      pendingSkinId.current = result.pendingId;
+      if (result.profiles.length === 1) {
+        await finishSkinLogin(result.pendingId, result.profiles[0].id, generation);
+      } else if (result.profiles.length > 1) {
         setSkinProfiles(result);
-        if (result.profiles.length === 0) onNotice?.('此账户没有可用的角色。');
-      })
-      .catch(error => reportError(error, '皮肤站登录失败。'))
-      .finally(() => setPending(null));
+      } else {
+        discardSkinFlow();
+        onNotice?.('此账户没有可用的角色。');
+      }
+    } catch (error) {
+      if (generation === skinGeneration.current) reportError(error, '皮肤站登录失败。');
+    } finally {
+      if (generation === skinGeneration.current) setPending(null);
+    }
+  };
+
+  const handleUseSavedAccount = async (account: Account) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await selectAccount(account.id);
+      onLogin(account);
+      resetView();
+      onClose();
+    } catch (error) {
+      reportError(error, '无法切换账户。');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleEditAccount = (account: Account) => {
@@ -229,6 +277,8 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
   };
 
   const resetView = () => {
+    discardSkinFlow();
+    setSkinUsername('');
     setMethod(null);
     setOfflineName('');
     setServerUrl('');
@@ -312,8 +362,6 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                   <div
                     key={account.id}
                     className={styles.accountGridItem}
-                    onMouseEnter={() => setHoveredAccountId(account.id)}
-                    onMouseLeave={() => setHoveredAccountId(null)}
                   >
                     <div className={styles.gridItemContent}>
                       <PlayerAvatar username={account.username} avatar={account.avatar} size={48} skin={skin} accountType={account.type} />
@@ -329,30 +377,18 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                         </div>
                       )}
                     </div>
-                    {hoveredAccountId === account.id && (
-                      <div className={styles.gridItemActions}>
-                        <button
-                          className={styles.gridActionEdit}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleEditAccount(account);
-                          }}
-                          title={t('common.edit')}
-                        >
-                          <EditIcon />
-                        </button>
-                        <button
-                          className={styles.gridActionUse}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onLogin(account);
-                          }}
-                          title={t('account.switchTo')}
-                        >
-                          <LoginIcon />
-                        </button>
-                      </div>
-                    )}
+                    <div className={styles.gridItemActions}>
+                      <button type="button" className={styles.gridActionEdit}
+                        aria-label={`${t('common.edit')} · ${account.username}`} title={t('common.edit')}
+                        onClick={() => handleEditAccount(account)}>
+                        <EditIcon />
+                      </button>
+                      <button type="button" className={styles.gridActionUse} disabled={busy}
+                        aria-label={`${t('account.switchTo')} · ${account.username}`} title={t('account.switchTo')}
+                        onClick={() => { void handleUseSavedAccount(account); }}>
+                        <LoginIcon />
+                      </button>
+                    </div>
                   </div>
                 ))}
 
@@ -467,8 +503,6 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                     <div
                       key={account.id}
                       className={styles.recentAccountWrapper}
-                      onMouseEnter={() => setHoveredAccountId(account.id)}
-                      onMouseLeave={() => setHoveredAccountId(null)}
                     >
                       <div className={styles.recentAccount}>
                         <PlayerAvatar username={account.username} avatar={account.avatar} size={36} skin={skin} accountType={account.type} />
@@ -478,36 +512,21 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                             {account.type === 'microsoft' ? 'Microsoft' : account.type === 'offline' ? t('account.offlineShort') : t('account.thirdPartyShort')}
                           </span>
                         </div>
-                        {account.hasMinecraft && hoveredAccountId !== account.id && (
-                          <div className={styles.recentBadge}>
-                            <ShieldCheckIcon />
-                          </div>
+                        {account.hasMinecraft && (
+                          <div className={styles.recentBadge} aria-hidden="true"><ShieldCheckIcon /></div>
                         )}
-                        {hoveredAccountId === account.id && (
-                          <div className={styles.recentActions}>
-                            <button
-                              className={styles.recentActionEdit}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleEditAccount(account);
-                              }}
-                            >
-                              <EditIcon />
-                              <span>{t('account.modify')}</span>
-                            </button>
-                            <button
-                              className={styles.recentActionUse}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onLogin(account);
-                                onClose();
-                              }}
-                            >
-                              <LoginIcon />
-                              <span>{t('account.use')}</span>
-                            </button>
-                          </div>
-                        )}
+                        <div className={styles.recentActions}>
+                          <button type="button" className={styles.recentActionEdit}
+                            aria-label={`${t('account.modify')} · ${account.username}`}
+                            onClick={() => handleEditAccount(account)}>
+                            <EditIcon /><span>{t('account.modify')}</span>
+                          </button>
+                          <button type="button" className={styles.recentActionUse} disabled={busy}
+                            aria-label={`${t('account.use')} · ${account.username}`}
+                            onClick={() => { void handleUseSavedAccount(account); }}>
+                            <LoginIcon /><span>{t('account.use')}</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -669,14 +688,10 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                     key={profile.id}
                     disabled={pending !== null}
                     onClick={() => {
+                      if (pending !== null) return;
+                      const generation = ++skinGeneration.current;
                       setPending('thirdparty');
-                      void skinSelectProfile(skinProfiles.pendingId, profile.id)
-                        .then(account => {
-                          onLogin(toAccount(account));
-                          onClose();
-                        })
-                        .catch(error => reportError(error, '无法选择角色。'))
-                        .finally(() => setPending(null));
+                      void finishSkinLogin(skinProfiles.pendingId, profile.id, generation);
                     }}
                   >
                     {profile.name}
@@ -693,7 +708,8 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                 label={t('account.authServer')}
                 placeholder="https://example.com/api/yggdrasil"
                 value={serverUrl}
-                onChange={(e) => setServerUrl(e.target.value)}
+                disabled={pending !== null}
+                onChange={(e) => { setSkinTrustedServer(null); setServerUrl(e.target.value); }}
                 hint={t('account.authServerHint')}
               />
               <Input
@@ -719,9 +735,10 @@ export function AccountModal({ isOpen, onClose, currentAccount, onLogin, recentA
                 <input
                   type="checkbox"
                   checked={skinTrusted}
-                  onChange={e => setSkinTrusted(e.target.checked)}
+                  disabled={pending !== null || canonicalSkinServer(serverUrl) === null}
+                  onChange={e => setSkinTrustedServer(e.target.checked ? canonicalSkinServer(serverUrl) : null)}
                 />
-                <span>我确认信任 <code>{serverUrl || '此地址'}</code>，并了解密码会被发送到该服务器。</span>
+                <span>我确认信任 <code>{canonicalSkinServer(serverUrl) ?? '此 HTTPS 地址'}</code>，并了解密码会被发送到该服务器。</span>
               </label>
 
               <div className={styles.infoBox}>

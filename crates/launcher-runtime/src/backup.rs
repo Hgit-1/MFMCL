@@ -28,11 +28,18 @@ fn absolute(path: &str) -> Result<PathBuf> {
 /// Write a backup of one instance into `directory`.
 pub async fn create(store: &LauncherStore, instance_id: &str, directory: &str) -> Result<PathBuf> {
     let directory = absolute(directory)?;
-    let target = crate::install::find_instance(store, instance_id)?;
-    tokio::task::spawn_blocking(move || backups::create_backup(&target, &directory))
-        .await
-        .map_err(|_| RuntimeError::message("备份任务未能完成。"))?
-        .map_err(RuntimeError::message)
+    let operation = store.lock_instance_operation(instance_id)?;
+    let mut target = crate::install::find_instance(store, instance_id)?;
+    if let Some(path) = store.load_instance_overrides(instance_id)?.game_dir {
+        target.game_dir = PathBuf::from(path.trim());
+    }
+    tokio::task::spawn_blocking(move || {
+        let _operation = operation;
+        backups::create_backup(&target, &directory)
+    })
+    .await
+    .map_err(|_| RuntimeError::message("备份任务未能完成。"))?
+    .map_err(RuntimeError::message)
 }
 
 /// Inspect a backup without extracting it.

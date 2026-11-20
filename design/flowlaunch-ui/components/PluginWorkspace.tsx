@@ -54,6 +54,8 @@ import {
 import {
   listInstalledPlugins,
   reloadPlugins,
+  approvePluginPackage,
+  installPluginManifest,
   removeInstalledPlugin,
   type InstalledPluginRecord,
 } from '../utils/pluginInstall';
@@ -62,6 +64,7 @@ import { PluginSourcePanel } from './PluginSourcePanel';
 import {
   clearLaunchHistory,
   errorText,
+  isDesktopShell,
   launchHistory,
   pluginPreview,
   pluginRuntimeInfo,
@@ -245,8 +248,11 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
     return () => window.clearTimeout(id);
   }, [installOpen]);
 
-  const plugins = useMemo(() => allPlugins(store), [store]);
-  const enabledCount = useMemo(() => enabledPluginCount(store), [store]);
+  const displayStore = useMemo(() => isDesktopShell()
+    ? { ...store, custom: store.custom.map(plugin => ({ ...plugin, awaitingApproval: true })) }
+    : store, [store]);
+  const plugins = useMemo(() => allPlugins(displayStore), [displayStore]);
+  const enabledCount = useMemo(() => enabledPluginCount(displayStore), [displayStore]);
   /** 已安装数（不含计划中的条目）：页头的「已安装 N 个」不能把预告算进去。 */
   const installedCount = useMemo(() => installedPluginCount(store), [store]);
   const text = (value: Localized) => renderLocalized(language, value);
@@ -267,7 +273,8 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
     const installed = records
       .map(record => pluginFromInstalled(record))
       .filter((plugin): plugin is NonNullable<typeof plugin> => plugin !== null);
-    updateStore({ ...store, installed });
+    const installedIds = new Set(installed.map(plugin => plugin.id));
+    updateStore({ ...store, installed, custom: store.custom.filter(plugin => !installedIds.has(plugin.id)) });
   };
 
   const refreshInstalled = async () => {
@@ -314,6 +321,38 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
    */
   const [installResult, setInstallResult] = useState<InstalledPluginRecord | null>(null);
   const [sourceOpen, setSourceOpen] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const reviewPlugin = installResult ? pluginFromInstalled(installResult) : null;
+  const reviewContributions = (installResult?.manifest as { contributions?: unknown } | undefined)?.contributions;
+  const reviewInstalled = async (plugin: LauncherPlugin) => {
+    try {
+      if (!plugin.thirdParty) {
+        // A manifest saved by an older desktop version must be imported and
+        // reviewed rather than inheriting its old enabled preference as consent.
+        const current = await installPluginManifest(JSON.stringify(plugin));
+        setInstallResult(current);
+        await refreshInstalled();
+        return;
+      }
+      const current = (await listInstalledPlugins()).find(item => item.id === plugin.id);
+      if (current) setInstallResult(current);
+    } catch (error) {
+      onNotice(errorText(error, t('plugin.syncFailed')));
+    }
+  };
+  const approveInstalled = async () => {
+    if (!installResult || approving) return;
+    setApproving(true);
+    try {
+      await approvePluginPackage(installResult.id, installResult.reviewDigest);
+      setInstallResult(null);
+      await reloadNow();
+    } catch (error) {
+      onNotice(errorText(error, t('plugin.syncFailed')));
+    } finally {
+      setApproving(false);
+    }
+  };
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -472,6 +511,14 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
     }
     if (declaredPermissions > 0 && plugin.permissions.length === 0) {
       setInstallError({ key: 'plugin.installUnknownPermissions' });
+      return;
+    }
+    if (isDesktopShell()) {
+      void installPluginManifest(JSON.stringify(raw)).then(record => {
+        closeInstall();
+        setInstallResult(record);
+        void refreshInstalled();
+      }).catch(error => onNotice(errorText(error, t('plugin.syncFailed'))));
       return;
     }
     updateStore({ ...store, custom: [...store.custom, plugin] });
@@ -717,10 +764,15 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
                         ? t('plugin.planned')
                         : plugin.incompatible
                           ? t('plugin.incompatible')
-                          : enabled ? t('plugin.enabled') : t('plugin.disabled')}
+                          : plugin.awaitingApproval ? t('plugin.pendingApproval') : enabled ? t('plugin.enabled') : t('plugin.disabled')}
 
                     </span>
                     <div className={styles.footActions}>
+                      {plugin.awaitingApproval && (
+                        <button type="button" className={styles.ghostButton} onClick={() => { void reviewInstalled(plugin); }}>
+                          {t('plugin.reviewApproval')}
+                        </button>
+                      )}
                       {/*
                         更新按钮只在确实有新版本时出现。
                         本地没有在线插件源，所以点击「更新」表示采纳清单里声明的新版本号
@@ -777,7 +829,7 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
                         aria-label={t('plugin.toggleAria', { values: { name } })}
                         title={plugin.planned ? t('plugin.plannedHint') : undefined}
                         className={`${styles.switch} ${enabled ? styles.switchOn : ''}`}
-                        disabled={plugin.incompatible || plugin.planned}
+                        disabled={plugin.incompatible || plugin.planned || plugin.awaitingApproval}
                         onClick={() => setEnabled(plugin, !enabled)}
                       ><i /></button>
                     </div>
@@ -1061,7 +1113,8 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
             <button
               type="button"
               className={`${styles.modalButton} ${styles.modalPrimary}`}
-              onClick={() => { setInstallResult(null); void reloadNow(); }}
+              disabled={approving}
+              onClick={() => { void approveInstalled(); }}
             >
               {t('plugin.reloadConfirm')}
             </button>
@@ -1079,6 +1132,17 @@ export function PluginWorkspace({ store, onChange, pendingRestart, onPendingRest
               })}
             </p>
             <p className={styles.installHint}>{t('plugin.installReloadHint')}</p>
+            {reviewPlugin && (
+              <ul className={styles.installHint}>
+                {reviewPlugin.permissions.map(permission => <li key={permission}>{text(permissionLabel(permission))}</li>)}
+                {Array.isArray(reviewContributions) && reviewContributions.map((item, index) => {
+                  if (!item || typeof item.value !== 'string') return null;
+                  const kind = item.kind;
+                  if (kind !== 'env' && kind !== 'jvmArgs' && kind !== 'preLaunch' && kind !== 'backupBefore') return null;
+                  return <li key={index}>{kindLabel(kind, t)}: <code style={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{item.value}</code></li>;
+                })}
+              </ul>
+            )}
             {/*
               第三方声明放在确认框里，而不是只放在卡片上。
               安装的这一刻是用户唯一还在读文字的时刻；之后再提醒，他已经在用了。

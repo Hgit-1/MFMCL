@@ -101,7 +101,7 @@ export function MicrosoftClientIdCard({ onChanged }: MicrosoftClientIdCardProps)
       </div>
 
       <p className={styles.hint}>
-        {status.configured ? t('msId.configuredHint') : t('msId.needId')}
+        {status.configured ? t(status.source === 'builtin' ? 'msId.builtinHint' : 'msId.configuredHint') : <>{t('msId.runtimeHint')} {t('msId.needId')}</>}
       </p>
 
       {/*

@@ -19,12 +19,19 @@ pub async fn create_backup(
         return Err("请先确认本地备份可能包含存档、服务器地址和模组配置中的私人信息。".into());
     }
     let guard = operations.acquire(&instance_id)?;
-    let target = store
+    let mut target = store
         .list_instances()
         .map_err(|e| e.to_string())?
         .into_iter()
         .find(|i| i.id == instance_id)
         .ok_or("找不到实例。")?;
+    if let Some(directory) = store
+        .load_instance_overrides(&instance_id)
+        .map_err(|error| error.to_string())?
+        .game_dir
+    {
+        target.game_dir = PathBuf::from(directory.trim());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
         backups::create_backup(&target, &PathBuf::from(directory))

@@ -65,7 +65,7 @@ There is no sandbox. A package may contain a `main.js` that runs in the WebView 
 
 The Rust downloader remains the authority for URLs, expected hashes, installation destinations, and publication. aria2 is optional and used only for pinned artifacts. It runs with a random local RPC secret bound to IPv4 loopback, bounded global and per-file connections, and a per-session configuration file with restricted Unix permissions. The binary is launched only when its platform SHA-256 is pinned in the release resource manifest and its version output matches. This repository's manifest intentionally has no binary pins yet; development and CI therefore use the native Rust downloader. No aria2 binary is being distributed until its corresponding-source and license review is complete.
 
-Task controls operate on cooperative checkpoints, HTTP stream reads, and aria2 tasks. The interface displays the active file and its known bytes without inventing an overall install percentage. Task records recover as interrupted after an unexpected exit.
+Task controls operate on cooperative checkpoints, HTTP stream reads, and aria2 tasks. The interface displays the active file and its known bytes without inventing an overall install percentage. Task records recover as interrupted when no install or download is still publishing state. Opening SQLite to list records does not run recovery. Desktop and CLI use shared operating-system locks to coordinate instance changes; game launch and backup additionally lock the actual game directory, even when multiple instances refer to it. A detached game retains a local process identity so a new launcher can still refuse overlapping backups. This does not exclude writers launched outside MFMCL.
 
 ## Supported scope and limits
 

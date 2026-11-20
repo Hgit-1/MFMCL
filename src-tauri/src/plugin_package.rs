@@ -71,6 +71,26 @@ const MAX_MANIFEST_BYTES: u64 = 512 * 1024;
 
 /// Ceiling on the compressed archive as received.
 const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
+pub use launcher_core::plugin_approval::review_digest;
+use launcher_core::plugin_approval::{PACKAGE_ID_FILE, bounded_file};
+
+pub fn read_local_archive(path: &Path) -> Result<Vec<u8>> {
+    bounded_file(path, MAX_ARCHIVE_BYTES, "插件包超过 64 MiB 上限。")
+        .map_err(|error| io_error("无法读取插件包", error))
+}
+
+pub fn package_manifest(manifest: &str) -> Result<Vec<u8>> {
+    parse_manifest(manifest.as_bytes())?;
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("manifest.json", zip::write::SimpleFileOptions::default())
+        .map_err(|error| rejected(error.to_string()))?;
+    zip.write_all(manifest.as_bytes())
+        .map_err(|error| io_error("无法写入清单", error))?;
+    Ok(zip
+        .finish()
+        .map_err(|error| rejected(error.to_string()))?
+        .into_inner())
+}
 
 /// A compression ratio above this is treated as a bomb.
 ///
@@ -521,8 +541,9 @@ fn central_directory_names(archive: &[u8]) -> Result<Vec<String>> {
 
 pub fn install_package(root: &Path, archive: &[u8]) -> Result<InstalledPlugin> {
     let (manifest, files) = read_archive(archive)?;
-
-    std::fs::create_dir_all(root).map_err(|error| io_error("无法创建插件目录", error))?;
+    if !launcher_core::plugin_approval::external_id(&manifest.id) {
+        return Err(rejected("插件 ID 不合法或已被内置插件占用。"));
+    }
 
     let staging = root.join(format!(".staging-{}", uuid::Uuid::new_v4()));
     let result = (|| -> Result<PathBuf> {
@@ -542,6 +563,19 @@ pub fn install_package(root: &Path, archive: &[u8]) -> Result<InstalledPlugin> {
                 .write_all(&file.bytes)
                 .map_err(|error| io_error("无法写入插件文件", error))?;
         }
+        // The archive cannot supply or preserve this launcher-owned identity.
+        use sha2::{Digest, Sha256};
+        let identity = format!(
+            "{}:{}",
+            hex::encode(Sha256::digest(archive)),
+            uuid::Uuid::new_v4()
+        );
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(staging.join(PACKAGE_ID_FILE))
+            .and_then(|mut file| file.write_all(identity.as_bytes()))
+            .map_err(|error| io_error("无法写入插件包标识", error))?;
         Ok(staging.clone())
     })();
 
@@ -640,17 +674,8 @@ fn validate_id(id: &str) -> Result<()> {
 /// Used by the scanner on startup, and by `plugin_reload` so the frontend can
 /// refresh a single plugin's record without re-reading every package.
 pub fn read_installed(root: &Path, id: &str) -> Result<(serde_json::Value, PathBuf)> {
-    validate_id(id)?;
-    let directory = root.join(id);
-    let manifest_path = directory.join("manifest.json");
-    let bytes =
-        std::fs::read(&manifest_path).map_err(|error| io_error("无法读取已安装插件清单", error))?;
-    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
-        return Err(rejected("已安装插件清单异常过大。"));
-    }
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|error| PackageError::Manifest(format!("已安装插件清单损坏：{error}")))?;
-    Ok((value, directory))
+    launcher_core::plugin_approval::read_installed(root, id)
+        .map_err(|error| io_error("无法读取已安装插件清单", error))
 }
 
 /// Validate one source-index entry.
@@ -1245,6 +1270,43 @@ mod tests {
             "the working version must survive"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn oversized_local_archive_is_rejected_before_it_is_read() {
+        let root = root();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("large.mflp");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_ARCHIVE_BYTES + 1).unwrap();
+        drop(file);
+        assert!(
+            read_local_archive(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("64 MiB")
+        );
+        std::fs::write(&path, b"small archive bytes").unwrap();
+        assert_eq!(read_local_archive(&path).unwrap(), b"small archive bytes");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reinstalling_a_package_changes_approval_identity() {
+        let root = root();
+        let archive = package(&[("manifest.json", MANIFEST)]);
+        let plugin = install_package(&root, &archive).unwrap();
+        let (manifest, dir) = read_installed(&root, &plugin.id).unwrap();
+        let first = review_digest(&dir, &manifest).unwrap();
+        install_package(&root, &archive).unwrap();
+        let (manifest, dir) = read_installed(&root, &plugin.id).unwrap();
+        assert_ne!(first, review_digest(&dir, &manifest).unwrap());
+        let forged = package(&[
+            ("manifest.json", MANIFEST),
+            (PACKAGE_ID_FILE, b"forged cache"),
+        ]);
+        assert!(install_package(&root, &forged).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

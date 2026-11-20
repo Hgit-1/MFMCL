@@ -173,17 +173,13 @@ pub fn plugin_save_state(
     state: PluginState,
     store: State<'_, LauncherStore>,
 ) -> Result<(), String> {
-    for plugin in &state.custom {
-        if plugin.id.trim().is_empty() {
-            return Err("插件 id 不能为空。".into());
-        }
-        for contribution in &plugin.contributions {
-            launcher_core::plugins::validate_contribution(contribution)
-                .map_err(|reason| format!("插件「{}」的一条贡献无效：{reason}", plugin.id))?;
-        }
-    }
+    let _lock = store
+        .lock_instance_operation("plugin-packages")
+        .map_err(|e| e.to_string())?;
+    let mut saved = store.load_plugin_state().map_err(|e| e.to_string())?;
+    saved.enabled.extend(state.enabled);
     store
-        .save_plugin_state(&state)
+        .save_plugin_state(&saved)
         .map_err(|error| error.to_string())
 }
 
@@ -219,11 +215,12 @@ pub struct PluginPreview {
 #[tauri::command]
 pub fn plugin_preview(
     plugin_id: String,
+    app: tauri::AppHandle,
     store: State<'_, LauncherStore>,
 ) -> Result<PluginPreview, String> {
-    let state = store
-        .load_plugin_state()
-        .map_err(|error| error.to_string())?;
+    use tauri::Manager;
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let state = launcher_core::plugin_approval::approved_state(&store, &root);
     let plugins = catalog(&state);
     let plugin = plugins
         .iter()

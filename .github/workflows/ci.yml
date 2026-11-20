@@ -32,24 +32,20 @@ jobs:
       - run: node design/tools/i18n-critical-regression.cjs
       - run: node design/tools/java-preferences-regression.cjs
       - run: npx --prefix design/tools playwright install --with-deps chromium
-      - name: Browser interaction regression
+      - name: Browser interaction, plugin approval, and account regressions
         shell: bash
         run: |
-          npm run dev > /tmp/mfmcl-vite.log 2>&1 &
+          npm run dev --prefix design/flowlaunch-ui -- --host 127.0.0.1 --port 5173 --strictPort > /tmp/mfmcl-vite.log 2>&1 &
+          vite_pid=$!
+          trap 'kill "$vite_pid" 2>/dev/null || true' EXIT
           for attempt in {1..40}; do
             if curl --silent --fail http://127.0.0.1:5173/ > /dev/null; then break; fi
             sleep 1
           done
+          curl --silent --show-error --fail http://127.0.0.1:5173/ > /dev/null || { cat /tmp/mfmcl-vite.log; exit 1; }
           node design/tools/interaction-regression.cjs
-      - name: Plugin install regression
-        shell: bash
-        run: |
-          npm run dev > /tmp/mfmcl-vite.log 2>&1 &
-          for attempt in {1..40}; do
-            if curl --silent --fail http://127.0.0.1:5173/ > /dev/null; then break; fi
-            sleep 1
-          done
           node design/tools/plugin-install-regression.cjs
+          node design/tools/account-workflow-regression.cjs
 
   rust-tests:
     name: Rust tests (${{ matrix.os }})

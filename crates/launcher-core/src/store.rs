@@ -2,9 +2,11 @@ use crate::model::{
     AccountKind, AccountProfile, CreateInstanceInput, DownloadTask, DownloadTaskState,
     InstanceOverrides, InstanceRecord, InstanceState, LauncherSettings,
 };
+use crate::operation_lock::OperationLock;
 use chrono::Utc;
 use mc_metadata::SourcePreference;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -25,6 +27,7 @@ pub enum StoreError {
 #[derive(Clone)]
 pub struct LauncherStore {
     connection: Arc<Mutex<Connection>>,
+    lock_root: Option<Arc<PathBuf>>,
 }
 
 /// 把旧版本的设置升级到当前 schema。
@@ -69,9 +72,10 @@ impl LauncherStore {
                 StoreError::Invalid(format!("could not create app data directory: {error}"))
             })?;
         }
-        let connection = Connection::open(database_path)?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let mut db = Connection::open(database_path)?;
+        db.pragma_update(None, "foreign_keys", "ON")?;
+        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        let connection = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         connection.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS app_settings (
@@ -147,6 +151,10 @@ impl LauncherStore {
              * JSON 加逐字段校验。这里存的只是**用户状态**（装了哪些、启用了哪些），
              * 内置清单在代码里，不进库。
              */
+            CREATE TABLE IF NOT EXISTS plugin_approvals (
+                id TEXT PRIMARY KEY,
+                digest TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS plugin_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 json TEXT NOT NULL,
@@ -236,15 +244,67 @@ impl LauncherStore {
             connection.execute("ALTER TABLE instances ADD COLUMN last_launched_at TEXT", [])?;
             connection.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, datetime('now'))", [])?;
         }
-        // A previous process may have been interrupted. Never keep an instance or task falsely running.
-        connection.execute(
+        connection.commit()?;
+        let lock_root = if database_path == Path::new(":memory:") {
+            None
+        } else {
+            let canonical = database_path.canonicalize().map_err(Self::lock_io)?;
+            let mut name = canonical
+                .file_name()
+                .expect("SQLite database file")
+                .to_os_string();
+            name.push(".locks");
+            Some(Arc::new(canonical.with_file_name(name)))
+        };
+        Ok(Self {
+            connection: Arc::new(Mutex::new(db)),
+            lock_root,
+        })
+    }
+
+    fn lock_io(error: std::io::Error) -> StoreError {
+        StoreError::Invalid(format!("无法访问启动器操作锁：{error}"))
+    }
+
+    fn try_operation_lock(
+        &self,
+        name: &str,
+        shared: bool,
+    ) -> Result<Option<OperationLock>, StoreError> {
+        let Some(root) = &self.lock_root else {
+            return Ok(Some(OperationLock::in_memory()));
+        };
+        std::fs::create_dir_all(root.as_ref()).map_err(Self::lock_io)?;
+        OperationLock::try_acquire(&root.join(name), shared).map_err(Self::lock_io)
+    }
+
+    pub fn lock_instance_operation(&self, id: &str) -> Result<OperationLock, StoreError> {
+        let name = format!("instance-{}", hex::encode(Sha256::digest(id.as_bytes())));
+        self.try_operation_lock(&name, false)?
+            .ok_or_else(|| StoreError::Invalid("此实例或共享安装资源已有任务正在运行。".into()))
+    }
+
+    /// Keep recovery out while this process is publishing active task state.
+    pub fn lock_install_activity(&self) -> Result<OperationLock, StoreError> {
+        self.try_operation_lock("install-activity", true)?
+            .ok_or_else(|| StoreError::Invalid("正在恢复上次中断的任务，请稍后重试。".into()))
+    }
+
+    /// Explicit startup recovery. Never alter task state merely by opening the
+    /// database, and skip recovery until all active writers have released their locks.
+    pub fn recover_interrupted_work(&self) -> Result<bool, StoreError> {
+        let Some(_recovery) = self.try_operation_lock("install-activity", false)? else {
+            return Ok(false);
+        };
+        let mut db = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
             "UPDATE instances SET state = 'failed' WHERE state = 'installing'",
             [],
         )?;
-        connection.execute("UPDATE download_tasks SET state = 'interrupted', updated_at = datetime('now') WHERE state IN ('running', 'paused')", [])?;
-        Ok(Self {
-            connection: Arc::new(Mutex::new(connection)),
-        })
+        transaction.execute("UPDATE download_tasks SET state = 'interrupted', updated_at = datetime('now') WHERE state IN ('running', 'paused')", [])?;
+        transaction.commit()?;
+        Ok(true)
     }
 
     pub fn save_download_task(&self, task: &DownloadTask) -> Result<(), StoreError> {
@@ -692,6 +752,27 @@ impl LauncherStore {
          * 校验由 serde 的默认值完成（`#[serde(default)]`），解析失败只丢内容。
          */
         Ok(serde_json::from_str(&json).unwrap_or_default())
+    }
+
+    pub fn plugin_approval_matches(&self, id: &str, digest: &str) -> Result<bool, StoreError> {
+        let db = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        Ok(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM plugin_approvals WHERE id = ?1 AND digest = ?2)",
+            params![id, digest],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn approve_plugin_package(&self, id: &str, digest: &str) -> Result<(), StoreError> {
+        let db = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        db.execute("INSERT INTO plugin_approvals(id, digest) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET digest = excluded.digest", params![id, digest])?;
+        Ok(())
+    }
+
+    pub fn forget_plugin_approval(&self, id: &str) -> Result<(), StoreError> {
+        let db = self.connection.lock().map_err(|_| StoreError::Poisoned)?;
+        db.execute("DELETE FROM plugin_approvals WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     pub fn save_plugin_state(&self, state: &crate::plugins::PluginState) -> Result<(), StoreError> {
@@ -1210,12 +1291,27 @@ mod tests {
 
     #[test]
     fn download_tasks_persist_and_interrupted_work_is_marked_truthfully() {
-        let path = std::env::temp_dir().join(format!("mfmcl-{}.sqlite", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("mfmcl-work-recovery-{}", Uuid::new_v4()));
+        let path = root.join("mfmcl.sqlite");
         let store = LauncherStore::open(&path).unwrap();
+        let activity = store.lock_install_activity().unwrap();
+        let instance = store
+            .create_isolated_instance(
+                &CreateInstanceInput {
+                    name: "Installing".into(),
+                    game_version: "1.21.4".into(),
+                },
+                &root,
+            )
+            .unwrap();
+        let operation = store.lock_instance_operation(&instance.id).unwrap();
+        store
+            .set_instance_state(&instance.id, InstanceState::Installing)
+            .unwrap();
         let now = Utc::now().to_rfc3339();
         let task = DownloadTask {
             id: Uuid::new_v4().to_string(),
-            instance_id: "test-instance".into(),
+            instance_id: instance.id.clone(),
             label: "Minecraft 1.21.4".into(),
             source: Some("official".into()),
             state: DownloadTaskState::Running,
@@ -1235,14 +1331,33 @@ mod tests {
         let stored = store.list_download_tasks().unwrap()[0].clone();
         assert_eq!(stored.files, Some(12));
         assert_eq!(stored.completed_files, Some(3));
-        drop(store);
-        let recovered = LauncherStore::open(&path).unwrap();
+        let reopened = LauncherStore::open(&path).unwrap();
         assert_eq!(
-            recovered.list_download_tasks().unwrap()[0].state,
+            reopened.list_download_tasks().unwrap()[0].state,
+            DownloadTaskState::Running
+        );
+        assert_eq!(
+            reopened.list_instances().unwrap()[0].state,
+            InstanceState::Installing
+        );
+        assert!(reopened.lock_instance_operation(&instance.id).is_err());
+        assert!(!reopened.recover_interrupted_work().unwrap());
+        assert!(reopened.delete_instance(&instance.id).is_err());
+        assert!(reopened.lock_install_activity().is_ok());
+        drop(operation);
+        drop(activity);
+        drop(store);
+        assert!(reopened.recover_interrupted_work().unwrap());
+        assert_eq!(
+            reopened.list_download_tasks().unwrap()[0].state,
             DownloadTaskState::Interrupted
         );
-        drop(recovered);
-        let _ = std::fs::remove_file(path);
+        assert_eq!(
+            reopened.list_instances().unwrap()[0].state,
+            InstanceState::Failed
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// 清理只删「已结束」的记录，进行中的任务必须留在表里。
@@ -1305,6 +1420,39 @@ mod tests {
         let value = serde_json::to_value(account).unwrap();
         assert!(value.get("credentialRef").is_none());
         assert!(!value.to_string().contains("opaque-keyring-entry"));
+    }
+
+    #[test]
+    fn switching_a_saved_account_survives_reopening_the_store() {
+        let root = std::env::temp_dir().join(format!("mfmcl-account-{}", Uuid::new_v4()));
+        let database = root.join("mfmcl.sqlite");
+        let store = LauncherStore::open(&database).unwrap();
+        for id in ["first", "second"] {
+            store
+                .add_account(&AccountProfile {
+                    id: id.into(),
+                    display_name: id.into(),
+                    kind: AccountKind::Offline,
+                    auth_server: None,
+                    credential_ref: None,
+                    selected: true,
+                    created_at: "2026-10-21T00:00:00Z".into(),
+                })
+                .unwrap();
+        }
+        store.select_account("first").unwrap();
+        drop(store);
+        let reopened = LauncherStore::open(&database).unwrap();
+        let selected: Vec<_> = reopened
+            .list_accounts()
+            .unwrap()
+            .into_iter()
+            .filter(|account| account.selected)
+            .map(|account| account.id)
+            .collect();
+        assert_eq!(selected, ["first"]);
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

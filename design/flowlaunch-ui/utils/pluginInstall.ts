@@ -43,6 +43,8 @@ export interface InstalledPluginRecord {
   directory: string;
   /** 原始清单 JSON，交给 `plugins.ts::normalizePlugin` 解释。 */
   manifest: unknown;
+  reviewDigest: string;
+  approved: boolean;
   /** 包目录的绝对路径，供「打开文件夹」使用。 */
   path: string;
   /**
@@ -146,6 +148,16 @@ export async function listInstalledPlugins(): Promise<InstalledPluginRecord[]> {
 export async function reloadPlugins(): Promise<InstalledPluginRecord[]> {
   if (!isDesktopShell()) return [];
   return invoke<InstalledPluginRecord[]>('plugin_reload');
+}
+
+export async function approvePluginPackage(id: string, reviewDigest: string): Promise<void> {
+  requireDesktop('批准插件')
+  await invoke('plugin_approve_package', { id, reviewDigest });
+}
+
+export async function installPluginManifest(manifest: string): Promise<InstalledPluginRecord> {
+  requireDesktop('安装插件清单')
+  return invoke<InstalledPluginRecord>('plugin_install_manifest', { manifest });
 }
 
 export async function installPluginFromFile(path: string): Promise<InstalledPluginRecord> {

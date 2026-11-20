@@ -1240,7 +1240,7 @@ pub enum LoaderHealth {
 /// 这里做三件事：
 ///   1. `launch.json` 是否存在且能解析（加载器配置本身）；
 ///   2. 它声明的 `mainClass` 是否非空（起不来的最常见原因）；
-///   3. 它引用的**加载器侧**库文件是否都在磁盘上。
+///   3. 它引用的**加载器侧**库文件是否存在，且匹配已知大小和 SHA-1。
 ///
 /// 第 3 点只检查非官方来源的库：官方库由 `install_vanilla` 校验并补全，这里重复
 /// 检查既慢又会误报——加载器配置里混着大量原版库（gson、lwjgl 等），它们的
@@ -1288,7 +1288,6 @@ pub fn diagnose_loader(instance: &InstanceRecord, libraries_dir: &Path) -> Loade
      * 等为主，而加载器自己的产物一定是 `net.fabricmc` / `org.quiltmc` /
      * `net.minecraftforge` / `cpw.mods` / `net.neoforged` 之一。
      */
-    let mut missing: Vec<String> = Vec::new();
     for library in &profile.libraries {
         if !is_loader_side_library(&library.name) {
             continue;
@@ -1296,25 +1295,27 @@ pub fn diagnose_loader(instance: &InstanceRecord, libraries_dir: &Path) -> Loade
         let Some(artifact) = &library.downloads.artifact else {
             continue;
         };
-        let Some(relative) = artifact
-            .path
-            .as_deref()
-            .map(PathBuf::from)
-            .or_else(|| maven_path(&library.name))
-        else {
-            continue;
+        let relative = match artifact.path.as_deref() {
+            Some(path) => crate::modpacks::safe_pack_path(path).map(|_| PathBuf::from(path)),
+            None => safe_maven_path(&library.name).map(PathBuf::from),
         };
-        if !libraries_dir.join(relative).is_file() {
-            missing.push(library.name.clone());
+        let Ok(relative) = relative else {
+            return LoaderHealth::Broken(format!("加载器文件路径无效：{}", library.name));
+        };
+        let path = libraries_dir.join(relative);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            _ => return LoaderHealth::Broken(format!("缺少加载器文件：{}", library.name)),
+        };
+        if artifact.size.is_some_and(|size| size != metadata.len()) {
+            return LoaderHealth::Broken(format!("加载器文件大小不匹配：{}", library.name));
         }
-    }
-    if !missing.is_empty() {
-        let sample: Vec<&str> = missing.iter().take(3).map(String::as_str).collect();
-        return LoaderHealth::Broken(format!(
-            "缺少 {} 个加载器文件（例如 {}）",
-            missing.len(),
-            sample.join("、")
-        ));
+        if let Some(expected) = artifact.sha1.as_deref().filter(|hash| !hash.is_empty())
+            && !crate::mod_updates::file_sha1(&path)
+                .is_ok_and(|actual| actual.eq_ignore_ascii_case(expected))
+        {
+            return LoaderHealth::Broken(format!("加载器文件校验失败：{}", library.name));
+        }
     }
     let _ = (kind, version);
     LoaderHealth::Healthy
@@ -2171,7 +2172,7 @@ mod tests {
                     "downloads": {"artifact": {
                         "path": "net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar",
                         "url": "https://maven.fabricmc.net/fabric-loader-0.16.10.jar",
-                        "sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "sha1": crate::mod_updates::file_sha1(&root.join("libraries/net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar")).unwrap(),
                         "size": 3
                     }}
                 }]
@@ -2184,11 +2185,20 @@ mod tests {
             diagnose_loader(&instance, &root.join("libraries")),
             LoaderHealth::Healthy
         );
+        let jar =
+            root.join("libraries/net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar");
+        std::fs::write(&jar, b"bad").unwrap();
+        assert!(
+            matches!(diagnose_loader(&instance, &root.join("libraries")),
+            LoaderHealth::Broken(reason) if reason.contains("校验失败"))
+        );
+        std::fs::write(&jar, b"longer").unwrap();
+        assert!(
+            matches!(diagnose_loader(&instance, &root.join("libraries")),
+            LoaderHealth::Broken(reason) if reason.contains("大小不匹配"))
+        );
         // 删掉加载器的 jar —— 这正是「补全官方文件」不会碰的那类文件。
-        std::fs::remove_file(
-            root.join("libraries/net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar"),
-        )
-        .unwrap();
+        std::fs::remove_file(&jar).unwrap();
         match diagnose_loader(&instance, &root.join("libraries")) {
             LoaderHealth::Broken(reason) => {
                 assert!(reason.contains("缺少"), "{reason}");

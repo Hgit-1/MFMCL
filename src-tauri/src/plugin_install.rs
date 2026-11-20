@@ -23,7 +23,7 @@ use tauri::{Manager, State};
 /// `mfmcl.sqlite` would otherwise be a directory-collision waiting to happen.
 const PLUGIN_DIR: &str = "plugins";
 
-fn plugin_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn plugin_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let base = app
         .path()
         .app_data_dir()
@@ -106,6 +106,8 @@ pub struct InstalledPluginRecord {
     /// Directory name under the plugin root; also the on-disk id.
     pub directory: String,
     pub manifest: serde_json::Value,
+    pub review_digest: String,
+    pub approved: bool,
     /// Absolute path to the package directory, so the UI can offer "show files".
     pub path: String,
     /// Base URL the webview can load this plugin's files from.
@@ -122,16 +124,25 @@ pub struct InstalledPluginRecord {
 fn record(
     app: &tauri::AppHandle,
     root: &Path,
+    store: &LauncherStore,
     plugin: &plugin_package::InstalledPlugin,
 ) -> Option<InstalledPluginRecord> {
     let (manifest, directory) = plugin_package::read_installed(root, &plugin.id).ok()?;
+    let review_digest = plugin_package::review_digest(&directory, &manifest).ok()?;
+    let version =
+        launcher_core::plugin_approval::package_definition(&plugin.id, &manifest)?.version;
+    let approved = store
+        .plugin_approval_matches(&plugin.id, &review_digest)
+        .unwrap_or(false);
     allow_asset_scope(app, &directory);
     let asset_base = asset_url(&directory);
     Some(InstalledPluginRecord {
         id: plugin.id.clone(),
-        version: plugin.version.clone(),
+        version,
         directory: plugin.id.clone(),
         manifest,
+        review_digest,
+        approved,
         path: directory.to_string_lossy().into_owned(),
         asset_base,
     })
@@ -166,14 +177,17 @@ fn asset_url(directory: &Path) -> String {
 }
 
 #[tauri::command]
-pub fn plugin_list_installed(app: tauri::AppHandle) -> Result<Vec<InstalledPluginRecord>, String> {
+pub fn plugin_list_installed(
+    app: tauri::AppHandle,
+    store: State<'_, LauncherStore>,
+) -> Result<Vec<InstalledPluginRecord>, String> {
     let root = plugin_root(&app)?;
     let mut records = Vec::new();
     for installed in plugin_package::scan_installed(&root) {
         // A directory that scanned cleanly but cannot be re-read is a race with
         // another process removing it; skipping is correct and reporting would
         // make the whole list fail for one stale entry.
-        if let Some(record) = record(&app, &root, &installed) {
+        if let Some(record) = record(&app, &root, &store, &installed) {
             records.push(record);
         }
     }
@@ -190,6 +204,7 @@ pub fn plugin_list_installed(app: tauri::AppHandle) -> Result<Vec<InstalledPlugi
 pub fn plugin_install_file(
     app: tauri::AppHandle,
     path: String,
+    store: State<'_, LauncherStore>,
 ) -> Result<InstalledPluginRecord, String> {
     let source = PathBuf::from(&path);
     let metadata = std::fs::symlink_metadata(&source)
@@ -206,8 +221,8 @@ pub fn plugin_install_file(
             "不支持的文件类型「.{extension}」；插件包应为 .zip、.mflp 或 .mfplugin。"
         ));
     }
-    let bytes = std::fs::read(&source).map_err(|error| format!("无法读取插件包：{error}"))?;
-    install_bytes(&app, &bytes)
+    let bytes = plugin_package::read_local_archive(&source).map_err(package_error)?;
+    install_bytes(&app, &store, &bytes)
 }
 
 /// Install a package fetched from an HTTPS URL.
@@ -221,6 +236,7 @@ pub async fn plugin_install_url(
     app: tauri::AppHandle,
     url: String,
     expected_sha256: Option<String>,
+    store: State<'_, LauncherStore>,
 ) -> Result<InstalledPluginRecord, String> {
     let client = http_client()?;
     let bytes = plugin_package::fetch_package(&client, &url)
@@ -232,13 +248,55 @@ pub async fn plugin_install_url(
     {
         plugin_package::verify_package_sha256(&bytes, expected).map_err(package_error)?;
     }
-    install_bytes(&app, &bytes)
+    install_bytes(&app, &store, &bytes)
 }
 
-fn install_bytes(app: &tauri::AppHandle, bytes: &[u8]) -> Result<InstalledPluginRecord, String> {
+#[tauri::command]
+pub fn plugin_install_manifest(
+    app: tauri::AppHandle,
+    store: State<'_, LauncherStore>,
+    manifest: String,
+) -> Result<InstalledPluginRecord, String> {
+    let bytes = plugin_package::package_manifest(&manifest).map_err(package_error)?;
+    install_bytes(&app, &store, &bytes)
+}
+
+#[tauri::command]
+pub fn plugin_approve_package(
+    app: tauri::AppHandle,
+    store: State<'_, LauncherStore>,
+    id: String,
+    review_digest: String,
+) -> Result<(), String> {
+    let _lock = store
+        .lock_instance_operation("plugin-packages")
+        .map_err(|e| e.to_string())?;
+    let (manifest, directory) =
+        plugin_package::read_installed(&plugin_root(&app)?, &id).map_err(package_error)?;
+    let actual = plugin_package::review_digest(&directory, &manifest).map_err(|e| e.to_string())?;
+    if actual != review_digest {
+        return Err("插件已更改，请重新加载并确认当前版本。".into());
+    }
+    if launcher_core::plugin_approval::package_definition(&id, &manifest).is_none() {
+        return Err("插件清单中的版本无效。".into());
+    }
+    store
+        .approve_plugin_package(&id, &actual)
+        .map_err(|e| e.to_string())
+}
+
+fn install_bytes(
+    app: &tauri::AppHandle,
+    store: &LauncherStore,
+    bytes: &[u8],
+) -> Result<InstalledPluginRecord, String> {
     let root = plugin_root(app)?;
+    let _lock = store
+        .lock_instance_operation("plugin-packages")
+        .map_err(|e| e.to_string())?;
     let installed = plugin_package::install_package(&root, bytes).map_err(package_error)?;
-    record(app, &root, &installed).ok_or_else(|| "插件已解压，但清单无法重新读取。".to_string())
+    record(app, &root, store, &installed)
+        .ok_or_else(|| "插件已解压，但清单无法重新读取。".to_string())
 }
 
 /// Remove one installed plugin.
@@ -249,7 +307,13 @@ pub fn plugin_remove_installed(
     id: String,
 ) -> Result<(), String> {
     let root = plugin_root(&app)?;
+    let _lock = store
+        .lock_instance_operation("plugin-packages")
+        .map_err(|e| e.to_string())?;
     plugin_package::remove_plugin(&root, &id).map_err(package_error)?;
+    store
+        .forget_plugin_approval(&id)
+        .map_err(|e| e.to_string())?;
 
     /*
      * Drop the plugin's persisted state too.
@@ -286,29 +350,7 @@ pub fn plugin_reload(
     app: tauri::AppHandle,
     store: State<'_, LauncherStore>,
 ) -> Result<Vec<InstalledPluginRecord>, String> {
-    let root = plugin_root(&app)?;
-    let installed = plugin_package::scan_installed(&root);
-    let ids: Vec<String> = installed.iter().map(|plugin| plugin.id.clone()).collect();
-
-    let mut state = store
-        .load_plugin_state()
-        .map_err(|error| error.to_string())?;
-    // Remove contributions for plugins that are gone. Enabling state is kept only
-    // for ids that still exist — same reasoning as the single-plugin removal.
-    state.custom.retain(|plugin| ids.contains(&plugin.id));
-    let known: std::collections::HashSet<&String> = ids.iter().collect();
-    state.enabled.retain(|id, _| known.contains(id));
-    store
-        .save_plugin_state(&state)
-        .map_err(|error| error.to_string())?;
-
-    let mut records = Vec::new();
-    for plugin in installed {
-        if let Some(record) = record(&app, &root, &plugin) {
-            records.push(record);
-        }
-    }
-    Ok(records)
+    plugin_list_installed(app, store)
 }
 
 // ---------------------------------------------------------------------------

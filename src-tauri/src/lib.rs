@@ -987,6 +987,9 @@ async fn launch_instance(
     report_launch("building", 0.75);
     let secrets = Arc::new(secrets);
     let registry = processes.0.clone();
+    let game_directory_lock = Arc::new(launcher_core::operation_lock::GameDirectoryLock::acquire(
+        &prepared.working_directory,
+    )?);
     if let Some(parent) = prepared.log_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -1010,7 +1013,7 @@ async fn launch_instance(
      * 「启动记录」就能看到「这个插件声明了 jvmArgs，但缺少 launchHook 权限」——
      * 没有这份记录，「已启用却什么也没发生」就只能靠猜。
      */
-    let plugin_state = store.load_plugin_state().unwrap_or_default();
+    let plugin_state = launcher_core::plugin_approval::approved_state(&store, &root);
     let plugin_definitions = crate::plugin_runtime::catalog(&plugin_state);
     let plan = launcher_core::build_plan(&plugin_definitions, &plugin_state, &instance, &settings);
     /*
@@ -1035,8 +1038,9 @@ async fn launch_instance(
     for (plugin_id, directory) in &plan.backups {
         let target = instance.clone();
         let dest = directory.clone();
+        let lock = game_directory_lock.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            launcher_core::backups::create_backup(&target, &dest)
+            launcher_core::backups::create_backup_with_game_lock(&target, &dest, &lock)
         })
         .await;
         match outcome {
@@ -1116,6 +1120,15 @@ async fn launch_instance(
             return Err(format!("无法启动 Java：{error}"));
         }
     };
+    if let Some(pid) = child.id()
+        && let Err(error) = game_directory_lock.record_game_process(pid)
+    {
+        let _ = child.kill().await;
+        if let Ok(mut running) = registry.lock() {
+            running.remove(&instance_id);
+        }
+        return Err(error);
+    }
     let launcher_hidden = settings.launcher_visibility == launcher_core::LauncherVisibility::Hide;
     if launcher_hidden && let Some(window) = app.get_webview_window("main") {
         /*
@@ -1213,6 +1226,7 @@ async fn launch_instance(
     );
     let _spawned = tauri::async_runtime::spawn(async move {
         let _operation = operation;
+        let _game_directory_lock = game_directory_lock;
         let mut stopped_by_user = false;
         let status = tokio::select! {
             status = child.wait() => status.ok(),
@@ -1401,6 +1415,8 @@ pub fn run() {
             let root = app.path().app_data_dir()?;
             std::fs::create_dir_all(&root)?;
             let store = LauncherStore::open(root.join("mfmcl.sqlite"))?;
+            store.recover_interrupted_work()?;
+            app.manage(management::Operations::new(store.clone()));
             /*
              * 启动时按已保存的设置决定是否记日志。
              *
@@ -1429,7 +1445,6 @@ pub fn run() {
             app.manage(store);
             app.manage(ProcessRegistry::default());
             app.manage(java_runtime::JavaInstalls::default());
-            app.manage(management::Operations::default());
             app.manage(Arc::new(downloads::Downloads::default()));
             app.manage(authentication::AuthState::default());
             app.manage(crash_ai::CrashAiState::default());
@@ -1512,6 +1527,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             authentication::skin_login,
             authentication::skin_select_profile,
+            authentication::skin_cancel_login,
             authentication::microsoft_login,
             authentication::microsoft_client_id_status,
             authentication::microsoft_save_client_id,
@@ -1598,6 +1614,8 @@ pub fn run() {
             plugin_runtime::plugin_save_state,
             plugin_runtime::plugin_preview,
             plugin_install::plugin_list_installed,
+            plugin_install::plugin_install_manifest,
+            plugin_install::plugin_approve_package,
             plugin_install::plugin_install_file,
             plugin_install::plugin_install_url,
             plugin_install::plugin_remove_installed,

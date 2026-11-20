@@ -3,6 +3,7 @@ const { chromium } = require('playwright');
 const BASE = process.argv[2] || 'http://127.0.0.1:5173';
 const RECORD = {
   id: 'aria-with-you', version: '1.0.0-test', directory: 'aria-with-you',
+  reviewDigest: 'synthetic-digest', approved: true,
   path: 'C:/synthetic-plugin-fixture/aria-with-you',
   assetBase: 'http://asset.localhost/synthetic-install-fixture/aria-with-you',
   manifest: {
@@ -64,6 +65,13 @@ async function fixture(browser, options = {}) {
       } finally { state.settledScans++; }
     };
     export const reloadPlugins = listInstalledPlugins;
+    export const approvePluginPackage = async (id, digest) => {
+      const state = window.pluginFixture;
+      const record = state.records.find(item => item.id === id && item.reviewDigest === digest);
+      if (!record) throw new Error('Package changed');
+      state.approvals.push(digest);
+      record.approved = true;
+    };
     export const removeInstalledPlugin = async id => {
       window.pluginFixture.removed.push(id);
       window.pluginFixture.records = window.pluginFixture.records.filter(record => record.id !== id);
@@ -78,7 +86,7 @@ async function fixture(browser, options = {}) {
     const native = await import('/utils/native.ts?plugin-test-base');
     window.pluginFixture = {
       records: options.installed ? [record] : [], scanFailure: Boolean(options.scanFailure), holdScan: Boolean(options.holdScan),
-      scans: 0, settledScans: 0, failedScans: 0, releaseScans: [], removed: [], unavailable: 0,
+      scans: 0, settledScans: 0, failedScans: 0, releaseScans: [], removed: [], approvals: [], unavailable: 0,
     };
     if (options.stale) {
       const cached = plugins.pluginFromInstalled(record);
@@ -370,6 +378,45 @@ async function uninstallCase(browser) {
   } finally { await f.context.close(); }
 }
 
+async function approvalCase(browser) {
+  const f = await fixture(browser, { installed: true });
+  const { page } = f;
+  try {
+    await page.evaluate(() => {
+      const record = window.pluginFixture.records[0];
+      record.approved = false;
+      record.manifest.enabledByDefault = true;
+      record.manifest.contributions = [{ kind: 'env', value: 'MFMCL_REVIEW_TEST=1' }];
+    });
+    await mountApp(page);
+    const open = () => page.getByRole('button', { name: 'Launcher plugins', exact: true }).click();
+    await open();
+    const card = page.locator('article').filter({ hasText: 'Aria with You' });
+    await card.getByText('Awaiting approval', { exact: true }).waitFor();
+    assert.equal(await card.getByRole('switch').isDisabled(), true);
+    const review = () => card.getByRole('button', { name: 'Review plugin', exact: true }).click();
+    await review();
+    const dialog = page.getByRole('dialog', { name: 'Review plugin' });
+    await dialog.getByText('MFMCL_REVIEW_TEST=1', { exact: true }).waitFor();
+    await dialog.getByRole('button', { name: /close/i }).last().click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.deepEqual(await page.evaluate(() => window.pluginFixture.approvals), []);
+    await page.evaluate(() => window.pluginFixture.render(null));
+    await page.getByRole('button', { name: 'Settings', exact: true }).waitFor({ state: 'hidden' });
+    await mountApp(page);
+    await open();
+    await card.getByText('Awaiting approval', { exact: true }).waitFor();
+    assert.equal(await card.getByRole('switch').isDisabled(), true);
+    await review();
+    await dialog.getByRole('button', { name: 'Approve this version' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    await card.getByRole('switch', { disabled: false }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.pluginFixture.approvals), [RECORD.reviewDigest]);
+    clean(f);
+    console.log('PASS approval: close and remount keep a package inactive; only explicit version approval enables the switch');
+  } finally { await f.context.close(); }
+}
+
 async function localImportCases(browser) {
   const f = await fixture(browser);
   const { page } = f;
@@ -463,6 +510,7 @@ async function localImportCases(browser) {
     await modelCases(browser);
     await componentCases(browser);
     await startupCases(browser);
+    await approvalCase(browser);
     await uninstallCase(browser);
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

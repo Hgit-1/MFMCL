@@ -15,6 +15,8 @@ pub mod mod_updates;
 mod model;
 pub mod modpacks;
 pub mod mods;
+pub mod operation_lock;
+pub mod plugin_approval;
 pub mod plugins;
 pub mod process;
 pub mod settings;

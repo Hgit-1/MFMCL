@@ -27,7 +27,7 @@ test('tag validation rejects paths and shell syntax', () => {
 });
 
 test('source versions agree with the requested tag', async () => {
-  await checkVersions('v0.1.1');
+  await checkVersions('v0.1.2');
   await assert.rejects(checkVersions('v9.9.9'), /version mismatch/);
 });
 

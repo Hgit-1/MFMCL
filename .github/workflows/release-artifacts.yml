@@ -6,7 +6,7 @@ on:
       tag:
         description: Existing version tag with a draft pre-release
         required: true
-        default: v0.1.1
+        default: v0.1.2
 
 permissions:
   contents: read

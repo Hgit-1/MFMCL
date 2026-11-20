@@ -27,6 +27,7 @@ use std::{
 
 /// One in-flight download task.
 struct ActiveJob {
+    _activity: launcher_core::operation_lock::OperationLock,
     control: DownloadControl,
     task: DownloadTask,
     last_saved: Instant,
@@ -97,12 +98,14 @@ impl Downloads {
             }
             return Err(RuntimeError::message("正在取消旧任务，请稍候重试。"));
         }
+        let activity = store.lock_install_activity()?;
         store.save_download_task(&task)?;
         let control = DownloadControl::new();
         let progress = Arc::new(TaskProgress::new());
         jobs.insert(
             instance_id.into(),
             ActiveJob {
+                _activity: activity,
                 control: control.clone(),
                 task: task.clone(),
                 last_saved: Instant::now(),

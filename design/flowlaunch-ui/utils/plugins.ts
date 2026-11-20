@@ -16,7 +16,7 @@
 
 import type { MessageKey } from './i18n/messages/zh-CN';
 import { loc, type Localized } from './i18n/localized';
-import type { PluginContribution, PluginDefinition, PluginStatePayload } from './native';
+import type { PluginContribution, PluginStatePayload } from './native';
 
 export const PLUGIN_STORAGE_KEY = 'flowlaunch-plugins';
 
@@ -95,6 +95,7 @@ export interface LauncherPlugin {
    * 过」，界面据此展示第三方提示与权限清单。清单不能自己声明它为 `false`。
    */
   thirdParty?: boolean;
+  awaitingApproval?: boolean;
   /** 仅由后端的已安装包记录提供，指向磁盘包根目录，不接受清单中的 URL。 */
   assetBase?: string;
   /**
@@ -455,6 +456,7 @@ export function pluginFromInstalled(record: {
   id: string;
   version: string;
   manifest: unknown;
+  approved: boolean;
   assetBase?: string;
 }): LauncherPlugin | null {
   if (!record.id || !record.version) return null;
@@ -501,11 +503,8 @@ export function pluginFromInstalled(record: {
     permissions,
     ...(options?.length ? { options } : {}),
     ...(contributions?.length ? { contributions } : {}),
-    // 新装的包默认启用。这是产品决定，不是疏忽：装一个插件的人已经表达了
-    // 「我要用它」，再让他去拨一次开关只是多一步。安全性由安装前的确认弹窗
-    // 承担（权限逐条列出），不由开关承担——一个默认关闭的开关挡不住任何东西，
-    // 它只会让用户以为自己装了却坏了。
     enabledByDefault: raw.enabledByDefault !== false,
+    awaitingApproval: record.approved !== true,
     builtin: false,
     requiresRestart: raw.requiresRestart === true,
     // 来源标记：从包安装的一律是第三方。清单不能自称 `builtin`。
@@ -610,7 +609,7 @@ export function allPlugins(store: PluginStore): LauncherPlugin[] {
 /** 插件当前是否启用。不兼容的插件永远视为未启用。 */
 export function isPluginEnabled(plugin: LauncherPlugin, store: PluginStore): boolean {
   // 计划中的插件恒为未启用：开关置灰，也不该被计入任何「已启用」统计。
-  if (plugin.incompatible || plugin.planned) return false;
+  if (plugin.incompatible || plugin.planned || plugin.awaitingApproval) return false;
   return store.enabled[plugin.id] ?? plugin.enabledByDefault;
 }
 
@@ -713,66 +712,12 @@ export function optionValue(plugin: LauncherPlugin, optionId: string, store: Plu
 // 与后端运行时的同步
 // ---------------------------------------------------------------------------
 
-/**
- * 把界面状态翻译成后端认识的形状。
- *
- * ## 为什么不再只是一份本地 JSON 草稿
- *
- * 之前插件的启用状态只写在 localStorage 里，后端完全不知道——插件页显示「已启用」，
- * 启动时却没有任何东西被应用。现在后端读自己的 `plugin_state` 表，界面这里负责
- * 把用户的操作同步过去。
- *
- * 只同步两样东西：**启用了哪些**，以及**自定义插件的贡献定义**。文案、图标、
- * 品牌色是纯展示，后端用不上。
- */
+// Only enable preferences cross this boundary. Runtime contributions are read
+// directly from the backend-approved package, not from localStorage.
 export function toPluginStatePayload(store: PluginStore): PluginStatePayload {
-  const custom: PluginDefinition[] = [];
-  /*
-   * 从磁盘装进来的插件也要发给后端。
-   *
-   * ## 为什么这一条不能省
-   *
-   * 后端不认识插件目录里的清单：它在启动时读 `plugin_state` 表，把那里的 `custom`
-   * 当成「用户装的插件」逐条校验并执行贡献。如果前端只同步粘贴的那些，一个从
-   * GitHub 装进来、界面上显示「已启用」的插件，在启动链路里**完全不存在**——
-   * 那正是「界面替一个不存在的行为作证」，也正是这份同步函数存在的理由。
-   *
-   * ## 与粘贴的那些的唯一区别
-   *
-   * 来源不同，贡献的执行方式相同。两者都在用户可移除的范围内。
-   */
-  for (const plugin of allPlugins(store)) {
-    /*
-     * 计划中的插件不发给后端。
-     *
-     * 后端没有 `planned` 这个概念，收到它就会当成一个正常启用的自定义插件，参与
-     * 启动链路——于是「已经公布但还没实现」的插件会真的按默认启用去执行它声明的
-     * 贡献，而那些贡献恰恰是我们还没验证过的。前端的置灰只是显示，真正的边界在
-     * 这里：压根不发出去。
-     */
-    if (plugin.builtin || plugin.planned) continue;
-    custom.push({
-      id: plugin.id,
-      version: plugin.version,
-      hooks: [...plugin.hooks],
-      permissions: [...plugin.permissions],
-      contributions: (plugin.contributions ?? []).map(item => ({ kind: item.kind, value: item.value })),
-      incompatible: plugin.incompatible === true,
-    });
-  }
-  /*
-   * 启用状态整份写入。
-   *
-   * 后端对未出现的 id 回退「默认启用」，与 `isPluginEnabled` 的规则一致。不能只
-   * 写差异：前端不知道后端内置清单的默认值，省掉任何一项都可能让一个本应启用的
-   * 插件变成启用（或反之）。整份写入最直白，也不会有一致性缺口。
-   *
-   * 计划中的插件不在 `store.enabled` 里（开关是禁用的，永远写不进去），所以这里
-   * 不需要额外过滤；上面的 `custom` 那一层才是真正的边界。
-   */
   const enabled = { ...store.enabled };
   for (const plugin of allPlugins(store)) {
-    if (!plugin.planned) enabled[plugin.id] = isPluginEnabled(plugin, store);
+    if (!plugin.planned) enabled[plugin.id] = (store.enabled[plugin.id] ?? plugin.enabledByDefault) && !plugin.incompatible;
   }
-  return { custom, enabled };
+  return { custom: [], enabled };
 }
