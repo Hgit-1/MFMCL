@@ -1,0 +1,83 @@
+name: v0.1.2 native candidate acceptance
+
+on:
+  push:
+    branches: [cursor/native-release-acceptance-v0.1.2]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  native-picker:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            archive: release-windows
+            asset: MFMCL_0.1.2_windows_x64.msi
+            sha: df50b142a56537c2e3e8a6a7ddb6f0b76fd27075c32646dcc019011fe5b765a2
+          - os: macos-15
+            archive: release-macos
+            asset: MFMCL_0.1.2_macos_universal.dmg
+            sha: b1749147827be05a82a4bc888a07b900b84c4fa1b28a96928a4246b05f837fcc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: '1'
+      ASSET: ${{ matrix.asset }}
+      EXPECTED_SHA256: ${{ matrix.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download the exact candidate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: candidate
+          run-id: 44761084108
+          github-token: ${{ github.token }}
+      - name: Verify candidate checksum and generate a harmless test package
+        shell: bash
+        run: |
+          python -c 'import hashlib, os, pathlib; p = pathlib.Path("candidate", os.environ["ASSET"]); digest = hashlib.file_digest(p.open("rb"), "sha256").hexdigest(); print(p, digest); assert digest == os.environ["EXPECTED_SHA256"]'
+          mkdir -p fixture evidence
+          python -m zipfile -c 'fixture/Release Picker Smoke Test.mflp' scripts/fixtures/release-picker/manifest.json
+      - name: Install the Windows MSI and test native dialogs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m pip install pywinauto==0.6.9
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installer = (Resolve-Path "candidate/$env:ASSET").Path
+          $msi = Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /qn /norestart /l*v `"$PWD/evidence/installer.log`"" -Wait -PassThru
+          if ($msi.ExitCode -ne 0) { exit $msi.ExitCode }
+          $mfmcl = @("$env:ProgramFiles\MFMCL\mfmcl.exe", "${env:ProgramFiles(x86)}\MFMCL\mfmcl.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (!$mfmcl) { throw 'The candidate MSI did not install the expected executable' }
+          $env:MFMCL_BIN = $mfmcl
+          python scripts/native-acceptance-v0.1.2.py
+      - name: Install the macOS DMG and test native dialogs
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python -m pip install 'pyobjc-framework-Quartz>=11,<12' 'pyobjc-framework-Cocoa>=11,<12' 'pyobjc-framework-Vision>=11,<12'
+          mount=$(mktemp -d)
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount" "candidate/$ASSET"
+          trap 'hdiutil detach "$mount"' EXIT
+          mkdir -p "$HOME/Applications"
+          ditto "$mount/MFMCL.app" "$HOME/Applications/MFMCL.app"
+          export MFMCL_BIN="$HOME/Applications/MFMCL.app/Contents/MacOS/mfmcl"
+          python scripts/native-acceptance-v0.1.2.py
+      - name: Retain native acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-acceptance-${{ matrix.os }}
+          path: evidence/
+          if-no-files-found: ignore
+          retention-days: 7
