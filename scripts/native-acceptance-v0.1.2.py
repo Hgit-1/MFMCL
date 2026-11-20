@@ -40,6 +40,7 @@ if WINDOWS:
 
     DATA = Path(os.environ['APPDATA']) / 'dev.mfmcl.launcher'
     desktop = pywinauto.Desktop(backend='uia')
+    win32 = pywinauto.Desktop(backend='win32')
 
     def win_find(proc, names, types=None, partial=False):
         for window in desktop.windows(process=proc.pid):
@@ -65,10 +66,13 @@ if WINDOWS:
             element.click_input()
 
     def file_panel(proc):
-        for window in desktop.windows(class_name='#32770'):
-            if window.is_visible() and (window.element_info.name in IMPORT or
-                                       (window.element_info.process_id == proc.pid and window.element_info.name == 'Open')):
-                return window
+        for window in win32.windows(process=proc.pid, class_name='#32770', visible_only=True):
+            if window.window_text() in (*IMPORT, 'Open'):
+                return desktop.window(handle=window.handle)
+        for parent in win32.windows(process=proc.pid):
+            for window in parent.children(class_name='#32770', visible_only=True):
+                if window.window_text() in (*IMPORT, 'Open'):
+                    return desktop.window(handle=window.handle)
         return None
 
     def click_import(element):
@@ -175,7 +179,10 @@ else:
         assert Q.CGPreflightPostEventAccess(), 'Runner does not grant permission for native keyboard events'
         key(5, Q.kCGEventFlagMaskCommand | Q.kCGEventFlagMaskShift)
         time.sleep(0.5)
-        key(0, text=str(FIXTURE))
+        clipboard = AppKit.NSPasteboard.generalPasteboard()
+        clipboard.clearContents()
+        assert clipboard.setString_forType_(str(FIXTURE), AppKit.NSPasteboardTypeString)
+        key(9, Q.kCGEventFlagMaskCommand)
         time.sleep(0.7)
         key(36)
         time.sleep(0.8)
@@ -244,7 +251,7 @@ def main():
         assert counts() == 0
         print('PASS: native picker opened; cancellation installed nothing', flush=True)
 
-        click_import(wait(lambda: app_find(proc, IMPORT), 'Import plugin package'))
+        click_import(open_plugins(proc))
         fill_panel(wait(lambda: file_panel(proc), 'native file picker reopened'))
         wait(lambda: app_find(proc, APPROVE), 'approval confirmation')
         wait(lambda: app_find(proc, (CONTRIBUTION,), 'text'), 'exact JVM property in approval dialog')
